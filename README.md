@@ -1,3 +1,5 @@
+![HOTD2RE — arcade horror in the streets of Venice](docs/images/hotd2re-header.png)
+
 # hotd2-re
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, with online two-player play, modern input and display options, and additional game modes.
@@ -145,3 +147,4 @@ The project's original code is available under the [MIT license](LICENSE). This 
 - [Microsoft Detours](https://github.com/microsoft/Detours): MIT license; retained in its submodule.
 
 Third-party components retain their own copyright and license notices.
+
