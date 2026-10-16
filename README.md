@@ -16,6 +16,35 @@ The source repository contains code, tools, tests, and documentation. Bundled ga
 
 This is an independent fan project, not an official Sega release. It is a work in progress; behavior and compatibility may change.
 
+## Optional 2× graphics
+
+Download **[hotd2re-graphics-2x.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)** from the release's Assets list. This separate add-on contains **2× textures and menu graphics only**, with no 4× textures or audio upgrade. Install the complete game first; the graphics ZIP cannot run by itself.
+
+1. Close the game and extract the graphics ZIP.
+2. Copy its contents into the `hotd2re` folder containing `hotd2.exe`.
+3. Double-click **Play with 2x Graphics.cmd**.
+
+The folders should look like this:
+
+```text
+hotd2re/
+  hotd2.exe
+  game/
+  scenes/
+  Play with 2x Graphics.cmd
+  remaster-2x/
+    tex/
+    bmp/
+```
+
+Do not put the add-on inside `game/` or nest it inside another remaster folder. The launcher selects the upgrade for that launch only; it does not replace your settings or saves. Open `hotd2.exe` normally to use your usual graphics, which are original graphics with the complete download's default settings.
+
+The images have twice the original width and height; level geometry stays the same. For more visible detail, optionally increase **Render Scale** in **Pause > Display** and use a larger window or fullscreen. Online players can choose different graphics packs while using the same game build.
+
+To enable the pack for ordinary launches too, close the game and add or replace `assets=remaster-2x` in `hotd2re_settings.ini`. Remove that line to turn it off. A `HOTD2_ASSET_DIR` environment variable takes priority over this setting.
+
+To uninstall, close the game and delete `remaster-2x` and the graphics launcher; also remove the INI line if you added it. Keep `game`, `scenes`, and your saves. The ZIP includes these instructions as `INSTALL-2X-GRAPHICS.txt` and a file checksum manifest; a ZIP SHA-256 checksum is attached to the release.
+
 ## Features
 
 - Arcade, Original, Training, Boss, Scene Select, and Horde modes.
@@ -103,6 +132,8 @@ cmake --build build --config Release --target pause_menu_test network_room_test 
 `src/game` contains the shared simulation, `src/port` the native client, `src/hook` optional comparison tooling for the original executable, and `notes` technical research. Set `GHIDRA_HOME` to your local Ghidra installation before using the optional Ghidra scripts. Historical notes may reference local captures or earlier builds that are not included.
 
 `tools/make_dist.ps1` creates a port-only package after building the client. It requires recipients to supply their own game files. Other local packaging/verification helpers may depend on private extraction manifests and are not necessary to build or run the port.
+
+`python tools/make_graphics_dist.py --source remaster --out build/dist-graphics-2x` packages an existing local remaster asset set as the optional 2× add-on (Python 3.10+ and Pillow). It validates image dimensions, makes 2× copies of larger menu tiles, and verifies the ZIP against SHA-256 file hashes. The output directory must be new. Source assets and generated packages remain outside Git.
 
 ## License and credits
 
