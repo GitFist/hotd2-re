@@ -17,7 +17,20 @@ import tempfile
 import time
 import zipfile
 
-from netplay_relay_smoke import script
+def packaged_script(host, final_frame):
+    """Aim at the current clickable menus and use an unlisted test room."""
+    def event(frame, x, y, buttons=1):
+        return f'{frame} 0 {x/640} {y/480} {buttons}\n{frame+4} 0 {x/640} {y/480} 0\n'
+    inputs = event(100, 320, 240) + event(200, 320, 240, 4) + event(300, 320, 240, 4)
+    inputs += event(400, 40, 338) + event(450, 320, 202)  # Network > Peer to Peer
+    inputs += event(500, 320, 142 if host else 172)
+    # Both peers reset to frame 901 when the shared lobby starts. Only P1 picks Arcade.
+    if host:
+        inputs += event(1000, 240, 142)
+    for frame in range(1500, final_frame - 50, 24):
+        buttons = 2 if frame % 120 == 20 else 1
+        inputs += event(frame, 320, 240, buttons)
+    return inputs
 
 
 def sha256(path):
@@ -49,16 +62,22 @@ def run_case(case, copies, scratch):
         port_guard = None  # an existing app already prevents use of this fixed port
     try:
         for role, folder in copies.items():
-            inputs = script('public', role == 'host')
-            for frame in range(3020, final_frame - 50, 24):
-                for player in (0, 1):
-                    buttons = 2 if frame % 120 == 20 else 1
-                    inputs += f'{frame} {player} 0.5 0.5 {buttons}\n{frame + 4} {player} 0.5 0.5 0\n'
+            inputs = packaged_script(role == 'host', final_frame)
             input_file = output / f'{role}-input.txt'
             input_file.write_text(inputs)
             env = {key: value for key, value in os.environ.items() if not key.startswith('HOTD2_')}
             env['HOTD2_PLAY_MENU'] = '1'
             env['HOTD2_NET_LOG'] = '1'
+            if role == 'join':
+                deadline = time.monotonic() + 25
+                while True:
+                    match = re.search(r'netplay: room \d+ code (\d+)', (output / 'host.log').read_text())
+                    if match:
+                        env['HOTD2_NET_PEERCODE'] = match[1]
+                        break
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f'Host did not create the unlisted test room; see {output}')
+                    time.sleep(0.1)
             if case == 'relay':
                 env['HOTD2_NET_NODIRECT'] = '1'
             elif case == 'failover' and role == 'join':
