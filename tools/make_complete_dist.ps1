@@ -1,10 +1,11 @@
 # Build a self-contained local multiplayer package from the extracted game data.
 # Game material stays under ignored build output and is never added to source control.
 # Run: powershell -File tools/make_complete_dist.ps1 [-Out build\dist-complete]
-param([string]$Out = "build\dist-complete", [string]$Exe = "build\src\port\Release\hotd2.exe")
+param([string]$Out = "build\dist-complete", [string]$Exe = "build\src\port\Release\hotd2.exe", [string]$SourceRoot = "")
 
 $ErrorActionPreference = "Stop"
 $repoDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$sourceDir = if ($SourceRoot) { (Resolve-Path -LiteralPath $SourceRoot).Path } else { $repoDir }
 $outputDir = if ([IO.Path]::IsPathRooted($Out)) { [IO.Path]::GetFullPath($Out) } else {
     [IO.Path]::GetFullPath((Join-Path $repoDir $Out))
 }
@@ -18,7 +19,7 @@ $manifestPath = Join-Path $repoDir "original\game-manifest.json"
 foreach ($required in @($exePath, $manifestPath, (Join-Path $repoDir "scenes\st1_play.scene"))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required file missing: $required" }
 }
-$playSource = Get-Content -LiteralPath (Join-Path $repoDir "src\port\tools\play.cpp") -Raw
+$playSource = Get-Content -LiteralPath (Join-Path $sourceDir "src\port\tools\play.cpp") -Raw
 $buildMatch = [regex]::Match($playSource, 'kBuildName\s*=\s*"([^"]+)"')
 if (-not $buildMatch.Success) { throw "Could not read the client build label" }
 $buildLabel = $buildMatch.Groups[1].Value
@@ -164,9 +165,9 @@ and change input=mouse to input=raw in hotd2re_settings.ini.
 BUILD.txt identifies this build. SHA256SUMS.txt lists the packaged file hashes.
 '@ | Set-Content -LiteralPath (Join-Path $packageDir "README.txt") -Encoding ascii
 
-$commit = (& git -C $repoDir rev-parse HEAD).Trim()
+$commit = (& git -C $sourceDir rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw "Could not read build source revision" }
-$sourceChanges = @(& git -C $repoDir status --porcelain --untracked-files=all -- src CMakeLists.txt)
+$sourceChanges = @(& git -C $sourceDir status --porcelain --untracked-files=all -- src CMakeLists.txt)
 if ($LASTEXITCODE -ne 0) { throw "Could not read build source status" }
 $sourceStatus = if ($sourceChanges.Count) { "local working tree changes" } else { "clean committed source" }
 $exeHash = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -177,6 +178,24 @@ Source base revision: $commit ($sourceStatus)
 hotd2.exe SHA256: $exeHash
 Includes $($gameEntries.Count) game data files verified against the extraction manifest.
 "@ | Set-Content -LiteralPath (Join-Path $packageDir "BUILD.txt") -Encoding ascii
+
+# Retain the native port and SDL notices alongside a complete portable release.
+$projectLicense = Join-Path $sourceDir "LICENSE"
+if (Test-Path -LiteralPath $projectLicense) {
+    Copy-Item -LiteralPath $projectLicense -Destination (Join-Path $packageDir "LICENSE-native-code.txt")
+}
+$sdlLicense = @((Join-Path $sourceDir "build\_deps\sdl3-src\LICENSE.txt"),
+                (Join-Path $repoDir "build\_sdl3_src\LICENSE.txt"),
+                (Join-Path $repoDir "build\_deps\sdl3-src\LICENSE.txt")) |
+    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $sdlLicense) { throw "SDL license not found; retain its LICENSE.txt in the build dependency directory." }
+Copy-Item -LiteralPath $sdlLicense -Destination (Join-Path $packageDir "LICENSE-SDL.txt")
+@'
+The native port code is licensed separately from the bundled original game data.
+LICENSE-native-code.txt covers the project's original code when that file is present.
+SDL retains the notice in LICENSE-SDL.txt. Original game assets and data retain their
+respective rights and are not covered by the native port's MIT license.
+'@ | Set-Content -LiteralPath (Join-Path $packageDir "CREDITS.txt") -Encoding ascii
 
 $checksums = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File | Sort-Object FullName | ForEach-Object {
     $relative = $_.FullName.Substring($packageDir.Length + 1).Replace('\', '/')

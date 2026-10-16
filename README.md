@@ -2,7 +2,17 @@
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, with online two-player play, modern input and display options, and additional game modes.
 
-The native executable runs the rewritten game simulation and rendering code. It reads the original PC game's models, textures, audio, level data, and lookup tables, including tables in `Hod2.exe`; it does not launch the original executable. **You need your own original Windows game files to play.** This repository contains source, tools, tests, and documentation, with no game data or packaged game downloads.
+The native executable runs the rewritten game simulation and rendering code. The complete Windows release bundles the graphics, sounds, levels, and data it needs. **Players do not need a separate game installation, CD, or file-copying step.**
+
+## Download and play
+
+1. Open [Releases](https://github.com/GitFist/hotd2-re/releases/latest) and download **hotd2re-multiplayer-complete.zip** under Assets.
+2. Extract the entire ZIP to a writable folder.
+3. Open `hotd2re` and double-click **hotd2.exe**.
+
+Keep the bundled `game` and `scenes` folders beside `hotd2.exe`. Both online players should use the same release. Use the complete ZIP, rather than GitHub's automatically generated **Source code** archives, to play.
+
+The source repository contains code, tools, tests, and documentation. Bundled game data is delivered in the release download; it is not part of the MIT-licensed source tree.
 
 This is an independent fan project, not an official Sega release. It is a work in progress; behavior and compatibility may change.
 
@@ -31,9 +41,11 @@ The supported target is **32-bit Windows**. CMake fetches a pinned SDL3 source r
 
 For an offline build with an extracted SDL3 source release, add `-DFETCHCONTENT_SOURCE_DIR_SDL3=<path>` to the configure command. Cross-platform and 64-bit options are experimental.
 
-## Run
+## Run a development build
 
-Copy the original PC installation into `game/`, preserving its directory layout:
+The instructions below are only for building from source. The complete release above already contains its required data. The native runtime reads the bundled `Hod2.exe` as a data source for lookup tables; it does not launch it.
+
+For a development checkout, copy the original PC installation into `game/`, preserving its directory layout:
 
 ```text
 game/
@@ -94,7 +106,7 @@ cmake --build build --config Release --target pause_menu_test network_room_test 
 
 ## License and credits
 
-The project's original code is available under the [MIT license](LICENSE). This license does not apply to Sega's game, assets, executable, trademarks, or other third-party material. Original game files are not included.
+The project's original code is available under the [MIT license](LICENSE). This license does not apply to Sega's game, assets, executable, trademarks, or other third-party material. Bundled game data is separate from the MIT-licensed source.
 
 - [SDL](https://github.com/libsdl-org/SDL): zlib license; fetched by CMake.
 - [Microsoft Detours](https://github.com/microsoft/Detours): MIT license; retained in its submodule.
