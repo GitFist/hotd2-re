@@ -1,4 +1,4 @@
-![HOTD2RE — arcade horror in the streets of Venice](docs/images/hotd2re-header.png)
+![HOTD2RE main menu](docs/images/hotd2re-header.png)
 
 # hotd2-re
 
