@@ -1,0 +1,7 @@
+address,name,signature,subsystem,status,notes
+0x00457160,Enemy_BehWalkOut,void __cdecl (Enemy* e),enemy,confirmed,"Behaviour 14: +0x1330 = P[1] (frames), walk motion set 2+bit27 with rand start (site 0x004571BD) blend 5 each frame; counter < 1 -> +0x13D8 = pos, behaviour 1. Stage-1 scene-3 chainsaw enemy (record 0x00979FBC, kind 2) out through the door"
+0x0043A080,Actor11_Create,void __cdecl (Actor* a),actor,identified,"Actor type 0x11 ctor: 0x38-byte control block +0x1310, Anim_InitEnemy, ground y 0x009C8E58, live / attacker counts +1, fn -> 0x0043A1E0 (not ported)"
+0x0043A1E0,Actor11_Task,void __cdecl (Actor* a),actor,identified,"Actor type 0x11 per frame: distance to the player point, state table 0x00592660[ctl+4], view pos; motions 0x140..0x143 (not ported)"
+0x0043AA10,Actor11_StateTurnJump,void __cdecl (void),actor,hypothesis,"Actor 0x11 state: turn toward the players (rand range), motions 0x142/0x143 turn, 0x140 leap with velocity at tick 0x12, stop at tick 0x2C (not ported)"
+0x004668A0,Komono6_Task,void __cdecl (Task* t),actor,identified,"Komono kind 6: Prop_CheckLifetime, T(pos) RotY, draws model +0x28C and increments it (loops 0x1063->0x1032, 0x10CD->0x10C4)"
+0x00466820,Komono_StaticTask,void __cdecl (Task* t),actor,identified,"Flag 0x13 -> Task_Kill; T(pos) RotZ RotY RotX, draw model +0x28C"

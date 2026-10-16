@@ -1,0 +1,82 @@
+address,name,signature,subsystem,status,notes
+0x00496B70,Menu_CreditsForEntry,int(int entry),frontend,identified,"original 6, training / boss 1, arcade setting+1 or -1"
+0x0041A5E0,Rank_ModeFrame,void(),frontend,ported,"game mode 8 ranking screen"
+0x0041B0B0,Rank_InitRoot,void(),frontend,ported,
+0x0041B0D0,Rank_CreateTable,void(),frontend,ported,
+0x0041B110,Rank_TableTask,void(task*),frontend,ported,"pages 0..11, rows 0x008113A0 / 0x00811220"
+0x0041A810,Rank_DrawBackground,void(task*),frontend,ported,
+0x0041AC20,Rank_DrawTitles,void(task*),frontend,ported,
+0x0041B8C0,Rank_DrawArrows,void(task*),frontend,ported,
+0x0041BD30,Rank_CreateAgent,void(),frontend,ported,
+0x0041BDC0,Rank_AgentTask,void(obj*),frontend,ported,"skeleton 0x3B"
+0x0041C270,Spr_DrawNumber,"void(float x,float y,float z,int v,int digits,float a)",hud,ported,
+0x0041C360,Spr_DrawTwoDigits,"void(float x,float y,float z,int v,float a)",hud,ported,
+0x0041C210,Spr_DrawName,"void(float x,float y,float z,char* s,float a)",hud,ported,
+0x0041C090,Spr_DrawTime,"void(float x,float y,float z,int frames,float a)",hud,ported,
+0x0041C400,Spr_DrawGlyph,"void(int c,float x,float y,float z,float sx,float sy,float a)",hud,ported,"0x00530818[c]"
+0x00432590,Spr_DrawAlpha,"void(int id,float x,float y,float z,float sx,float sy,float a)",hud,ported,
+0x0041B020,Spr_DrawAlphaFlags,"void(int id,float x,float y,float z,float sx,float sy,float a,int flags)",hud,ported,
+0x004869E0,Options_ModeFrame,void(),frontend,ported,"game mode 12"
+0x00486B80,Options_Frame,void(),frontend,ported,
+0x00486C10,Options_CursorTask,void(),frontend,ported,
+0x00486DA0,Options_ListTask,void(),frontend,ported,
+0x00487CA0,Options_DrawText,"void(float x,float y,char* s,uint flags)",frontend,ported,
+0x00487EE0,Options_DrawNumber,"void(float x,float y,int v)",frontend,ported,
+0x00488000,Options_Sprite,"void(int id,float x,float y,float z,float sx,float sy,int rot,float a,int flags)",frontend,ported,
+0x00488090,Options_DrawBackground,void(int),frontend,ported,
+0x00488200,Pad_Pressed,int(uint mask),input,ported,
+0x00487320,Options_Difficulty,void(),frontend,ported,
+0x004873E0,Options_Lives,void(),frontend,ported,
+0x004874A0,Options_Credits,void(),frontend,ported,
+0x00487250,Options_Colour,void(),frontend,ported,"hidden (0x007DD030)"
+0x004875D0,Options_Crosshairs,void(),frontend,ported,
+0x004878E0,Options_Calibration,void(),frontend,mapped,"-> 0x004882D0 not ported"
+0x00487910,Options_SoundTest,void(),frontend,ported,
+0x00487A50,Options_VoiceTest,void(),frontend,ported,
+0x00487B50,Options_Controller,void(),frontend,mapped,"-> 0x00485F90 not ported"
+0x00487B80,Options_Default,void(),frontend,ported,
+0x00487C00,Options_Exit,void(),frontend,ported,
+0x0049F380,Net_ModeFrame,int(),frontend,mapped,"DirectPlay lobby; failure path ported"
+0x004011F0,Game_Save,int(),save,identified,"0x004A0BD0 + 0x0040AB50"
+0x004A0B60,Game_Load,int(),save,identified,
+0x004A0540,Save_ReadFiles,int(),save,identified,"4 x 0x3DB bytes, 0x005985C4"
+0x004A05C0,Save_WriteFiles,int(),save,identified,
+0x004A06C0,Save_Checksum,"int(byte*,int)",save,ported,
+0x004A06F0,Save_Scramble,"void(byte*,int)",save,ported,"key replayed from the code"
+0x004A0BD0,Save_Write,int(),save,identified,
+0x0040AB50,Game_ApplySave,void(),save,ported,"lives / difficulty / grades / items"
+0x00401060,Save_Defaults,void(),save,ported,
+0x00401130,Save_DefaultSettings,void(),save,ported,
+0x0041C490,Rank_LoadTables,void(int),save,ported,
+0x0041C5C0,Rank_StoreTables,void(),save,ported,
+0x0041C610,Rank_Save,void(),save,identified,
+0x00425010,BossSelect_Task,void(obj*),modes,ported,"actor 0x6C"
+0x00425780,BossSelect_Draw,void(obj*),modes,ported,
+0x00425BD0,BossSelect_DrawEntry,"void(obj*,int,int k,float x,float a)",modes,ported,
+0x00425DF0,BossSelect_DrawGrade,"void(int k,int i,float x,short rot,float a)",modes,ported,
+0x00425E90,Boss_GameSetup,void(),modes,ported,
+0x00425F40,Boss_Records,void(),modes,ported,
+0x00434920,BossTitle_Task,uint(obj*),modes,ported,"boss-mode title / timer"
+0x0049DF00,Timer_Start,void(),modes,identified,"GetTickCount"
+0x0049DF20,Timer_Read,int(),modes,identified,"ms * 0.06"
+0x0049DF70,Timer_SetBase,void(int),modes,identified,
+0x004157F0,Rank_Qualifies,int(int p),modes,ported,"type 3 part"
+0x00480F70,Rank_SelectTable,void(),modes,identified,"0x007DCF44"
+0x00497F80,Select_AgentDraw,void(obj*),modes,ported,"boss / training selects"
+0x00496BA0,TrainSelect_Create,void(obj*),modes,mapped,"actor 0x6D"
+0x00496DE0,TrainSelect_Task,void(obj*),modes,mapped,
+0x00497360,Train_LessonStart,void(obj*),modes,mapped,
+0x00497440,Train_Instructions,void(obj*),modes,mapped,
+0x00497640,Train_ReadyGo,void(obj*),modes,mapped,
+0x00497C30,Train_Result,void(obj*),modes,mapped,
+0x00488820,ItemSelect_Task,void(obj*),modes,mapped,"actor 0x6E (original mode)"
+0x004896B0,ItemSelect_BuildList,void(),modes,mapped,"0x007DD068"
+0x00489830,ItemSelect_Draw,void(obj*),modes,mapped,
+0x004895C0,ItemSelect_Done,void(obj*),modes,mapped,
+0x00480D90,NameEntry_Init,void(),modes,mapped,"mode 6 sub-state 9"
+0x00481400,NameEntry_Frame,void(),modes,mapped,"mode 6 sub-state 10"
+0x004811F0,NameEntry_InsertScore,void(int p),modes,mapped,
+0x00481300,NameEntry_InsertTime,void(int p),modes,mapped,
+0x00482070,NameEntry_CreateLetters,void(),modes,mapped,
+0x004825B0,NameEntry_LetterTask,void(obj*),modes,mapped,
+0x004603B0,Mode6_StageEnd,void(),game,mapped,"types 2 / 3 not ported"

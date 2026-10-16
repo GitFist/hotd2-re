@@ -1,0 +1,9 @@
+address,name,signature,subsystem,status,notes
+0x0049E730,Res_IdleStep,void __cdecl (float msLeft),resource,confirmed,"Frame-pacing idle callback (0x007DEB7C, set by 0x0049E4A0): one 0x0041D500 while more than 1.0 ms of the frame remain; the resource queue advances by wall-clock time [agent:draws3]"
+0x004A5710,HGL_TimerTick,bool __cdecl (void),platform,confirmed,"(name kept) frame pacing: calls the idle callback 0x007DEB7C in a loop until the frame time is up; sets the frame-skip counter 0x007DEBAC when late (Game_Frame then steps the queue 10 times) [agent:draws3]"
+0x0041D500,Res_StepFrame,void __cdecl (void),resource,confirmed,"0x0041D550 (one request step) then 0x0041EBB0; called 5 / 10 times by Game_Frame 0x0049E220 and by Res_IdleStep (was named Game_InputPump) [agent:draws3]"
+0x0041D810,Res_CompleteHead,void __cdecl (void),resource,confirmed,"Steps the head request to completion and removes it (start of the flushes) [agent:draws3]"
+0x0041D860,Res_CompleteHeadThenMotion,void __cdecl (int motionFile),resource,confirmed,"Completes the head request, then reuses its ring entry as a type-8 motion-file load of the argument (step 0) [agent:draws3]"
+0x0041A520,Skin_DeformTwin,"void __cdecl (...)",render,confirmed,"Skeleton 0x4C attachment twins 0x004EDA52[i]: the deformation with negated normals (with 0x0041A580) [agent:draws2]"
+0x0041A580,Skin_DeformTwinNormals,"void __cdecl (...)",render,confirmed,"See 0x0041A520 [agent:draws2]"
+0x0049E4A0,Game_InitTimer,void __cdecl (void),platform,partial,"Installs the idle callback 0x007DEB7C = 0x0049E730 (rest not analysed) [agent:draws3]"

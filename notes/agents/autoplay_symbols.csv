@@ -1,0 +1,10 @@
+address,name,signature,subsystem,status,notes
+0x009C9010,g_hitFlag,int[2],shooting,identified,"Per player: 1 if Hit_Deliver ran for this frame's shot (any entry, level hits too); reset per player at the start of Hit_Task 0x00404570 [agent:autoplay]"
+0x005A4C84,g_hitEntryCount,int,shooting,identified,"Hit entry count; reset at the start of each player's pass in Hit_Task, so 0 after the frame unless P2 hit [agent:autoplay]"
+0x0059ECD8,g_hitKeys,"struct {int key; int index;}[]",shooting,identified,"Sorted in place by Hit_SortByDepth; [0].index (0x0059ECDC) = the delivered (nearest) entry; still valid at the next Input_Poll [agent:autoplay]"
+0x0059F4D0,g_hitEntries,HitEntry[] (0x3C bytes),shooting,identified,"+0x24 node/obj, +0x28 object (0 = level), +0x2C flags; read by the auto player as shot feedback [agent:autoplay]"
+0x009C8E98,g_gameMode,int16_t,game,identified,"3 title, 4 after start on the title (waits for a trigger pull, then 6), 5 attract demo, 6 game, 7 game over, 9 (after the title, alternates with 3 every ~600 frames when no credits), 16 boot [agent:autoplay; 4/9 meaning hypothesis]"
+0x0049B620,Boss1_Task?,void __cdecl (Task*),enemy,hypothesis,"Live during the stage-1 boss fight only (auto run frames 9476..14657, one serial) with 0x0048FE90 [agent:autoplay]"
+0x0048FE90,Boss1_Task2?,void __cdecl (Task*),enemy,hypothesis,"Live during the stage-1 boss fight only (9476..14657, one serial) [agent:autoplay]"
+0x00437AC0,Boss1_Intro?,void __cdecl (Task*),event,hypothesis,"First seen with the stage-1 boss (9476), 1106 frames [agent:autoplay]"
+0x00434EF0,Stage_EndTask?,void __cdecl (Task*),event,hypothesis,"Stage-1 end sequence (14231..14649) with 0x00435760 (4 serials) [agent:autoplay]"

@@ -1,0 +1,4 @@
+LIBRARY hotd2_hook
+EXPORTS
+    ; Detours requires ordinal #1 in any DLL injected with DetourCreateProcessWithDll.
+    DetourFinishHelperProcess @1 NONAME

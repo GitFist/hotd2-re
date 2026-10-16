@@ -1,0 +1,50 @@
+address,name,signature,subsystem,status,notes
+0x00445DB0,Bat_Create,void __cdecl (Actor* spawner),actor,confirmed,"Actor type 0x43 ctor: one bat task 0x004460C0 (block 0x2A0) per record unless 1 player and (variant 0 and state > 1 or variant != 0 and state > 2); +0x224 variant = P byte 1, +0x228 index = state - 1; Target_AddDirect; live / attacker counts; variant 0 starts swooping (state 4), 2 on the path (3); 0x007DCC68 = 0.06 [agent:stage2b]"
+0x004460C0,Bat_Task,void __cdecl (Bat* b),actor,confirmed,"Shot (variant != 0 or ctx tick +0x110 >= 682): hit flash 0x00430C50, sound 0x4217A9 / 0x4117A9, +80, flags 0x1000000 | 0x10000, velocity from the camera yaw, 40 scraps 0x00448900, function 0x00448210; sub-behaviour 0x00592944[+0x220]; yaw toward the movement or the camera; draw 0x00447C20; body point; Target_Register; view pos; Hit_RegisterTarget [agent:stage2b]"
+0x004464C0,Bat_StateWait,void __cdecl (Bat* b),actor,confirmed,"State 0: wait 0x00592940[index] * 20 frames (wing frame +0x240 folding the last 14), then circle entry (index > 0, state 2) or the spline path (index 0, state 3, when no bat attacks and the camera is in mode 2) [agent:stage2b]"
+0x004466C0,Bat_StateCircle,void __cdecl (Bat* b),actor,code,"State 1: circle around +0x1DC (radius +0x290, +-0x3E0 per frame), after +0x248 frames the path (state 3) [agent:stage2b]"
+0x00446D20,Bat_StateEnter,void __cdecl (Bat* b),actor,confirmed,"State 2: lerp +0x1C4 -> +0x1B8 (+0x270 += 0.0175), within 5: circle (1) or the path (3); reads +0x3C (never set) [agent:stage2b]"
+0x00446860,Bat_StatePath,void __cdecl (Bat* b),actor,confirmed,"State 3: quadratic B-spline path 0x00564550[variant][index] (two segments, 0x00448110), speed limit 1.5, then attack mode 1 (state 4); variant 2 drifts and swoops [agent:stage2b]"
+0x00446F30,Bat_StateAttack,void __cdecl (Bat* b),actor,confirmed,"State 4: mode 1 lerp to the camera (+offset 0x00447FB0), else swoop (sin phase +0x1FC, radius +0x294); within 5 of the camera: Player_TakeHit(target, 1, 9), exit point per variant (0x00447678), 8 scraps, state 5 [agent:stage2b]"
+0x00447690,Bat_StateRetreat,void __cdecl (Bat* b),actor,confirmed,"State 5: arc around the exit point (0x00447C04 per variant), pitch from the climb, after 30 frames at wing frame 18 swoop again (state 4 mode 2) [agent:stage2b]"
+0x00447C20,Bat_Draw,void __cdecl (Bat* b),actor,confirmed,"Body 0xBBF (dead 0xBC0), wings 0xBC1 + frame, face 0xBF8 + seed % 30 folded, wing bones 0xBF1 / 0xBF4 / 0xBF2 (alive), legs 0xBF6 / 0xBF5, 0xBBE / 0xBBD, 0xC08 / 0xC18 + n % 15 [agent:stage2b]"
+0x00447FB0,Bat_PickTarget,void __cdecl (Bat* b),actor,code,"Two players: rand target and offset beside the camera (distance / 60, yaw +-0x4000); else the player in game [agent:stage2b]"
+0x00448110,Bat_SplineGoal,void __cdecl (Bat* b),actor,confirmed,"Goal = quadratic B-spline of 3 s16 points of 0x00564550 + ((seg + (index + variant * 4) * 4) * 3) * 2 at +0x29C (weights 0x0042DFD0) [agent:stage2b]"
+0x00448210,Bat_Dying,void __cdecl (Bat* b),actor,confirmed,"Falls (gravity 0.020415, spin * 0.95), per-variant floors / walls (0x004487B8: 0 steps and two walls 0x005928C8, 1 planes, 2 stairs, 3 water 0x004487D0), splat 0x00448C50 when landed, Actor_Destroy after 120 frames [agent:stage2b]"
+0x00448890,Bat_Steer,"void __cdecl (Bat* b, float k)",actor,confirmed,velocity += ((goal - pos) - velocity) * k [agent:stage2b]
+0x00448900,Bat_SpawnScraps,"void __cdecl (int n, Bat* b)",effect,confirmed,n tasks 0x00448A80 around the bat (9 rand calls each) [agent:stage2b]
+0x00448A80,Bat_ScrapTask,void __cdecl (Task* t),effect,confirmed,"Falling scrap model 0xBF0 (scale 0.15) swinging toward random points, 9 swings [agent:stage2b]"
+0x00448C50,Splat_Spawn,"void __cdecl (float x, float y, float z, float scale, int pitch, int yaw)",effect,confirmed,"Floor splat task 0x00448CE0 (120 frames) -> 0x00448DF0 (fade), sound 0x118A9 / 0x119A9 by stage [agent:stage2b]"
+0x00430C50,HitFlash_Spawn,void __cdecl (float* viewPos),effect,confirmed,Task 0x00430BD0: models 0x3A..0x52 at a view-space point (scale 0.3 / 0.15 with language 1) [agent:stage2b]
+0x0042DFD0,Spline_QuadWeights,"void __cdecl (int seg, float t, float* w0, float* w1, float* w2)",math,confirmed,"Uniform quadratic B-spline weights ((1-t)^2/2, (1-t)t + 1/2, t^2/2) [agent:stage2b]"
+0x00459080,Enemy_BehThrow,void __cdecl (Enemy* e),enemy,confirmed,"Behaviour 33: variant 7 holds throwing weapons (node 5 / 8 models per skeleton 1 / 0x13 / 0x14), waits P word 2 / 1, target 0x00455DE0, throw motion of entry +0x131A, weapon at its tick (0x0045A240, not ported), then walk (0xF) or behaviour 0x1A [agent:stage2b]"
+0x00458F00,Enemy_PickThrowHand,int __cdecl (Enemy* e),enemy,confirmed,"5 / 8 / 0 by a coin and the weapons in hand; +0x131A = (hand != 5) [agent:stage2b]"
+0x0045B380,Enemy_BehCarry,void __cdecl (Enemy* e),enemy,confirmed,"Behaviour 37: carry the object of the record block (task 0x00442740), motion list (+0x38: motion, start, repeats, tick), release at tick +0x1354 (kind +0x1358), script end 0x0045C8D0 [agent:stage2b]"
+0x00442740,Carry_Setup,void __cdecl (Task* t),actor,confirmed,"Carried object first run: control block 0xE0 (carrier, civilian, type 0x005644D8, model by hp, release 10, spin), offset / velocity from the block, function 0x005926A8[block word 1] [agent:stage2b]"
+0x00442820,Carry_Held,void __cdecl (Task* t),actor,confirmed,"Pose between hand nodes 4 / 7 (0x00442EB0), drawn in view space; released by the carrier (0x00442B90) or dropped when it dies (0x00442950); shots 0x004423F0 [agent:stage2b]"
+0x00442EB0,Carry_HandPose,"void __cdecl (Enemy* carrier, float down, float* out)",actor,confirmed,"Mid point of the two hand points (down on each node's Y), yaw / pitch 0x00401720 of the hand vector, roll from the hands' up vectors (second atan2 scaled by -65536/2pi) [agent:stage2b]"
+0x004423F0,Carry_Shots,void __cdecl (Task* t),actor,confirmed,"Shot: a hit; hp - 1 (unless 0x100); 0: break motion (0x00444EE0, type 2 0x00444F70), break sound; else model by hp, hit sound [agent:stage2b]"
+0x00442950,Carry_Drop,"void __cdecl (Task* t, float* pose)",actor,confirmed,"World pose from the model-view, spin +-0x200 / +-0x100, velocity +-0.15 along the carrier, function 0x00444D80 [agent:stage2b]"
+0x00444D80,Carry_Fall,void __cdecl (Task* t),actor,confirmed,"Falling spin (axis angle +0x34, X +0x2C), floor bounce 0x00444280 (contact test only ported), near-screen test 0x004459C0 else destroyed [agent:stage2b]"
+0x00444EE0,Carry_Break,void __cdecl (Task* t),actor,confirmed,Prop skeleton break motion (0x0040DD90) until its last tick [agent:stage2b]
+0x004459C0,Carry_NearScreen,int __cdecl (Task* t),actor,code,Projected box against the screen margins [agent:stage2b]
+0x00401720,Math_DirToAnglesZ,"void __cdecl (float x, float y, float z, int* a, int* b)",math,confirmed,"a = atan2(-z, x), b = atan2(y, x / cos a or -z / sin a) [agent:stage2b]"
+0x00471BD0,Item_DropLife,void __cdecl (Prop* p),item,code,Item slot 1: extra life task 0x00471CC0 (model 0x10C3 x3) [agent:stage2b]
+0x00471CC0,Item_LifeTask,void __cdecl (Task* t),item,code,"Shot: Player_AddLife 0x00415630, 1UP text 0x1256 / 0x1257, digits [agent:stage2b]"
+0x004722A0,Item_DropBonus,void __cdecl (Prop* p),item,confirmed,"Item slot 3: animated figure (skeleton 0x1C, motion 0x140) task 0x00471FA0, node draw 0x00463F90 [agent:stage2b]"
+0x00471FA0,Item_BonusTask,void __cdecl (Task* t),item,confirmed,"Shot: motion 0x13F, +1000, sound 0x3B17A9, score digits 0x116A / 0x119C + n [agent:stage2b]"
+0x00415630,Player_AddLife,int __cdecl (int p),player,code,+1 life up to 5 (0x009A2440; game type 1: 0x009A2245[p]) else +300 [agent:stage2b]
+0x00468180,Komono_RouteSign,void __cdecl (Task* t),prop,confirmed,"Komono 14: shot flips the route 0x009C88A4 = 1 - state, flies up and falls on one end; gone at scene 6 or after 450 frames [agent:stage2b]"
+0x00468D10,Komono_FallingBit,void __cdecl (Task* t),prop,code,Komono 17 (ctor 0x004630B0: three around the record): falls until below the ground; shot +10 and hops [agent:stage2b]
+0x00467E50,Komono_StaticModel,void __cdecl (Task* t),prop,confirmed,"Komono 12 / 50: static model, removed at camera 0x2F tick 0x96 [agent:stage2b]"
+0x00463BA0,Komono_StaticSet,void __cdecl (Actor* spawner),prop,confirmed,Komono 50: (s8) 0x00594F20[v] models from rows 0x00594F08[v] (0x1C each) [agent:stage2b]
+0x00469380,Komono_SpinSign,void __cdecl (Task* t),prop,confirmed,"Komono 20: model 0x1E2 spinning, +0x400 per shot [agent:stage2b]"
+0x0046F580,Komono_Can,void __cdecl (Task* t),prop,confirmed,"Komono 58: model 0x1D1 knocked away (+10, smoke 0x00465860) [agent:stage2b]"
+0x0046F840,Komono_Bottle,void __cdecl (Task* t),prop,confirmed,Komono 60: model 0x1D8 flies off when shot [agent:stage2b]
+0x00468F00,Komono_Shutter,void __cdecl (Task* t),prop,confirmed,"Komono 19: window shutter 0x1CE with a sign 0x10D3: shot flips the route, event flag 0x21 slams it (0x00595B00) [agent:stage2b]"
+0x00465860,Smoke_Spawn,"void __cdecl (Prop* p, int player)",effect,confirmed,Like 0x004666B0: task 0x00465950 models 0x905..0x919 on the shot ray [agent:stage2b]
+0x0040E370,Light_StartTurn,"void __cdecl (int a, int b, int frames)",renderer,confirmed,Event op 0x17 (0x0045F2A0): task 0x0040E3B0 turning the light 0x009A3558 / 0x009A355C over n frames [agent:stage2b]
+0x0044A360,A31_BehFlinch,void __cdecl (Actor31* a),actor,confirmed,"Behaviour 1: flinch motion 0x00592A70[variant][0x004C84A8[slot]] (slots < 9 on track 1), then 0x0044ADB0 or 0x11 [agent:stage2b]"
+0x0044FAF0,A31_BehThrow,void __cdecl (Actor31* a),actor,code,"Behaviour 31: throw a weapon (hand 0x0044F630, motion 0x00592A00), weapon 0x004504E0 not ported [agent:stage2b]"
+0x0044F630,A31_ThrowHand,int __cdecl (Actor31* a),actor,code,5 / 8 / 0 by a coin and the weapons in hand (skeleton 0x16 / 0x18) [agent:stage2b]
+0x004831E0,Actor24_Fall,void __cdecl (Task* t),actor,code,"Actor 0x24 variant 3: falls to the ground 0x009C8E58, animation held at the motion's last tick [agent:stage2b]"

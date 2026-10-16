@@ -1,0 +1,35 @@
+services:
+  lobby:
+    build: .
+    image: hotd2-lobby:rejoin-20261008i1
+    container_name: hotd2-lobby
+    restart: unless-stopped
+    ports:
+      - "${LOBBY_PORT:-27020}:27020/udp"
+    environment:
+      LOBBY_PORT: "27020"
+      PYTHONDONTWRITEBYTECODE: "1"
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 96m
+    cpus: 0.5
+    pids_limit: 32
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket,struct; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b'H2LB'+bytes([1,3])+struct.pack('<I',0),('127.0.0.1',27020)); assert s.recv(2048)[:6] == b'H2LB'+bytes([1,102])"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

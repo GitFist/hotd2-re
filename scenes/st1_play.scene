@@ -1,0 +1,4 @@
+# Playable stage 1 (play.exe): the program owns and steps a game::World in game mode 6; this scene only supplies the
+# stage environment (light / fog from st1evtbl.bin, as in st1_demo_cam42.scene). HUD sprites come from game/hud.*.
+world external
+env st1evtbl.bin 0x0097A208 0x0097A28C

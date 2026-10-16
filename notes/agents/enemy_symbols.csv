@@ -1,0 +1,83 @@
+address,name,signature,subsystem,status,notes
+0x00452DA0,Enemy_Create,void __cdecl (Enemy* obj),enemy,identified,"Actor type 0x30 constructor (task fn on the spawn frame): kind/variant/behaviour from params bytes 0..2, Enemy_InitHp, Anim_InitEnemy, callbacks +0x12EC/+0x12F0, Enemy_SetupKind, counters 0x009C7006/0x009C904A ++, fn = Enemy_Update. Capture-checked"
+0x00452FD0,Enemy_SetupKind,void __cdecl (Enemy* obj),enemy,identified,"Record flags 2/4/8 -> obj+0x38; switch on kind (+0x1F4): 2/3 gas flags, 9/0x12 fade-in, 0xC, 0xE; kind 0x12 spawns a kind-9 child task"
+0x00453290,Enemy_UpdateKind9,void __cdecl (Enemy* obj),enemy,hypothesis,Task fn used instead of Enemy_Update for kind 9 (child of kind 0x12)
+0x004533F0,Enemy_Update,void __cdecl (Enemy* obj),enemy,identified,"Per-frame: hit-track flags, Enemy_ProcessHits, behaviour 0x00592AE8[+0x1310], pos += vel, Enemy_AnimateSkeleton, target/view/hit-sphere registration, water hook, motion sounds"
+0x004534A0,Enemy_DrawNode,void __cdecl (SkelNode* node),enemy,identified,"Per-node draw callback (anim+0x1158): head look for slot 2, special animated/attached models by id, else Enemy_DrawNodeModel(node model id)"
+0x00453AE0,Enemy_DrawNodeModel,void __cdecl (int modelId),enemy,identified,"Chooses 0x004185E0 (0x136C & 0x20 and 0x009A2BB4), 0x004185A0 with alpha +0x138C (0x1368 & 0x20) or 0x00418560"
+0x00453BE0,Enemy_HeadLook,void __cdecl (SkelNode* head),enemy,identified,"Turns +0x1320/+0x1324 towards the camera by <= 0xC0 per frame within +-0x4000 of the body yaw, applies rotY/rotX. Capture: +0xC0 per frame"
+0x00453EB0,Enemy_ProcessHits,void __cdecl (Enemy* obj),enemy,identified,"If 0x34 & 8: Enemy_CollectShots, per player hit effects; kill -> 0x136C |= 0x80000000, voice, behaviour 9 (scripted/variant 5,6) or 6; else Enemy_HitReaction"
+0x004092F0,Enemy_CollectShots,void __cdecl (void),enemy,identified,"Shot_PlayerOrder, then per shooting player: 0x009A2D88[p] = obj+0x190+p, Enemy_ApplyShot unless 0x34 & 0x100, clears hit bits"
+0x004093C0,Shot_PlayerOrder,void __cdecl (void),shooting,identified,"0x009C8908[2] = shooting players from 0x009C7000 (0 P1, 1 P2, 2 both: 1 rand picks the order)"
+0x00409430,Enemy_ApplyShot,void __cdecl (int player),enemy,identified,"Damage = 0x004C8350[kind][stage+slot*6] + rank mod, hit type from 0x004C7160 (wound/sever/plain/deflect), node stage/flags, kill flag 0x4000000, scores. Ported (EnemyApplyShot), 7/7 capture events"
+0x00409870,Enemy_RankDamageMod,int __cdecl (int slot),enemy,identified,"(signed char)0x004D0D84[kind][slot*16 + rank 0x009C8E96]; 0 if no table; kind 0x17 maps slots > 15 to 0"
+0x004098C0,Enemy_SubtractHp,void __cdecl (short damage),enemy,identified,obj+0x11C -= damage unless 0x34 & 0x1000
+0x004098E0,Enemy_SetNodeWound,"void __cdecl (NodeState* n, int model, int slot)",enemy,identified,"Unless 0x34 & 0x200: node model = model, wound data via Enemy_LookupWound, lost-part bit 0x004C4D18[slot] in +0x1318"
+0x004099A0,Enemy_LookupWound,"int __cdecl (NodeState* n, int model, int kind)",enemy,hypothesis,Searches the wound table 0x004D032C[kind] (20-byte entries) for the model; copies 4 values into the node record +0x78..+0x84
+0x00409A00,Skel_FindNodeBySlot,void* __cdecl (int slot),anim,identified,Depth-first search of the current actor's skeleton for a node with the slot
+0x00409AB0,Enemy_SeverSubtree,void __cdecl (int slot),enemy,identified,Calls Enemy_SeverNode on the children of the slot's node
+0x00409AF0,Enemy_SeverNode,void __cdecl (SkelNode* node),enemy,identified,"Sets the lost-part bit, clears the node model and +0x78, recurses into children"
+0x0040A8A0,Game_GetRank,int __cdecl (void),game,identified,Returns (short)0x009C8E96 (dynamic difficulty rank 0..15)
+0x0040A8B0,Enemy_InitHp,void __cdecl (Enemy* obj),enemy,identified,"hp = max hp = clamp(+0x11E + 0x005776B0[difficulty 0x009C8E94 (2 in game mode 5)], 1, 300). Ported"
+0x0040A6F0,Enemy_PlayVoice,"void __cdecl (Enemy* obj, char kind)",enemy,identified,"0 hurt (rand%5, ret 0x0040A737), 1 body death (rand%5, 0x0040A778), 2 head death (rand&1, 0x0040A7B9), 3 attack (rand&1), 4 fixed"
+0x00454050,Enemy_HitEffects,void __cdecl (int player),enemy,identified,"Blood/effect at the hit node's world point by hit type, knock-back push task 0x00407310 (0.75/0.5/1.0), variant re-evaluation 0x00454270"
+0x00454270,Enemy_UpdateVariantAfterHit,void __cdecl (Enemy* obj),enemy,hypothesis,Re-derives variant +0x130C from node models for kinds 1/2/0xE/0x13/0x14 (e.g. lost weapon); variant 5 when both lost-part bits 0x004C4D1D/0x004C4D20 are set
+0x004543F0,Enemy_HitReaction,void __cdecl (int player),enemy,identified,"Non-lethal hit: +0x1319 = hit side (slot 1/2), kind 10 special grab-release, else Enemy_PlayHitMotion"
+0x004544C0,Enemy_PlayHitMotion,"void __cdecl (Enemy* obj, int player)",enemy,identified,"Hit-reaction motion from 0x00592FC8[kind][variant][0x004C84A8[slot]]: upper-body track (0x00411B70) or full body; sets 0x34 |= 0x40000000"
+0x00454660,Enemy_UpdateHitFlags,void __cdecl (Enemy* obj),enemy,identified,Clears hit-reaction flags 0x136C & 0x3000 when the reaction motions are done; then 0x34 &= ~0x40000000
+0x004547C0,Enemy_UpdateUpperBody,void __cdecl (Enemy* obj),enemy,hypothesis,Re-triggers the upper-body hit motion (0x00592CBC[kind][variant]+0x10+side*4) while 0x136C & 0x300
+0x00454860,Enemy_AnimateSkeleton,void __cdecl (Enemy* obj),enemy,identified,"Enemy_EvalSkeleton(obj+0x194, obj+0x40, obj+0x20C), then anim counters +0x194/+0x198 += 1 unless 0x34 & 0x4000 (capture: 376/376 ticks)"
+0x00454900,Enemy_PostRootCallback,void __cdecl (void),enemy,identified,"anim+0x115C callback after root motion: push by other objects, wall collision 0x00405B10/0x004057F0, Enemy_SnapToFloor unless dying, collision sphere"
+0x00454AC0,Enemy_UpdateCollisionSphere,void __cdecl (Enemy* obj),enemy,identified,"+0x12C = (x, y + +0x128 + 1.0 (0.5 if 0x136C & 0x2000000), z)"
+0x00454B10,Enemy_SnapToFloor,void __cdecl (Enemy* obj),enemy,identified,"y = floor height at y+6 unless 0x136C & 0x4000000 and more than 10 above -> behaviour 11 (fall)"
+0x00454D20,Enemy_BehDie,void __cdecl (Enemy* obj),enemy,identified,"Behaviour 6: Enemy_StartDeathMotion, Enemy_OnDeath, at motion end Enemy_EnterCorpse (or behaviour 0xC if 0x34 & 0x1000000)"
+0x00454E00,Enemy_CorpseTwitch,int __cdecl (Enemy* obj),enemy,identified,"For death motions 0x3D9..0x3E0/0x3F7/0x3F8/0x404/0x41A/0x1DF: 1 rand, anim counter = hold table[(r%17)>>4] (0x0059301C..). Ported, 238/238 capture frames"
+0x00454F20,Enemy_BehCorpse,void __cdecl (Enemy* obj),enemy,identified,"Behaviour 7: 120 frames, y -= 0.04, Enemy_CorpseTwitch, then Actor_Destroy. Capture-checked"
+0x00454FD0,Enemy_BehCorpseB,void __cdecl (Enemy* obj),enemy,hypothesis,Behaviour 8: corpse variant for kinds 3 / 0x12
+0x004550E0,Enemy_BehDeathFall,void __cdecl (Enemy* obj),enemy,identified,"Behaviour 9: death motion, knock-back jump to a rand-offset view-space point (2 rands), gravity -0.0368, bounces x-0.25 while |vy| > 0.15, then Enemy_EnterCorpse. Capture-checked"
+0x00455490,Enemy_Despawn,void __cdecl (Enemy* obj),enemy,identified,"Behaviour 10: release target, live/attacker counts -1, free 0x009A5EC0 slot, Actor_Destroy"
+0x004554D0,Enemy_BehIdle,void __cdecl (Enemy* obj),enemy,hypothesis,"Behaviour 1: random idle motion (rand start tick), decides walk (2), 5 or 0x21"
+0x00455720,Enemy_BehApproach,void __cdecl (Enemy* obj),enemy,hypothesis,"Behaviour 2: walk towards the camera; in range -> Enemy_PickTarget -> attack (3 / 0x34)"
+0x00455A40,Enemy_BehAttack,void __cdecl (Enemy* obj),enemy,hypothesis,"Behaviour 3: attack entry 0x00592F18[kind][variant] (rand), Enemy_FaceTarget, at the hit tick 0x00456490 damages the player"
+0x00455DE0,Enemy_PickTarget,int __cdecl (Enemy* obj),enemy,identified,"Chooses the player to attack (+0x121), rand in the 2-player branches; marks 0x009A2BA0[p]; off-screen -> 0x136C |= 0x20000. Capture: 2/2 picks"
+0x00455F40,Enemy_FaceTarget,void __cdecl (Enemy* obj),enemy,identified,"rot.y (+0x68) = yaw from Cam_DirToAngles(pos - point); point = camera pos + RotY(cam yaw)*((1-2p)*-1.2, 0, -1.5) (+0x13E4)"
+0x004560B0,Enemy_StartDeathMotion,void __cdecl (Enemy* obj),enemy,identified,"Death motion by variant/flags (kinds 15..17 scripted: 0x3DB), Anim_BlendTo(..., 5). Capture: motion 987 + 6 blend frames"
+0x00456520,Enemy_ReleaseTarget,void __cdecl (Enemy* obj),enemy,identified,"0x009A2BA0[+0x121] = 0, +0x121 = -1; releases the 0x009A34F0 slot (0x136C & 0x20000)"
+0x00456560,Enemy_DecLiveCount,void __cdecl (Enemy* obj),enemy,identified,"Once (obj+0x38 bit 2): 0x009C904A -= 1 (event op 0x44 waits on it). Capture: at the kill frame"
+0x00456580,Enemy_DecAttackerCount,void __cdecl (Enemy* obj),enemy,identified,Once (obj+0x38 bit 4): 0x009C7006 -= 1
+0x004565A0,Enemy_OnDeath,void __cdecl (Enemy* obj),enemy,identified,"Enemy_ReleaseTarget; unless counted-out (0x38 & 1): 0x34 |= 0x10000, free 0x009A5EC0 slot, Enemy_DecLiveCount"
+0x00456740,Enemy_EnterCorpse,void __cdecl (Enemy* obj),enemy,identified,"0x34 |= 0xC000 (hold), Enemy_DecAttackerCount, anim counter -1, behaviour 7 (8 for kinds 3/0x12)"
+0x00456920,Enemy_HookWater,void __cdecl (Enemy* obj),enemy,hypothesis,"Hook 0x00592BC0[0], every frame: in water stages (0x009CAC40 5/0x37) splash once when below the water level"
+0x00456B70,Enemy_HookLandingDust,void __cdecl (Enemy* obj),enemy,identified,"Hook [2]: effect 0x46 (water: 0x61) at the floor, once (0x136C |= 0x10000). Capture: set on the first bounce"
+0x00456C50,Enemy_HookSpawnSplash,void __cdecl (Enemy* obj),enemy,identified,Hook [3]: variant 6 only: splash effects 0x61/0x62
+0x00457B50,Enemy_BehLunge,void __cdecl (Enemy* obj),enemy,identified,"Behaviour 23: params {kind/variant/beh, trigger id, motion, attack tick}; play motion, on trigger pick+face target, at the tick Player_TakeHit, at the end effect 0x62 + Enemy_Despawn. Capture: states 0-2"
+0x00452A10,Enemy_MotionSounds,void __cdecl (Enemy* obj),enemy,identified,Sound cues at fixed ticks of motions 0xB,0xB3,0xC3,0x108,0x114,0x1AE,0x1C1,0x1C3,0x1C4,0x2B5,0x307,0x30A,0x310,0x3B0,0x3B1,0x3C8 (once per tick via +0x1314)
+0x0044DB50,Enemy_JumpSetup,"void __cdecl (float x0, float y0, float z0, float x1, float y1, float z1)",enemy,identified,"+0x13C0/+0x13CC, counter 0, duration = max(minT, ftol(xzdist / (30/minT))), minT 15 (10). Ported, capture-checked"
+0x0044DC10,Enemy_JumpSetupFixed,"void __cdecl (float x0, float y0, float z0, float x1, float y1, float z1, int duration)",enemy,identified,Same with an explicit duration
+0x0044DDE0,Enemy_JumpStep,int __cdecl (void),enemy,identified,"While counter < T: vel = linear x/z, vy = n*-0.027222 + (T*T*0.027222 + 2dy)/(2T); returns 1. Ported, 30/30 frames exact"
+0x0044E120,Actor_StopMotion,void __cdecl (void),actor,identified,Zeroes velocity +0x4C..0x54 and acceleration +0x58..0x60 of the current actor
+0x00409CC0,Actor_Destroy,void __cdecl (Actor* obj),actor,identified,"0x34 = (0x34 & ~1) | 0x80018000, 0x00405220, frees the actor slot 0x009C88C0[+0x3C], Task_Kill"
+0x00409270,Actor_RegisterSlot,void __cdecl (Actor* obj),actor,identified,"First free entry of 0x009C88C0[14] -> +0x3C, obj+0x38 |= 0x40"
+0x00409010,Actor_RegisterTarget,void __cdecl (Actor* obj),actor,hypothesis,"If alive and not killed: appends (ftol depth, obj) to 0x005A4D58[14] (count 0x005A4D50); likely target list for the demo player"
+0x00409B70,Actor_UpdateViewPos,void __cdecl (float yOffset),actor,identified,"+0x70 = view-space of +0x100 (matrix 0x009A6000 + cam*0x1A4), hit-sphere registration 0x00405160, +0x104 += yOffset, depth list 0x00408EC0"
+0x00405160,Actor_RegisterHitSphere,void __cdecl (Actor* obj),shooting,hypothesis,Appends obj with its collision sphere (+0x12C) to 0x0059D8E8 (count 0x005A4C80) when in front of the camera
+0x00409D40,Coll_FloorHeight,"float __cdecl (float x, float y, float z)",collision,identified,"Ray down from y (minus 0x004C49C4) via 0x004053B0: hit -> 0x009CAC58, else 0x009C8E58"
+0x00409C10,Actor_IsOnScreen,int __cdecl (Actor* obj),actor,identified,Projects +0x70 with 0x009A2D70; 1 if inside the screen bounds
+0x00409DC0,Player_CanBeTargeted,int __cdecl (int player),player,identified,"0x009C6F08 == 2 and (game mode 5 or player state 0x009A5C62[p] == 5)"
+0x00415300,Player_TakeHit,"void __cdecl (int player, int flag, short kind)",player,identified,"Unless invulnerable or game mode 5: life 0x009A5C66[p] -1, score -100, rank -2, invulnerable 0x5A frames"
+0x004156C0,Player_AddScore,"void __cdecl (int player, int points)",player,identified,"0x009A5C6C[p*0x4C] += points (doubled in mode 1 for flag 2), clamped >= 0"
+0x004607B0,Game_UpdateRank,uint __cdecl (void),game,identified,"Rank 0x009C8E96: + player-count change*4, +1/+2 every 1800 frames, + pending 0x009A3794, clamped 0..15"
+0x00460770,Game_InitRank,void __cdecl (void),game,identified,"0x009C8E96 = (char)0x005679F4[difficulty or 2] (-3,-1,1,4,8)"
+0x0045FC10,Evt_WaitEnemies,void __cdecl (void),event,identified,"Opcode 0x44: yields until 0x009C904A <= arg and the camera state 0x007DCCA4/0x009C6F2D/0x007DCCA8 allows"
+0x00410440,Anim_InitEnemy,"void __cdecl (Anim* a, float* pos, void* nodeBuffer)",anim,identified,"Rename of the old Enemy_Create hypothesis: scale by skeleton type, counters, flags (+0x64 = 3, rot order 5), attachments 0x0052ED08, Enemy_InitPose, callbacks, Actor_RegisterSlot"
+0x00410C50,Anim_ApplyRootMotion,void __cdecl (float* rootPos),anim,identified,"If skeleton flag 2: x/z (and y with flag 0x10) delta of the motion root, rotated/scaled by the actor, added to the actor position; calls anim+0x115C; pushes the actor transform (rotation order anim+0x68)"
+0x00411090,Enemy_EvalSkeleton,"void __cdecl (Anim* a, float* pos, void* nodeBuffer)",anim,identified,"push, Enemy_DrawSkeleton, pop, 0x0040A590"
+0x00411930,Anim_SetMotion,"void __cdecl (Anim* a, int motion)",anim,identified,"Track 0 motion = id, counters/tick/frame/blend reset"
+0x004119A0,Anim_BlendTo,"void __cdecl (Anim* a, int motion, int tick, char n)",anim,identified,"Track 0 blends to motion at tick over n+1 frames (flag 1), tick held, then counter = tick+1. Capture: n=5 -> 6 frames"
+0x004119F0,Anim_StartBlend,"void __cdecl (Anim* a, int node, int motion, int track)",anim,identified,Loads the from/to node angle sets for a blend (Anim_LoadPose 0x00411C20)
+0x004111A0,Anim_TrackTick0,void __cdecl (void),anim,identified,"tick = counter % (len+1), frame = tick/2, odd ticks interpolate (flag 0x20); blend countdown; +0x5D/+0x5E end flags. Ported, 376/376"
+0x004112E0,Anim_TrackTick1,void __cdecl (void),anim,identified,"Same for the upper-body track 1 (+0x04/+0x0C/+0x1C/+0x24), loops +0x33 times, then switches the track off"
+0x00411B20,Anim_BlendTrack1,"void __cdecl (Anim* a, int node, int motion, int tick, char n)",anim,identified,Upper-body track blend (flags 9)
+0x00411B70,Anim_BlendTrack1Loop,"void __cdecl (Anim* a, int node, int motion, int tick, char n, char loops)",anim,identified,Upper-body track blend with loop count
+0x00411C20,Anim_LoadPose,"void __cdecl (int which, int motion, int frame, int track)",anim,identified,"which 0: current root, 1/2: blend from/to, 0xC: copy current; per node via 0x00411EC0 and Enemy_LoadNodeAngles"
+0x00412200,Anim_ResetNodes,"void __cdecl (int slot, int track)",anim,identified,Resets the per-node track selectors of the (sub)skeleton

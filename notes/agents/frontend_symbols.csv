@@ -1,0 +1,68 @@
+address,name,signature,subsystem,status,notes
+0x0041E1F0,Mode_Boot,void __cdecl (void),game,confirmed,"Game mode 16 (Game_Init's mode): sub-states 0 SEGA logo screens, 1 fade (301 frames), 2 free, 3 empireBlack screens, 4 fade, 5 -> game mode 3 directly (no Mode_Request). frontend_test: mode / sub-state exact 0..604"
+0x0041DD60,Boot_SegaLogo,void __cdecl (void),game,confirmed,"Six bitmap screens tex\segalogor_00..11 (z 0.1), visible; boot counter 0x007DAC58 / fade 0x007DAC5C = 0"
+0x0041DEF0,Boot_Fade,void __cdecl (void),game,confirmed,"Fade +0.01 (0x004C4CC0) for 100 frames, hold 100, -0.01; Screen_SetAlphaAll; Screen_DrawOpaque; > 300 frames -> next sub-state (also 0x0041E130)"
+0x0041DFA0,Boot_EmpireLogo,void __cdecl (void),game,confirmed,"As 0x0041DD60 with tex\empireBlack_00..11"
+0x0041E130,Boot_Fade2,void __cdecl (void),game,confirmed,Same body as 0x0041DEF0 (sub-state 4)
+0x0041E1D0,Boot_ToTitle,void __cdecl (void),game,confirmed,"0x009C8E98 = 3, sub-state 0, Screen_FreeAll"
+0x00495EB0,Mode_Title,void __cdecl (void),game,confirmed,"(was hypothesis) Game mode 3: init (Mem_Init, resources, 0x004067A0, cheat buffer 0x009A34E0 / 0x009C8FBC / 0x009C87FC = 0, Task_InitRoot(0x00496060), sound 0x15A9); then tasks, L/R cheat vs 0x005978C0 -> 0x009C87FC = 7, 0x009A5C44 > 0x1DF -> Mode_Next. Exact (K, draws, sprites, camera) on play1full / attract"
+0x00496060,Title_InitRoot,void __cdecl (void),game,confirmed,"Camera 0x00496180, rail / players / count (0x00414F20 / 0x00414ED0 / 0x00414FB0), Sky_Create, stage draw 0x00401470 (title tables 0x00576AEC / 0x00576B04), logo task"
+0x00496180,Title_StartCamera,void __cdecl (void),game,confirmed,"Task 0x004961A0, Cam_ResetContexts, 0x009A6110 = 0"
+0x004961A0,Title_CameraTask,void __cdecl (task*),game,confirmed,"0x009A6110 + 1; Cam_Evaluate(0x1D, tick); Cam_LookAngles; Cam_BuildViews"
+0x00496200,Mode_Select,void __cdecl (void),game,confirmed,"(was Mode_04) Game mode 4: init (Mem_Init, 0x00413DA0, Task_InitRoot(0x004962C0), 0x009A3790 = 0, 0x009CA08C = 0, sound 0x15A9), then tasks + 0x00413CC0 dimming + 0x009A5C44 + 1"
+0x004962C0,Select_InitRoot,void __cdecl (void),game,confirmed,"Selector 0x00496890, views 0x00496850, players, screens task 0x00496840, bitmap screens hod2title00..11 (z 0.5) and the 8 labels (3 x 64x64 tiles each, z 0)"
+0x00496890,Select_Start,void __cdecl (void),game,confirmed,"Task 0x00496960 (+0x34 angle, +0x38 / +0x3C move animation, +0x40 previous entry); per-entry scale / alpha table 0x005978FC / 0x00597918"
+0x00496960,Select_Task,void __cdecl (task*),game,confirmed,"Up / down masks 0x005978C8 / 0x005978D0 per player 0x009A3790 (keyboard 0x005978E0 / E8 with 0x009A37A8), cursor 0x009A2226 (0 arcade .. 7 exit), the entry's labels visible, AB1 at (1, 1) depth 100, confirm 0x005978D8 (trigger | start): 0..3 -> 0x009A21C0 = 1, credits 0x00406F60(0x00496B70(e)), game type = e; 4 / 5 / 6 -> modes 8 / 12 / 15; 7 -> 0x0049E930"
+0x00496850,Select_StartViews,void __cdecl (void),game,confirmed,"Task 0x00482C40 (Cam_BuildViews), Cam_ResetContexts, tick and ctx 0 position / target = 0"
+0x00496840,Select_ScreensTask,void __cdecl (task*),game,confirmed,jmp Screen_DrawOpaque 0x0049EAF0
+0x00496B70,Select_CreditsFor,int __cdecl (int entry),game,confirmed,"1 -> 6, 2..3 -> 1, else 0x009C9F25 == -1 ? -1 : 0x009C9F25 + 1"
+0x00406F60,Credit_SetAll,void __cdecl (int credits),game,confirmed,"-1: Credit_SetFreePlay 0x00407000, else Credit_Reset(0) then every slot = credits; Credit_UpdateStates 0x00407060"
+0x00407000,Credit_SetFreePlay,void __cdecl (void),game,confirmed,"0x009C8E70 = 1, credits 0"
+0x00407030,Credit_Reset,void __cdecl (int credits),game,confirmed,"0x009C8E70 = 0, every slot = credits"
+0x00406FD0,Credit_Clear,void __cdecl (void),game,confirmed,"0x00407030(0) and every slot 0 (start pressed in the title / attract; game over map end)"
+0x00407060,Credit_UpdateStates,void __cdecl (void),game,code,Coin states 0x009C8E64 (+8 per slot): 2 free play / enough credits
+0x00404460,Input_StartPressed,int __cdecl (void),game,confirmed,"0x009C9028 & 0x80008 -> 0x009A3790 = ~(bits >> 3) & 1 (P1 when both), 1"
+0x0040AC10,Mode_AfterStart,void __cdecl (void),game,confirmed,"Sound off, 0x009A5C44 = 0, Credit_Clear, 0x009C8FB4..B6 = 0, pause reset 0x0040E980"
+0x004067A0,Hud_ResetBlink,void __cdecl (void),sprite,confirmed,"0x005A4D44 / 0x005A4D48 = 0 (+ flags 0x005A4D38..): the PRESS START blink counter then catches up with 0x009A5C40 at the next 0x004067D0"
+0x00413CC0,Select_Dim,void __cdecl (void),game,code,"Mode select idle counter 0x007C1EB0 (0 while 0x009C9020 / 0x009A37A0): after 18000 frames model 0x93E with alpha (n - 17999) * 0.01 up to 0.6; cap 0x468C"
+0x00413DA0,Select_ResetDim,void __cdecl (void),game,code,0x007C1EB0 = 0
+0x0041FAB0,Adv_InitRoot,void __cdecl (void),game,confirmed,"Story modes 10 / 11: the Stage_Start task set without 0x004809D0 and the demo timer (Evt_Init .. 0x00404480); no srand"
+0x0041F9B0,Mode_Adv,void __cdecl (void),game,confirmed,"(hypothesis -> confirmed) Game mode 10: event mode 10 (advevtbl), scene 0, Task_InitRoot(0x0041FAB0), 0x004067A0, Stage_ResetState; tasks run in the init frame; Stage_End (0x009C71C0) -> Mode_Next (3). After a resync: rand / events / camera exact 3705 frames"
+0x0041FB00,Mode_Adv2,void __cdecl (void),game,confirmed,"(hypothesis -> confirmed) Game mode 11: as 0x0041F9B0 with event mode 11 (adv2evtbl), Mode_Next -> 10"
+0x004996C0,Mode_HowToPlay,void __cdecl (void),attract,confirmed,"(was Mode_09) Game mode 9: init (event mode 8, tutorial globals 0x007DD150..0x007DD16C, Task_InitRoot(0x00499F90)), then 0x004997A0 also in the init frame. Exact (K, rand, camera, draws 1698/1698, sprites) on attract / play1full"
+0x004997A0,HowToPlay_Frame,void __cdecl (void),attract,confirmed,"Task_RunFrom; 0x009A5C44 + 1; == 0x6A3 or 0x007DD164 -> Mode_Next (5)"
+0x00499F90,HowToPlay_InitRoot,void __cdecl (void),attract,confirmed,"Camera 0x0049AE50, 0x00499FB0 (script + HUD + zombies A / B), rail / players / count, floor 0x0049AE10"
+0x00499FB0,HowToPlay_StartTasks,void __cdecl (void),attract,confirmed,"Script 0x00499FE0, label, reload, torches, bullets, zombies 0x0049A190 / 0x0049A3F0"
+0x00499FE0,HowToPlay_Script,void __cdecl (task*),attract,confirmed,"Counter 0x007DD15C: camera hold 0x007DD154, motion hold 0x007DD16C, captions, bullets / reload, zombies C / D at 0x514 / 0x541"
+0x0049AE50,HowToPlay_StartCamera,void __cdecl (void),attract,confirmed,"Task 0x0049AE90, Cam_ResetContexts, tick 0, lights 0x004AA070"
+0x0049AE90,HowToPlay_CameraTask,void __cdecl (task*),attract,confirmed,"Cam_Evaluate(0x1E, tick), look angles, views; tick + 1 unless held; > 0xE6 -> 0x007DD164 = 1"
+0x0049AD70,HowToPlay_LabelTask,void __cdecl (task*),attract,confirmed,0x5B9 at (20 420); ends with 0x007DD164
+0x0049ADC0,HowToPlay_CaptionTask,void __cdecl (task*),attract,confirmed,"Caption sprite (id +0x3C, x +0x40, y +0x44, scale +0x4C / +0x50); ends after +0x38 frames"
+0x0049AC40,HowToPlay_ReloadTask,void __cdecl (task*),attract,confirmed,RELOAD 0xA27 while 0x007DD158 == 1 (sounds 0x115A9 / 0x215A9); ends at 2
+0x0049AB80,HowToPlay_TorchTask,void __cdecl (task*),attract,confirmed,0x007DD160 torches
+0x0049AA00,HowToPlay_BulletTask,void __cdecl (task*),attract,confirmed,0x007DD150 bullets
+0x0049AE10,HowToPlay_StartFloor,void __cdecl (void),attract,confirmed,Task 0x0049AE20
+0x0049AE20,HowToPlay_FloorTask,void __cdecl (task*),attract,confirmed,Model 0x17FA at the origin
+0x0049A190,HowToPlay_StartZombieA,void __cdecl (void),attract,confirmed,"Skeleton 7, motion 0x3E3, (-5.5, 1.9, -292.3), yaw 64000, rotation order 1"
+0x0049A210,HowToPlay_ZombieATask,void __cdecl (task*),attract,confirmed,"Own counter +0x1320: motions 0x3FE / 0x3D1 / 0x3D6 / 0x3D3 / 0x3DC, six shots, RELOAD at 0xD7; -> 0x0049AFB0"
+0x0049A3F0,HowToPlay_StartZombieB,void __cdecl (void),attract,confirmed,"Skeleton 0x13, motion 0x312, (5.6, 1.9, -287.3), yaw 0x500"
+0x0049A470,HowToPlay_ZombieBTask,void __cdecl (task*),attract,confirmed,"Attack at 0x262 (hit flash, 0x007DD160 = 2), three shots; -> 0x0049AFB0"
+0x0049A600,HowToPlay_StartZombieC,void __cdecl (void),attract,confirmed,"Skeleton 7, motion 0x3FE, (77, 1.9, -306.2)"
+0x0049A680,HowToPlay_ZombieCTask,void __cdecl (task*),attract,confirmed,Two shots; -> 0x0049AFB0
+0x0049A760,HowToPlay_StartZombieD,void __cdecl (void),attract,confirmed,"Skeleton 0x27, motion 0x195, part list 0x00597BE4 (part 0x2D drawn on its node), (76.5, 1.9, -334.7), yaw 0x6000"
+0x0049A7F0,HowToPlay_ZombieDTask,void __cdecl (task*),attract,confirmed,"Turns -0x111 per frame for 31 frames between motions 0x197 and 0x284"
+0x0049AFB0,HowToPlay_ZombieSink,void __cdecl (task*),attract,confirmed,"Death: 0x78 frames sinking 0.04 per frame, then parts released (0x004124B0) and Actor_Destroy"
+0x0049AF10,HowToPlay_Shot,"void __cdecl (task* obj, int node, int)",attract,confirmed,"Sounds 0x3416A9 / 0x216A9, task 0x00416E90 at the node's view hit point projected to depth 1"
+0x00416E90,Shot_FlashTask,void __cdecl (task*),player,confirmed,"View-space flash models 0x00579F78[p] / 0x00579F7C[p] + counter (scale 0.1 / 0.05), 10 frames or until the player's next shot"
+0x0049AA60,HowToPlay_StartHitFlash,void __cdecl (void),attract,confirmed,"Task 0x0049AA90, sounds 0x316A9 / 0x1EA9, 0x30 frames"
+0x0049AA90,HowToPlay_HitFlashTask,void __cdecl (task*),attract,confirmed,"Model 0x939 at view (0, 0, -1) scale 0.02 (pass-1 mode 0xC), view shake 0x009CA0E4 as Player_HitShake"
+0x0049E950,Screen_Add,"int __cdecl (char* file, int x, int y, int w, int h, float z, float u, float v, float alpha)",render,confirmed,"Next 2D bitmap slot 0x007DDAA8 + i * 0x28 (count 0x007DE4A8, max 64) if LoadImageA loads the file"
+0x0049E9F0,Screen_LoadBitmap,int __cdecl (char* file),render,identified,LoadImageA + BitBlt into a surface
+0x0049EB30,Screen_SetVisible,"void __cdecl (int slot, int on)",render,confirmed,slot +0x24
+0x0049EAD0,Screen_SetAlphaAll,void __cdecl (float alpha),render,confirmed,Every slot's alpha (+0x20)
+0x0049EAF0,Screen_DrawOpaque,int __cdecl (void),render,confirmed,"0x007DE4AC = 1; visible slots with alpha 1.0 drawn now (0x0049EBE0)"
+0x0049EB50,Screen_DrawTranslucent,int __cdecl (void),render,confirmed,"(was Game_Draw hypothesis) If 0x007DE4AC: visible slots with alpha < 1 with alpha blending; flag cleared"
+0x0049EBE0,Screen_Draw,int __cdecl (int slot),render,confirmed,"TL strip (x, y) (x, y + h) (x + w, y) (x + w, y + h), uv to (u, v), rhw 0.5, vertex alpha; skipped while 0x007DEBAC"
+0x0049ED70,Screen_FreeAll,void __cdecl (void),render,confirmed,Releases every slot's surface; count 0
+0x0049E930,Game_Quit,void __cdecl (void),game,identified,"PostMessage(main window, 0x10 WM_CLOSE) (mode select EXIT)"
+0x0049DFD0,Render_SkipFrame,void __cdecl (void),render,hypothesis,"Once per mode switch (0x007DDAA0): 0x004A8A70, 0x004ABF30, 0x007DEBAC = 1 (the screens / models are not drawn: the captures have no draw lines in such init frames)"

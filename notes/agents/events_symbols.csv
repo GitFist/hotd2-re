@@ -1,0 +1,164 @@
+address,name,signature,subsystem,status,notes
+0x0045EB60,Evt_GetModeScenes,uint32_t* __cdecl (int mode),event,identified,comevtbl[mode] (0x00977200 + mode*4)
+0x0045EB70,Evt_GetSceneVariants,"uint32_t* __cdecl (int mode, int scene)",event,identified,comevtbl[mode][scene]; -1 marks the end of the mode's scene list (op 0x4F)
+0x0045ECB0,Evt_TaskStart,void __cdecl (void** task),event,identified,Task entry: installs Evt_Run 0x0045ECC0 as the task body
+0x0045ED90,Stage_End,void __cdecl (void),event,identified,"0x009C71C0 = 1, 0x009A5C48 = 0; game mode 6 (unless sub-state 8): sub-state 5 + 0x0041D350. Called by op 0x4F at the end of a mode's scenes"
+0x0045EDD0,Stage_ResetState,void __cdecl (void),event,identified,"Clears enemy/boss counters 0x009C904A / 0x009C7006 / 0x009CA0E8, flags 0x009C7200 (256 B), light angles, 0x009CA098, 0x009C6F1C/20, 0x009C71C0 ...; called by Stage_Start and modes 10/11"
+0x00408820,Evt_OpRoute1Spawn,void __cdecl (void),event,identified,"Ops 0x01-0x04: if route 0x009C8E84 == 1 run 0x00577650[op] (spawn09/0a/0b/0c), else skip the -1 list"
+0x00408860,Evt_OpRoute2Spawn,void __cdecl (void),event,identified,"Ops 0x05-0x08: same for route 2"
+0x00408990,Evt_OpSpawn0A,void __cdecl (void),event,identified,"Op 0x0A: per record task(0x009A2280[type], 0x13F4), Actor_SetFlags(0), state = rec[1]"
+0x00408AA0,Evt_OpSpawn0B,void __cdecl (void),event,identified,Op 0x0B: Actor_SpawnRecord0B per list entry
+0x00408C40,Evt_OpSpawn0C,void __cdecl (void),event,identified,Op 0x0C: Actor_SpawnRecord0C per list entry
+0x00408B70,Evt_OpSpawn0BNoSkip,void __cdecl (void),event,identified,Op 0x0D: as 0x0B unless cutscene skip 0x009A2D74
+0x00408D10,Evt_OpSetTable2BE0,void __cdecl (void),event,identified,"Op 0x0E (24 B): 0x009A2BE0[i*3..] = a,b,c (defaults 0x004C4CD0, meaning unknown)"
+0x00408C80,Evt_OpSetList8E40,void __cdecl (void),event,identified,Op 0x0F: list values -> dwords 0x009C8E40..
+0x00408CC0,Evt_OpSetList8E40R2,void __cdecl (void),event,identified,"Op 0x12: as 0x0F, then 0x009C8E40 += 1 if 0x009C8E80 == 2"
+0x00408D60,Evt_InitList8E40,void __cdecl (void),event,identified,"0x009C8E40.. = 2, 3, 4 (Evt_Init)"
+0x0045F130,Evt_OpSetPtr1A14,void __cdecl (void),event,identified,Op 0x10: 0x009A1A14 = &list (skip to -1)
+0x0045F160,Evt_OpSetPtr34D8,void __cdecl (void),event,identified,Op 0x11: 0x009A34D8 = &list
+0x0045F190,Evt_OpSetParams,void __cdecl (void),event,identified,"Op 0x13: [0] -> 0x009A5FE0, *[1] -> 0x009A1A0C, *[2] -> 0x009A21BC, *[3] -> 0x009A21B4, *[4] -> 0x009A2444"
+0x00480CE0,Evt_OpSet2BB4,void __cdecl (void),event,identified,Op 0x14: (s8) arg -> 0x009A2BB4
+0x00480D00,Evt_OpSet8D4C,void __cdecl (void),event,identified,Op 0x15: (s8) arg -> 0x009C8D4C
+0x00480D20,Evt_OpSet71D4,void __cdecl (void),event,identified,Op 0x16 (16 B): three dwords via pointers -> 0x009C71D4/D8/DC
+0x0045F2A0,Evt_OpLightAngleTask,void __cdecl (void),event,identified,Op 0x17 (16 B): 0x0040E370(a b c)
+0x0040E370,Env_StartLightAngleTask,"void __cdecl (int pitch, int yaw, int frames)",render,hypothesis,"Task 0x0040E3B0 (0x4C) with the current env +0x18/+0x1C angles and target (a, b), c; presumably interpolates the light angles"
+0x0045F270,Evt_OpLightAnglesB1,void __cdecl (void),event,identified,"Op 0x19: Env_SetLightAngles(block 1 0x009A59E0, pitch, yaw)"
+0x0045F2D0,Evt_OpSet8E58,void __cdecl (void),event,identified,Op 0x1A: *ptr -> 0x009C8E58 (player eye height when 0x009C70F4 == 1)
+0x0040B630,Evt_Op24,void __cdecl (void),event,identified,Op 0x24: Env_SetChannel(block 1)
+0x0040B650,Env_InterpChannel,void __cdecl (int block),render,identified,"Ops 0x21/0x25: channel interpolation record (0x009C89E0 / 0x009C8920; 16 B {active, current, target, step}), step given; 16 B (8 for sub > 10)"
+0x0040BA80,Evt_Op25,void __cdecl (void),event,identified,Op 0x25: Env_InterpChannel(1)
+0x0040BA90,Env_InterpChannelFrames,void __cdecl (int block),render,identified,"Ops 0x23/0x27: target, step = (target - current) / frames (negated if negative); sub 2-5 targets are ints, others pointers"
+0x0040C1F0,Env_StopChannel,void __cdecl (int block),render,identified,Ops 0x22/0x26: clears channel record(s); 8 B
+0x0040C2A0,Evt_Op22,void __cdecl (void),event,identified,Op 0x22: Env_StopChannel(0)
+0x0040C2B0,Evt_Op26,void __cdecl (void),event,identified,Op 0x26: Env_StopChannel(1)
+0x0040C1D0,Evt_Op23,void __cdecl (void),event,identified,Op 0x23: Env_InterpChannelFrames(0)
+0x0040C1E0,Evt_Op27,void __cdecl (void),event,identified,Op 0x27: Env_InterpChannelFrames(1)
+0x0045FE40,Evt_OpPlayerBonus,void __cdecl (void),event,hypothesis,Op 0x2B (4 B): per player in state 5 above a threshold: 0x004156C0(i 0x00567990[...])
+0x0045FD90,Evt_OpSkippable,void __cdecl (void),event,identified,"Op 0x2C: arg != 0 -> 0x009A2D7C = 1, 0x009A2230 = 0; arg 0 -> 0x009A2D7C = 0, skip 0x009A2D74 = 0"
+0x0045FDD0,Evt_OpVoice,void __cdecl (void),event,identified,Op 0x2D: 0x00435B80((s16) arg)
+0x00435B80,Snd_PlayVoiceLine,void __cdecl (short id),audio,hypothesis,"Line table 0x0058B6B8 (+0x009C7000 offset outside game modes 10/11) -> sound 0x00589DB4[i*16], task 0x00435AA0; suppressed while skipping"
+0x0045FE00,Evt_OpStopSoundIfSkipping,void __cdecl (void),event,identified,Op 0x2E: if 0x009A2D74: Snd 0x80000002
+0x0045FE20,Evt_OpSet5C48,void __cdecl (void),event,identified,Op 0x2F: (s16) -> 0x009A5C48
+0x0045F900,Evt_OpCameraStartReady,void __cdecl (void),event,identified,"Op 0x32: yields until both players ready (0x00579CE0[state*5] or lives > 0), then like 0x31"
+0x0045F9F0,Evt_OpCameraSetState,void __cdecl (void),event,identified,"Op 0x33 (12 B): command state 0x009A1A10 = a, pending 0x009A2C8C += b"
+0x0045FA20,Evt_OpCameraRoll,void __cdecl (void),event,identified,Op 0x35: roll enable 0x009A21B0 = arg
+0x0045FA40,Evt_OpSet70F4,void __cdecl (void),event,identified,Op 0x36: 0x009C70F4 = arg
+0x0045FA60,Evt_OpRailForce,void __cdecl (void),event,identified,Op 0x37: 0x009CA098 = arg (rail always advances)
+0x0045F700,Evt_OpSound,void __cdecl (void),event,identified,Op 0x38: Snd_PlayGameSound(arg)
+0x0045F720,Evt_OpSoundRepeat,void __cdecl (void),event,identified,"Op 0x39 (16 B): 0x00435EE0(id, (s16) count, (s16) interval)"
+0x00435EE0,Snd_PlayRepeated,"void __cdecl (int id, short count, short interval)",audio,identified,"Plays now, task 0x00435E90 replays count-1 times every interval frames (stops while skipping)"
+0x0045F750,Evt_OpSoundNoSkip,void __cdecl (void),event,identified,Op 0x3A: sound unless skipping
+0x0045F780,Evt_OpSoundRepeatNoSkip,void __cdecl (void),event,identified,Op 0x3B: sound_repeat unless skipping
+0x0045FEC0,Evt_OpNop16,void __cdecl (void),event,identified,Op 0x3D: skip 16 B
+0x0045FEB0,Evt_OpNop8,void __cdecl (void),event,identified,Op 0x3E: skip 8 B
+0x0045FED0,Evt_OpNop4,void __cdecl (void),event,identified,Ops 0x3F/0x5B/0x5C: skip 4 B
+0x0045FA80,Evt_OpWaitQueue,void __cdecl (void),event,identified,"Op 0x40: yields while pending 0x009A2C8C != 0; with pending 0 continues in the same frame (if running 0x007DCCA4)"
+0x0045FB30,Evt_OpWaitFrames,void __cdecl (void),event,identified,"Op 0x42: counter 0x009C8904 = n on first call; continues on the (n+1)-th following frame"
+0x0045FBC0,Evt_OpWait7006,void __cdecl (void),event,identified,"Op 0x43: 0x009C7006 <= arg, running, camera settled 0x009C6F2D"
+0x0045FC10,Evt_OpWaitEnemies,void __cdecl (void),event,identified,"Op 0x44: live enemies 0x009C904A <= arg, running, camera settled, 0x007DCCA8 > 0 (failed checks)"
+0x0045FC80,Evt_OpWaitFlag,void __cdecl (void),event,identified,Op 0x45: flag 0x009C7200[arg] and running
+0x0045FCD0,Evt_OpWaitA0E8,void __cdecl (void),event,identified,"Op 0x46: 0x009CA0E8 <= arg, running, camera settled"
+0x0045FD20,Evt_OpWaitCameraReady,void __cdecl (void),event,identified,"Op 0x47 (4 B): running, (0x009C6F2F or 0x009C6F2D), 0x009CA93C == 0"
+0x0045FD70,Evt_OpSetFlag,void __cdecl (void),event,identified,Op 0x48: 0x009C7200[arg] = 1
+0x0045F3E0,Evt_OpPerPlayerLoadPol,void __cdecl (void),event,identified,"Op 0x49: skip 0x009C9118 lists, Res_RequestPolFile per entry, skip to -2"
+0x0045F470,Evt_OpPerPlayerUnloadPol,void __cdecl (void),event,identified,Op 0x4A: same with Res_RequestUnloadPolFile
+0x00408AE0,Evt_OpPerPlayerSpawn,void __cdecl (void),event,identified,Op 0x4B: same with Actor_SpawnRecord0B
+0x0045EEC0,Evt_OpStageReset,void __cdecl (void),event,identified,"Op 0x4D: camera reset (tick 0, 0x00403BB0(1,3), ticks remaining 0x7FFFFFFF, roll off ...), table 0x009A2BE0 defaults, scene log 0x009A5920"
+0x0045EFF0,Evt_OpHalt,void __cdecl (void),event,identified,Op 0x4E: yield forever (no advance)
+0x0045F3A0,Evt_OpLoadModel,void __cdecl (void),event,identified,Op 0x50: Res_RequestModel
+0x0045F3C0,Evt_OpUnloadModel,void __cdecl (void),event,identified,Op 0x51: Res_RequestUnloadModel
+0x0045F500,Evt_OpLoadPol,void __cdecl (void),event,identified,"Op 0x52: Res_RequestPolFile; game type 1 remaps 0xBE/0xBF by character (0x009A2242 / 0x009A2256)"
+0x0045F580,Evt_OpUnloadPol,void __cdecl (void),event,identified,Op 0x53: Res_RequestUnloadPolFile (same remap)
+0x0045F600,Evt_OpLoadTex,void __cdecl (void),event,identified,Op 0x54: Res_RequestTexFile
+0x0045F620,Evt_OpUnloadTex,void __cdecl (void),event,identified,Op 0x55: Res_RequestType7 (pairs with 0x54 in the scripts: texture unload)
+0x0045F640,Evt_OpLoadMot,void __cdecl (void),event,identified,Op 0x56: Res_RequestMotFile
+0x0045F660,Evt_OpRequestType9,void __cdecl (void),event,identified,Op 0x57: 0x0041D790
+0x0041D790,Res_RequestType9,void __cdecl (int id),fileio,identified,Queues request type 9
+0x0045F680,Evt_OpFlushAll,void __cdecl (void),event,identified,Op 0x58: Res_FlushRequests
+0x0045F690,Evt_OpFlushLt8,void __cdecl (void),event,identified,Op 0x59: 0x0041D9D0
+0x0041D9D0,Res_FlushLoadRequests,void __cdecl (void),fileio,identified,Processes queued requests of type < 8 and keeps the rest
+0x0045F6A0,Evt_OpFlush8To10,void __cdecl (void),event,identified,Op 0x5A: 0x0041DA70
+0x0041DA70,Res_FlushRequests8To10,void __cdecl (void),fileio,identified,Processes queued requests of types 8-10 and keeps the rest
+0x0045F6B0,Evt_OpSndLoadPack,void __cdecl (void),event,identified,Op 0x5D (12 B): 0x0041D3A0 (PC debug stub)
+0x0045F6E0,Evt_OpSndFreePack,void __cdecl (void),event,identified,Op 0x5E: 0x0041D3B0 (PC debug stub)
+0x0045F7C0,Evt_OpBgm,void __cdecl (void),event,identified,Op 0x5F (20 B): 0x0041D450
+0x0041D450,Snd_StartBgm,"void __cdecl (int a, int b, int id, int d)",audio,identified,"Snd 0x80000000 (stop), then Snd(id); debug string SS_Event_ENTRYBGM_BG_core"
+0x004022B0,Cam_Task,void __cdecl (void),camera,identified,"Camera task body: 0x009C6F2F = 0, mode function 0x00576B10[0x009C6F08], context functions 1-3, Cam_BuildViews (which commits 0x009C6F0C/14 -> 0x009C6F08/10)"
+0x00402300,Cam_StartTask,void __cdecl (void),camera,identified,Creates Cam_Task (0x34) and runs Cam_Init
+0x00402260,Cam_Init,void __cdecl (void),camera,identified,"Cam_ResetContexts, 0x00403BD0(1,1), queue indexes/pending 0, command state 0x009A1A10 = 2, context functions nop"
+0x004021D0,Cam_ResetContexts,void __cdecl (void),camera,identified,"4 contexts pos/target from 0x0059C990, active 0, 0x00403BD0(0,0), 0x009C6F2C/2D/6FD8 = 0, light/env reset"
+0x00402320,Cam_ProcessQueue,void __cdecl (void),camera,identified,"Calls ctx0 command, pops blocks from ring 0x009C9060 (read 0x009A34D0, write 0x009CA108) while command state 0x009A1A10 is 1 (now) or 2 (start, run next frame); type -> 0x005776EC[t>>4][t&15]; copies 8 words to ctx0+0x184. Verified by replay"
+0x004023D0,Cam_ModeEvent,void __cdecl (void),camera,identified,"Mode 1: Cam_ProcessQueue, then for sub 3 context 2 = copy of context 0"
+0x004023E0,Cam_ModeShoot,void __cdecl (void),camera,identified,Mode 2: Cam_ProcessQueue
+0x00403BB0,Cam_RequestMode,"void __cdecl (int mode, int sub)",camera,identified,"Requested mode/sub 0x009C6F0C / 0x009C6F14 + setup 0x00576C14[mode*9+sub]"
+0x00403BD0,Cam_SetMode,"void __cdecl (int mode, int sub)",camera,identified,Like Cam_RequestMode and also sets current 0x009C6F08 / 0x009C6F10
+0x004039D0,Cam_SetupEvent3,void __cdecl (void),camera,identified,"Mode 1 sub 3: active context 0x009C6F00 = 2, rail 0x0040C380, player functions"
+0x00403360,Cam_CmdSegment,void __cdecl (int ctx),camera,identified,"Block type 0x40 {start, end, cam, flags}: start == end -> Cam_CmdPose; flags & 2 -> Cam_CmdDefer; else Cam_CmdPlay"
+0x004033B0,Cam_CmdPose,void __cdecl (int ctx),camera,identified,Evaluates one tick (start) into the context; done
+0x00403490,Cam_CmdDefer,void __cdecl (int ctx),camera,identified,"Rail segment for the shooting camera: 0x009A2D78 = cam, 0x009C70AC = start (-1: tick+1), 0x009C70B0 = end, 0x009C70B8 = flags; done"
+0x00403510,Cam_CmdPlay,void __cdecl (int ctx),camera,identified,"Starts Cam_PlayStep at start (-1: continue; flags & 4: deferred start/end), end tick +0x148"
+0x004035E0,Cam_PlayStep,void __cdecl (int ctx),camera,identified,"(refined) tick 0x009A6110 = +0x144, evaluate, 0x009C6F28 = end - tick, +0x144 += 1, done at end (end-start+1 frames). Verified by replay"
+0x00403250,Cam_CmdWait,void __cdecl (int ctx),camera,identified,Block type 0x13: n frames (0x00403290); n = 0 -> 0x00420810 (never done)
+0x00403290,Cam_CmdWaitStep,void __cdecl (int ctx),camera,identified,Counts ctx+0x184 down; done at 0
+0x004032E0,Cam_CmdPreset,void __cdecl (int ctx),camera,identified,"Block type 0x20 {frames, pose}: pose 0x00576CF0[pose] (pos, target); 0x009C6F2D = 1; done after frames (0 = never)"
+0x00403710,Cam_CmdShoot,void __cdecl (int ctx),camera,identified,"Block type 0x21 {sub}: state 3, Cam_RequestMode(2, sub), 0x009A5900 |= 1, ctx0 fn = 0x00576B20[sub]; never done (op 0x31 ends it)"
+0x00403780,Cam_CmdPlayerFn,void __cdecl (int ctx),camera,identified,Block type 0x12: 0x009A5CE0 / 0x009A5E10 = 0x00579E90[arg]
+0x004037E0,Cam_CmdActiveContext,void __cdecl (int ctx),camera,identified,Block type 0x14: 0x009C6F00 = arg
+0x00403830,Cam_CmdPlayerBit,void __cdecl (int ctx),camera,identified,Block type 0x10: bit 0 of 0x009A5EBC / 0x009A5D8C = arg
+0x00403930,Cam_CmdSmooth,void __cdecl (int ctx),camera,identified,Block type 0x15: 0x009C6F33 = 1
+0x004038A0,Cam_CmdLookTable,void __cdecl (int ctx),camera,identified,"Block type 0x60 {t0, c0, t1, c1, t2, c2}: 0x009C6FD8 = 1, (tick, camera) per route branch 0x009C88A4 for 0x00403DB0"
+0x004036B0,Cam_CmdSetSub,void __cdecl (int ctx),camera,identified,"Block type 0x11: Cam_SetMode(requested mode, arg)"
+0x00403DB0,Cam_LookTableEval,void __cdecl (void* ctx),camera,identified,"(refined) 0x009C70BC / 0x009A2D78 from the look table entry 0x009C88A4; ctx+0x110 = tick; evaluates into the rail pose 0x009C70C0 / 0x009C70D8"
+0x00402460,Cam_ShootStart4,void __cdecl (int ctx),camera,identified,"Sub 4 start: Cam_ShootInit, players at the camera, rail look point (0,0,-30); fn = Cam_ShootStep"
+0x00402580,Cam_ShootStart6,void __cdecl (int ctx),camera,identified,Sub 6 start: Cam_ShootInit + look point; fn = Cam_ShootStep
+0x00402DB0,Cam_ShootStart7,void __cdecl (int ctx),camera,identified,"Sub 7 start: Cam_ShootInit, 0x009C6F2D = 1, state 0; fn = Cam_ShootFollowRail"
+0x00402E00,Cam_ShootFollowRail,void __cdecl (int ctx),camera,identified,"Context 0 = rail pose 0x009C70C0/D8; 0x009C6F2D = no lock-on target; tick = (int) 0x009C70BC"
+0x004031E0,Cam_ShootInit,void __cdecl (int ctx),camera,identified,"0x009C70BC = tick, active context 0, 0x009C6F2C/2D/2E/30/31/32 = 0, 0x009C6F28 = 0x7FFFFFFF, 0x009C6F36 = 0x200"
+0x00402650,Cam_ShootStep,void __cdecl (int ctx),camera,identified,"State 0x009C6F20 = 2 (no enemies 0x009C904A / 0x009C7006 and no lock-on) or 3; 6 if 0x009CA094; 7 if 0x009C6F30/32; dispatch 0x00576CBC; tick = (int) 0x009C70BC. Verified by replay"
+0x00402720,Cam_ShootReturn,void __cdecl (int ctx),camera,identified,State 2: 0x00576CE0[style 0x009C6F2E]
+0x00402740,Cam_ShootReturnTurn,void __cdecl (void),camera,identified,"Settled (0x009C6F2D): Cam_Evaluate into context 0. Else 0x00402E60 + 0x00402F80 (two evaluations), then signed cos^2 > 0.99999 -> settled"
+0x00402860,Cam_ShootReturnSnap,void __cdecl (void),camera,identified,"Style 1: settled at once, 0x00402E60 + 0x00402F80"
+0x00402E60,Cam_SmoothToRail,void __cdecl (void),camera,identified,"Cam_Evaluate(cam, tick) -> 0x009C6F90; context 0 position = (p + 15 pos) / 16"
+0x00402F80,Cam_TurnToRail,void __cdecl (void),camera,identified,"Cam_Evaluate(cam, tick) -> look-at 0x009C6FA8; target rotated by 0x00403C00 (step 0x00576C0C)"
+0x00402890,Cam_ShootTrack,void __cdecl (void),camera,identified,"State 3: position = rail (0x00402EF0), look-at from targets (0x00403050), rotate (0x00403C00); no Cam_Evaluate"
+0x00402EF0,Cam_FollowRailPos,void __cdecl (void),camera,identified,"Context 0 position = 0x009C70C0, smoothed 1/16 when 0x009C6F33"
+0x00403050,Cam_TargetLookAt,void __cdecl (void),camera,identified,"Look-at 0x009C6FA8 = mean of the lock-on slots' +0x100 positions (0x009A5EC0.. 4 x {u8 on, ptr}), or the rail look point 0x009C70D8 (0x0059C988 = 0)"
+0x00402A40,Cam_ShootMoveTo,void __cdecl (void),camera,identified,State 7: scripted move toward 0x009C6FC0 then 0x009C70C0 (sub-state 0x009C6F18)
+0x00403C00,Cam_RotateToward,"void __cdecl (float* pos, float* lookAt, float* target, float* out, int num, int den)",camera,hypothesis,Rotates the view direction toward the look-at point by num/(num+den) of the angle (matrix stack); not ported
+0x00401E60,Math_Lerp,"float __cdecl (float a, float b, int wb, int wa)",math,identified,(wb * b + wa * a) / (wa + wb)
+0x00401DF0,Math_SignedCos2,"float __cdecl (float ax, float ay, float az, float bx, float by, float bz)",math,identified,"dot^2 / (|a|^2 |b|^2), negated when dot < 0"
+0x00403B00,Cam_TurnStepFromAngle,void __cdecl (void),camera,hypothesis,0x009C6F36 = step table 0x00576C04[0x009C6F38][angle >> 7]
+0x0040C340,Rail_Reset,void __cdecl (void),camera,identified,"0x009C7080 = nop, player position 0x009C71E0..F4 = 0, 0x009C8E58 = 0"
+0x0040C370,Rail_Step,void __cdecl (void),camera,identified,jmp [0x009C7080]; called by task 0x00414F10 after the camera task
+0x0040C380,Rail_Event,void __cdecl (void),camera,identified,"Mode 1 sub 3: player position 0x009C71E0.. from the camera matrix and a (0, -15, 0) offset (exact frame not checked)"
+0x0040C430,Rail_StandStart,void __cdecl (void),camera,identified,"Sub 4: rail position 0x009C70C0 = context 0 position; then 0x0040C470: player position, 0x009C6F28 = -1"
+0x0040C4C0,Rail_LookStart,void __cdecl (void),camera,hypothesis,"Sub 5: player faces 0x009C7084; 0x0040C5C0 button-triggered 30-frame move"
+0x0040C770,Rail_MoveStart,void __cdecl (void),camera,identified,"Sub 6: 0x009C709C = 0x009C70AC; then 0x0040C790"
+0x0040C790,Rail_MoveStep,void __cdecl (void),camera,identified,"If 0x009C70AC < 0x009C70B0: += 1 when 0x009CA098 == 1 || 0x00413280() || (0x009C8E8C == 0 && 0x009C8E80 != 0); 0x009C70BC = tick; Cam_Evaluate -> rail pose; 0x009C6F28 = end - tick. Verified by replay"
+0x0040C8A0,Rail_MoveInclStart,void __cdecl (void),camera,identified,Sub 7: like 0x0040C770 with tick <= end (0x0040C8B0)
+0x00414F10,Rail_Task,void __cdecl (void),camera,identified,Task body jmp Rail_Step (task order after Cam_Task)
+0x00420810,Sys_Nop2,void __cdecl (void),debug,identified,Empty function (camera state 6 / block type 0x13 with 0 frames)
+0x00402710,Sys_Hang,void __cdecl (void),debug,identified,jmp $ (unused camera table entries)
+0x00413280,Game_IsNonInteractive,bool __cdecl (void),game,identified,"Game mode 5, 9, 10, 11, or 6 with sub-state 0x009C90A4 == 8"
+0x004608A0,Game_UpdateMode,void __cdecl (void),game,identified,"Per frame (Game_Update): Actor_InitTypeTable when sub-state 0, switch on game mode 0x009C8E98 (3 title, 4, 5 demo, 6 game, 7, 8, 9, 10, 11, 12, 15, 16), then 0x004067D0"
+0x0040E850,Mode_Request,void __cdecl (int mode),game,identified,0x007C17A0 = mode
+0x0040E860,Mode_Commit,void __cdecl (void),game,identified,"End of Game_Update: if 0x007C17A0 >= 0: 0x009C8E98 = it, sub-state 0x009C90A4 = 0, resets"
+0x0040E960,Mode_Next,void __cdecl (void),game,identified,"Mode_Request(0x005798F0[0x009C911E][mode]): 0->10, 3->9, 9->5, 5->11, 11->10, 10->3, 6->3, 7->3"
+0x0040E500,Game_UpdatePause,void __cdecl (void),game,hypothesis,"Pause toggle 0x009A1A00 (input history 0x007C1798..), PAUSE sprite 0x8E7/0x8E8"
+0x0040E980,Game_ClearPause,void __cdecl (void),game,identified,0x009A1A00 = 0 and pause input state cleared
+0x004043C0,Mode_CheckStart,void __cdecl (void),game,identified,"Start pressed (0x00404460) after > 2 frames: title -> mode 4; attract modes 5/9/10/11 -> title"
+0x00404380,Mode_ToTitle,void __cdecl (void),game,identified,Mode_Request(3) unless mode 15
+0x00426800,Mode_AttractDemo,void __cdecl (void),game,identified,"Game mode 5: demo table 0x00589828[0x009A3400] (20 B: event mode, scene, frames, key offset, bgm, -, bgm id, key file); Stage_Start(...,1); ends when 0x007DC90C == 0 -> next demo, Mode_Next"
+0x00426960,Demo_TimerTask,void __cdecl (void),game,identified,"0x007DC910 -= 1; < 4 -> 0x007DC90C = 0"
+0x00426980,Demo_LoadKeys,void __cdecl (void),game,identified,"(refined Res_LoadEtc) Reads etc\<key file> (PRS) into 0x009A2228 (+offset): recorded demo input"
+0x00460030,Stage_Start,"void __cdecl (void** task, int demo)",game,identified,"Resets, preloads, flushes requests, creates the stage task 0x00460710, Rail_Reset, Stage_ResetState"
+0x00460710,Stage_Task,void __cdecl (void),game,identified,"Creates in order: Evt_Init, Env_InitInterp, Cam_StartTask, 0x004134D0, 0x00414F20, 0x00414ED0, 0x00414FB0, 0x00413950, 0x004809D0, 0x00401470, 0x004138A0, 0x00408D90, 0x00409080, 0x00404480, Demo_TimerTask (mode 5)"
+0x004606D0,Stage_RunTasks,void __cdecl (void** task),game,identified,"Runs the stage task's children (0x004A7240), 0x004607B0, counters 0x009C8E08.."
+0x0041F9B0,Mode_Adv,void __cdecl (void),game,hypothesis,"Game mode 10: event mode 10 (advevtbl), scene 0, task 0x0041FAB0; ends on 0x009C71C0 (Stage_End) -> Mode_Next"
+0x0041FB00,Mode_Adv2,void __cdecl (void),game,hypothesis,Game mode 11: event mode 11 (adv2evtbl)
+0x004996C0,Mode_09,void __cdecl (void),game,hypothesis,"Game mode 9: event mode 8 (no stage table), task 0x00499F90 (instructions/how to play?)"
+0x00495EB0,Mode_Title,void __cdecl (void),game,hypothesis,Game mode 3 (title)
+0x00496200,Mode_04,void __cdecl (void),game,hypothesis,Game mode 4 (after start on the title)
+0x0045FEE0,Mode_Game,void __cdecl (void),game,identified,Game mode 6: sub-state handler 0x005679A8[0x009C90A4]
+0x00414FC0,Player_TryJoin,"int __cdecl (void* player, int arg)",game,hypothesis,Credit/start check (0x00413230 0x00406DC0); Mode_Request(6) when not in game
+0x0040A920,Game_ResetAll,void __cdecl (void),game,identified,"Boot-time reset (from Game_InitData): game mode 0 (Mode_Next -> 10), players, camera mode 0, Evt_LoadCommonTable"

@@ -1,0 +1,20 @@
+# Stage 1 gameplay demo (attract frames 2788+), built from game data:
+#   level chunks  <- stage section table (stage 0 = stage 1), section 7 selected by st1evtbl.bin ops 0x28/0x29
+#   camera        <- st1evtbl.bin op 0x30 type-64 blocks: camera 42, ticks 0..90, 91..300, 301..315
+#   sky models    <- st1evtbl.bin op 0x50 load requests 6048 / 6911 (sky = st1_1.bin, follows the camera)
+# Time axis = camera ticks. The original holds the camera between blocks while the script waits on gameplay
+# (frames 2880-3030 in the reference capture); that hold is not modelled here.
+# Sky 6048 rotation/scale parameters are the fitted values from the title capture (hypothesis).
+# Not included yet: props (komono_*), enemies, stage1.bin particles, common.bin effects. 2D: PRESS START only.
+camera 42
+stage 0 section 7
+# Environment (light angles, light colour, fog) executed from the script itself: st1evtbl.bin ops 0x18 / 0x20 at
+# 0x0097A224..0x0097A28C (frame 2788 of the reference run), via game::Environment. Verified with env_test against
+# the original's captured states: light direction (877 states), AMBIENT 0xB2B2B2 / diffuse 0.98 / ambient 0.3
+# (2,671 states), fog LINEAR 78..522 colour 0x292818.
+env st1evtbl.bin 0x0097A208 0x0097A28C
+# 2D: PRESS START (0x004067D0). Phase traced: counter = boot frame counter 0x009A5C40 = capture frame + 1 (see title scene).
+overlay press_start phase 1
+# Sky: Sky_Task 0x004132D0 type 4 (event op 0x1B), yaw = 4 * (frame - 2787), S(1.2,1.2,-1.2) (traced by the effects agent;
+# replaces the earlier fitted 'sky 6048 scale 1.2 yaw 4322 yaw_per_frame 4', which was wrong).
+sky_task 4 2787

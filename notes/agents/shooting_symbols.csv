@@ -1,0 +1,78 @@
+address,name,signature,subsystem,status,notes
+0x00415710,Player_UpdateAim,"void __cdecl (Player* player, GunRecord* rec)",shooting,identified,"Attract-demo auto-gun when 0x009C71C4==1 (state 5): roll rand()%60 < (0x009C7006 live enemies ? 6 : 1); aim x=(rand()%150)*2-150, y=(rand()%100)*2-100; no-fire stores the record pointer's low word as aim. Then player+0x18=0, +0x10/+0x14 = (float)rec+4/+6. Replayed 513/513 frames (shooting_test). Ported: DemoAutoGun"
+0x00414940,Player_Trigger,void __cdecl (Task* playerTask),shooting,identified,"Normal weapon: fired && valid && ammo && 0x009C8E00 -> ammo-- (not state 5 / infinite 0x009C9FD9), pending player+0x18=1, Shot_BuildRay, Shot_SpawnTracer, sound 0x004EC8BC[p]; gun off screen with ammo!=6 -> Player_Reload; pad reload button. Ported decision: PlayerTrigger"
+0x00414B90,Player_TriggerSpecial,void __cdecl (Task* playerTask),shooting,hypothesis,"Mode 0x009CA08C==1 weapons (0x009A2240+p*0x14): cooldown/burst tables 0x00579EDD, rand spread (+-63/+-47 px) for weapon 1"
+0x00414B30,Player_Reload,void __cdecl (Task* playerTask),shooting,identified,"ammo=6 (or weapon ammo in mode 1), empty flag 0, sound 0x3E16A9 when 0x009C8E00"
+0x00414E40,Player_ReloadSpecial,void __cdecl (Player* player),shooting,hypothesis,Special-weapon reload (0x00416420); weapon sound 0x004EC9C0
+0x00413E90,Player_Task,void __cdecl (Task* playerTask),shooting,identified,"Per player (task +0x34 = p): state callbacks +0x7C/+0x80, forces lives=1 in state 5, Player_Trigger/Special if lives>0, Hud_UpdateCrosshair, HUD; first rand consumer of a frame"
+0x004156C0,Player_AddScore,"void __cdecl (int player, int points)",shooting,identified,"player+0x0C += points (x2 for mode-1 weapon 2), clamped >= 0"
+0x00415630,Player_AddLife,int __cdecl (int player),shooting,identified,lives +1 up to 0x009A2440 (mode 1: 0x009A2245) else +300 points
+0x00415080,Player_SetState,"void __cdecl (short state, int setFn, Task* playerTask)",shooting,identified,player+0x02 = state; task fn = 0x00579CD0[state*5] when setFn
+0x00406110,Shot_BuildRay,"void __cdecl (int player, float x, float y)",shooting,identified,"Block 0x009A2CB8+p*0x68: view dir normalize(x,y,-F) (+0x3C), world origin/dir via camera matrix 0x009A6040+ctx*0x1A4, -pitch/-yaw and sin/cos at +0x18..+0x2C. F = 0x009A2D70. Ported: MakeShotRay"
+0x004062A0,Shot_RayDistance,"int __cdecl (int player, float x, float y, float z, float r)",shooting,identified,"1 if the view-space point is within r of the shot line, else -1. Ported: ShotRayDistance; verified 7/7 enemy hits + 1/1 prop hit"
+0x00416F70,Shot_SpawnTracer,int __cdecl (Task* playerTask),shooting,hypothesis,"Fills per-player ring records (6 each, index 0x009CA09C) at 0x009A2960 (screen dir), 0x009A2460 (world point + velocity), 0x009A2700 (mode 1 weapons)"
+0x00404480,Hit_Init,void __cdecl (void),shooting,identified,"Coll_Init, creates the hit task (fn 0x004044A0 -> body 0x00404570, size 0x34), clears target/hit lists"
+0x00404570,Hit_Task,void __cdecl (Task*),shooting,identified,"Not a Ghidra function (entry jmp at 0x004044A0). Per player with shot pending: test all targets (0x00404A00 / 0x00404630), Hit_TestLevel, Hit_Deliver; hit flag 0x009C9010[p]; then Hit_CopyTargets and count 0"
+0x00405160,Hit_RegisterTarget,void __cdecl (Object* obj),shooting,identified,"Skip if +0x34&0x8000; needs flag 0x10 or view z (+0x78) <= 0. Entry {obj, +0x34, +0x12C,+0x130,+0x134 (world collision centre)} at 0x0059D8E8, count 0x005A4C80; flag 0x10: +0x150 *= camera matrix. Ported predicate: IsShotTarget"
+0x00405360,Hit_CopyTargets,void __cdecl (void),shooting,identified,"0x0059D8E8 -> 0x005A3098 (object-object collision list, count 0x0059D8E4)"
+0x00405220,Hit_RemoveTarget,void __cdecl (Object* obj),shooting,identified,Clears obj's entry in the copied list 0x005A3098
+0x00404630,Hit_TestObjectSphere,"void __cdecl (Object* obj, int player)",shooting,identified,"Sphere (+0x70, r +0x124); flag 0x80 skeleton -> Hit_TestSkeleton; else entry with key ftol(-z*10)"
+0x00404700,Hit_TestSkeleton,"void __cdecl (Object* obj, int player)",shooting,identified,Walks skeleton 0x004E0430[obj+0x1F4] children with Hit_TestNodeRecursive (sets 0x009A26A0)
+0x00404750,Hit_TestNodeRecursive,"void __cdecl (SkelNode* node, int player)",shooting,identified,"Active node records (obj+0x20C+slot*0x90): flag 0x10 -> Hit_TestNodeMesh (mesh +0x88 != -1), else Hit_TestNodeSphere"
+0x004047D0,Hit_TestNodeSphere,"void __cdecl (SkelNode* node, int player)",shooting,identified,"Node view pos rec+0x68..+0x70, radius rec+0x78 (skipped if 0), key ftol(-z*10), entry flags = rec+0x74"
+0x004048A0,Hit_TestNodeMesh,"void __cdecl (SkelNode* node, int player)",shooting,identified,Node matrix (rec+0x28) x camera -> 0x0059D898; mesh rec+0x88; Hit_RayVsMesh; entry flags | 0x40
+0x00404A00,Hit_TestObjectMesh,"void __cdecl (Object* obj, int player)",shooting,identified,"Matrix +0x150, mesh +0x14C; normal rotated by obj angles +0x64..+0x6C; Hit_AddMeshHit"
+0x00404AD0,Hit_RayVsMesh,void __cdecl (int player),shooting,identified,"World segment origin -> origin + 1000*dir (0x004C49C4) -> Coll_SegmentVsMesh"
+0x00404B50,Hit_AddMeshHit,void __cdecl (Object* obj),shooting,identified,entry obj/flags|0x40 then Hit_AddPointHit
+0x00404B80,Hit_TestLevel,void __cdecl (int player),shooting,identified,"Segment vs level collision meshes 0x009C7040[count task 0x009C701C+0x60] and 0x009CA0C0[+0x61]; Hit_AddLevelHit"
+0x00404C80,Hit_AddLevelHit,void __cdecl (void),shooting,identified,entry obj = 0 flags = 0 then Hit_AddPointHit
+0x00404CB0,Hit_AddPointHit,void __cdecl (void),shooting,identified,"Entry from hit point 0x009CAC54/58/50, normal 0x009CAC64.., material 0x009CAC40; key = ftol(-viewZ(hit)*10); flags |= 0x10"
+0x00404DB0,Hit_Deliver,void __cdecl (int player),shooting,identified,"Nearest entry: obj+0x34 |= (2<<p)|8, obj+0x190+p = node slot (0x20 node) or 1; node flags; with hit point -> Hit_RecordImpact; mode 1 weapon 3 -> effect 0x53"
+0x00405080,Hit_SortByDepth,void __cdecl (void),shooting,identified,"Stable LSD radix sort (2 passes of 8 bits = key bits 0-15) of {key,index} 0x0059ECD8 via 0x005A4488. Ported: SortHitKeys"
+0x00405260,Hit_RecordImpact,void __cdecl (int player),shooting,identified,"0x009A2C40+p*0x1C = {point, material, normal}; Fx_SpawnAt(point, material, material in {5,0x37}, p)"
+0x00404F60,Coll_SegmentVsMesh,"void __cdecl (float* end, float* start)",collision,identified,"Inverse of 0x0059D898 applied to both points, 0x004AAA40(start,end,mesh 0x005A4C88); hit point back to world"
+0x004AAA40,Coll_SegmentVsMeshId,"int __cdecl (float sx,float sy,float sz,float ex,float ey,float ez,int mesh)",collision,hypothesis,"Sets 0x009CAC40 material, 0x009CAC50.. point, 0x009CAC64.. normal; callers 0x00404B80, 0x00404F60, 0x004053B0"
+0x004053B0,Coll_SegmentVsObjects,"int __cdecl (float sx,float sy,float sz,float ex,float ey,float ez)",collision,hypothesis,Segment vs flag-0x10/0x40 objects of 0x005A3098 and level meshes
+0x004057F0,Coll_SphereVsObjectMeshes,"int __cdecl (float* centre, float r)",collision,hypothesis,"Used by Enemy_PushOut; result 0x009CAC4C depth, 0x009CAC64 normal"
+0x00405B10,Coll_SphereVsObjects,"int __cdecl (float* centre, float r)",collision,hypothesis,Sphere vs object spheres (list words +8..+0x10 centre; radius obj+0x128); used by Enemy_PushOut
+0x00405FE0,Coll_Init,void __cdecl (void),collision,hypothesis,Creates the level-collision task (0x00406010; 0x009C701C) and resets mesh lists
+0x00405F90,Coll_ResetLevelMeshes,void __cdecl (void),collision,hypothesis,Counts +0x60/+0x61 = 0; 0x009C7040/0x009CA0C0 = -1 (8 each)
+0x00409B70,Actor_RegisterShootable,void __cdecl (float yOffsetAfter),shooting,identified,"Current obj 0x009A26A0: +0x70..+0x78 = view x (+0x100..+0x108), Hit_RegisterTarget, +0x104 += arg"
+0x00453EB0,Enemy_HandleShot,void __cdecl (Object* enemy),enemy,identified,"If +0x34&8: Enemy_TakeShots; per shooter with damage: hit kind 0x009A58F8[p], Enemy_HitReaction, voice, death state (+0x1310 = 6/9)"
+0x004092F0,Enemy_TakeShots,void __cdecl (void),enemy,identified,"Enemy_ShotOrder; per player bit (2<<p): node 0x009A2D88[p] = obj+0x190+p, Enemy_ApplyDamage unless +0x34&0x100; clears shot bits"
+0x004093C0,Enemy_ShotOrder,void __cdecl (void),enemy,identified,"0x009C8908/0C = processing order from 0x009C7000 (0 P1, 1 P2, 2 both: rand()&1 at ret 0x004093E2)"
+0x00409430,Enemy_ApplyDamage,void __cdecl (int player),enemy,identified,"Zone/part tables 0x004C7160[skel], damage 0x004C8350[skel] (+0x004D0D84 bonus), HP +0x11C; dead flag 0x4000000 + 80 pts; slot 2: +120 + streak (player+0x22 += 10), else +10; hits player+0x26"
+0x004098C0,Enemy_SubtractHp,void __cdecl (short damage),enemy,identified,obj+0x11C -= damage unless +0x34 & 0x1000
+0x0040A6F0,Enemy_PlayVoice,"void __cdecl (Object* enemy, char kind)",enemy,identified,"0 hurt (rand ret 0x0040A737), 1 death (0x0040A778), 2 death slot 2 (0x0040A7B9), 3, 4"
+0x00454050,Enemy_HitReaction,void __cdecl (int player),enemy,hypothesis,"Per hit kind: effects 0x00407340 types 2/3/0x51 at the node, knock-back 0x00407310, sounds"
+0x00454900,Enemy_PushOut,void __cdecl (void),enemy,hypothesis,Enemy-vs-object separation with Coll_SphereVsObjects / Coll_SphereVsObjectMeshes (not damage)
+0x004533F0,Enemy_Task,void __cdecl (Object* enemy),enemy,identified,"Enemy actor body: Enemy_HandleShot, state fn 0x00592AE8[+0x1310], Actor_RegisterShootable(4.0), callbacks"
+0x0040CBB0,Gun_UpdateRecords,void __cdecl (void),input,identified,"Shot input 0x009C8800 -> gun records 0x009C8FC0+p*0x28 (calibrated centred aim +4/+6, valid +0x10, fired +0x14); pad: Gun_MovePadCursor; mode 6 fixed calibration"
+0x0040CB10,Gun_ResetRecords,void __cdecl (void),input,identified,Clears aim/fired; copies calibration from 0x009C9FB8/0x009C9FC8 + p*0x7C by 0x009C911C
+0x0040CFE0,Gun_MovePadCursor,"void __cdecl (int player, float speed)",input,identified,"Pad/keyboard float cursor (x2 with button), clamp +-320/+-240, button 0x009C9028"
+0x0040D3E0,Gun_CalibrateClamped,"int __cdecl (int raw, short* cal, short* out, int min, int max, int* ok)",input,identified,Gun_Calibrate then range check (0 and ok=0 outside)
+0x0040D4F0,Gun_Calibrate,"int __cdecl (int raw, short* cal, short* out)",input,identified,"Piecewise linear through 3 points, raw -= cal[3] (+0x009A6694 if negative). Ported: GunCalibrate"
+0x0040D980,Player_GetInputKind,int __cdecl (int player),input,identified,"-1 none, 0 gun (+0x125==1), 1/2/3 pad variants from +0x124"
+0x0040D890,Input_SlotToPlayer,int __cdecl (int slot),input,identified,"slot 0 -> 0, 6 -> 1, else -1"
+0x0040D220,Gun_ClearCursors,void __cdecl (void),input,identified,Zeroes the pad cursors of all gun records
+0x0040E860,Game_ApplyState,void __cdecl (void),game,identified,"Pending state 0x007C17A0 -> 0x009C8E98; demo flag 0x009C71C4 = (state == 5); resets counters; players to 9 outside states 6/7"
+0x00413950,Letterbox_Start,void __cdecl (void),hud,identified,Creates Letterbox_Task (0x58)
+0x00413970,Letterbox_Task,void __cdecl (Task*),hud,identified,"State 0x009CA0F4 (table 0x00413C80): bars (model 0x93E at y +-0.35) and 0x009C8E00 = shooting allowed"
+0x004174A0,Hud_DrawLives,uint __cdecl (Task* playerTask),hud,identified,Life torches (sprites 0x6C2/0x6CA animated) from player+0x06 while 0x009CA0F4 == 2
+0x004177D0,Hud_DrawAmmo,void __cdecl (Task* playerTask),hud,identified,Bullets (sprite 0xA74) from player+0x1C
+0x00407340,Fx_SpawnAt,"void __cdecl (float* pos, int type, int faceCamera, int player)",effect,identified,Packs a 0x30-byte request and calls Fx_Spawn
+0x004073B0,Fx_Spawn,void __cdecl (float* req),effect,identified,"Task 0x00407A70 (0x68): pos, angles (face camera), type +0x5C -> model range +0x60..+0x64 and scale (0x61/0x62 water splash models 0x1339..0x1356, scale 1 / 1.5)"
+0x00407A70,Fx_Task,void __cdecl (Task*),effect,identified,"Draws model +0x60 at pos/angles/scale, +0x60++ each frame, ends after +0x64 (0x61: 29 frames)"
+0x00407BC0,Fx_SpawnFacingCamera,"void __cdecl (float* pos, char type)",effect,identified,Like Fx_Spawn for types 0x5A-0x5D (0x5A spawns 0x5B/0x5C/0x5D)
+0x00433AC0,Actor_SplashOnce,void __cdecl (Task*),actor,identified,"Event actor kind 3 (0x00432FF0): Fx_SpawnAt(pos, 0x62) then ends; the stage-1 demo's 2830 splash"
+0x00465FB0,Prop_BreakableTask,void __cdecl (Object* prop),actor,hypothesis,"Breakable prop (radius 6): on +0x34&8 and +0x32C==0 -> sound, +0x32C=1, debris 0x004666B0 (task 0x004667A0); verified 1 hit in the demo"
+0x004ABE60,Crt_RandThunk,int __cdecl (void),crt,identified,jmp crt rand 0x004ADED2 (game code calls rand through it)
+0x004AAA00,Vec_Normalize,"void __cdecl (const float* in, float* out)",math,identified,out = in / |in|
+0x004ACF50,crt_ftol,__int64 __cdecl (void),crt,identified,"x87 truncation (fistp with RC=chop)"
+0x009C71C4,g_demoAutoGun,int,shooting,identified,"1 in the attract demo (state 5)"
+0x009C7006,g_liveEnemies,short,enemy,identified,Live-enemy counter; selects the demo fire rate
+0x009C8E00,g_canShoot,int,shooting,identified,Shooting allowed (letterbox open)
+0x009A2D70,g_focalLength,float,render,identified,"240/tan(halfFov 0x004ED1D0) = 640.2079"
+0x009A5C60,g_players,Player[2],shooting,identified,"Stride 0x130: +6 lives, +0xC score, +0x10/+0x14 aim, +0x18 pending, +0x1C ammo"
+0x009C8FC0,g_gunRecords,GunRecord[2],input,identified,"Stride 0x28: +4/+6 centred aim, +0x10 valid, +0x14 fired"
+0x0059D8E8,g_shotTargets,TargetEntry[],shooting,identified,"5 words {obj, flags, world centre xyz}; count 0x005A4C80"

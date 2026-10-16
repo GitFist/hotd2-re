@@ -1,0 +1,4 @@
+[submodule "src/hook/third_party/Detours"]
+	path = src/hook/third_party/Detours
+	url = https://github.com/microsoft/Detours.git
+	ignore = dirty

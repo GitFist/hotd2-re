@@ -1,0 +1,26 @@
+# Title flythrough: attract demo frames ~607-1086, camera 29 (cam\cp_title.bin), stage 1 courtyard.
+# Derived from game\scene_capture.txt (HOTD2_SCENECAP=1) - which models the original drew and how they
+# were placed relative to the camera (notes/progress.md, Milestone 8). Not yet loaded from the game's own
+# stage/event tables.
+#
+# camera <id>                       camera path (time = frames since the camera started)
+# static <modelId>                  drawn at identity world (confirmed: 100% of single-camera frames)
+# sky <modelId> [scale S] [yaw A0] [yaw_per_frame R]
+#                                   translated to the camera position every frame (confirmed); the optional
+#                                   rotation/scale of model 6048 is FITTED from the capture (hypothesis:
+#                                   ~4 engine angle units per frame), not traced in code.
+camera 29
+static 6139
+static 6091
+static 6093
+# Environment: defaults (no env ops run during the title). Captured: light direction (0,0,1) world = env angles 0, 0
+# (639 states), AMBIENT 0xB2B2B2 / diffuse 0.98 / ambient 0.3, fog start 131070 (none). See game::Environment.
+env default
+# 2D: Title_DrawLogo 0x004960A0 and PRESS START 0x004067D0 (both traced). Blink phase TRACED: the counter 0x005A4D44 equals the
+# boot frame counter 0x009A5C40 (HUD_Init 0x004066D0 runs once at boot), which is capture frame + 1 when the HUD draws.
+overlay title
+overlay press_start phase 1
+# Sky: Sky_Task 0x004132D0 type 0 (12/frame). Sky_Create 0x004134D0 leaves the yaw uninitialised, so the title starts from
+# leftover memory; 180687068 at frame 608 reproduces the 479 captured title frames (HYPOTHESIS, notes/agents/effects.md).
+# The large value makes the float angle conversion snap to 1/512-rad steps, like the original.
+sky_task 0 608 180687068
