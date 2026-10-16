@@ -10,6 +10,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# SDL assertions may otherwise embed absolute build-machine source paths.
+# Apply before FetchContent so the bundled SDL library gets the same settings.
+# Keep function names and line numbers for diagnostics, without local filenames.
+add_compile_definitions("$<$<CONFIG:Release>:SDL_FILE=\"\">"
+                        "$<$<CONFIG:Release>:SDL_ASSERT_FILE=\"\">")
+
 # SDL3: platform layer of the native port (window, events, clock, keyboard / mouse / touch, audio, SDL_GPU renderer).
 # Default: FetchContent of the pinned official release tarball. Offline: -DFETCHCONTENT_SOURCE_DIR_SDL3=<SDL3 source dir>
 # (an extracted SDL3-3.4.18 release), or -DHOTD2_SDL3_SYSTEM=ON to use an installed SDL3 (find_package CONFIG).

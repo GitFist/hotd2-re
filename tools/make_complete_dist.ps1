@@ -1,7 +1,7 @@
 # Build a self-contained local multiplayer package from the extracted game data.
 # Game material stays under ignored build output and is never added to source control.
 # Run: powershell -File tools/make_complete_dist.ps1 [-Out build\dist-complete]
-param([string]$Out = "build\dist-complete", [string]$Exe = "build\src\port\Release\hotd2.exe", [string]$SourceRoot = "")
+param([string]$Out = "build\dist-complete", [string]$Exe = "build\src\port\Release\hotd2.exe", [string]$SourceRoot = "", [string]$Python = "python")
 
 $ErrorActionPreference = "Stop"
 $repoDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
@@ -26,6 +26,10 @@ $buildLabel = $buildMatch.Groups[1].Value
 # Refuse to label an older executable with the version from newer source.
 $exeText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exePath))
 if (-not $exeText.Contains($buildLabel)) { throw "Executable build label does not match source. Rebuild hotd2 first." }
+
+$privacyChecker = Join-Path $PSScriptRoot "check_release_privacy.py"
+& $Python $privacyChecker $exePath
+if ($LASTEXITCODE -ne 0) { throw "Executable failed the release privacy check." }
 
 # The extraction manifest selects the actual game content, excluding captures, logs,
 # screenshots, local saves, and other development files subsequently written to game\.
@@ -205,6 +209,8 @@ $checksums | Set-Content -LiteralPath (Join-Path $packageDir "SHA256SUMS.txt") -
 Write-Output "Verified and staged $($gameEntries.Count) game files. Compressing package..."
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($packageDir, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
+& $Python $privacyChecker $zipPath
+if ($LASTEXITCODE -ne 0) { throw "Package failed the release privacy check. Do not publish it." }
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Set-Content -LiteralPath ($zipPath + ".sha256") -Encoding ascii
 Get-Item -LiteralPath $zipPath | Select-Object FullName, Length, LastWriteTime

@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -166,6 +168,7 @@ def main():
         if z.read(sums.name) != sums.read_bytes():
             raise ValueError("ZIP checksum manifest mismatch")
     sha = digest(archive)
+    subprocess.run([sys.executable, str(Path(__file__).with_name("check_release_privacy.py")), str(archive)], check=True)
     write_text(archive.with_suffix(".zip.sha256"), f"{sha}  {archive.name}\n")
     result = {"archive": archive.name, "size": archive.stat().st_size,
               "sha256": sha, "textures": len(textures), "menu_images": len(bmp_files),

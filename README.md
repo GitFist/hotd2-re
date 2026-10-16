@@ -135,6 +135,8 @@ cmake --build build --config Release --target pause_menu_test network_room_test 
 
 `python tools/make_graphics_dist.py --source remaster --out build/dist-graphics-2x` packages an existing local remaster asset set as the optional 2× add-on (Python 3.10+ and Pillow). It validates image dimensions, makes 2× copies of larger menu tiles, and verifies the ZIP against SHA-256 file hashes. The output directory must be new. Source assets and generated packages remain outside Git.
 
+Release builds omit SDL's local source filenames from assertion messages. Both complete-game and graphics packaging run `tools/check_release_privacy.py` to reject personal home-directory paths, credential patterns, debug files, saves, and rejoin tickets. Run it directly on an executable or ZIP before publishing other packages. Use `--forbid` for additional private identifiers without committing those values. This safeguard does not replace reviewing package contents. Its regression checks are `python tests/release_privacy_test.py`.
+
 ## License and credits
 
 The project's original code is available under the [MIT license](LICENSE). This license does not apply to Sega's game, assets, executable, trademarks, or other third-party material. Bundled game data is separate from the MIT-licensed source.
