@@ -100,6 +100,7 @@ public:
     // Camera position/target/angles of the last Build (for logging and comparisons).
     float pos[3] = {}, target[3] = {};
     game::Mat4 view;  // game view matrix of the last Build (pass-1 depths)
+    game::Mat4 projection;  // camera -> clip of the last Build (DeviceView, projection, screen shift)
     int pitch = 0, yaw = 0;
 
 private:

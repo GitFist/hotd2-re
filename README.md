@@ -46,6 +46,7 @@ Connections use a direct route when available, with an automatic server relay fa
 | Fire / select | Left click or gun trigger |
 | Reload | Right click or gun reload button |
 | Confirm / start | Enter |
+| Skip ending credits | Left click, gun trigger, or Enter |
 | Pause / resume | Esc |
 | Navigate menus | Arrow keys, mouse, or gun aim |
 | Back | Esc or Backspace |

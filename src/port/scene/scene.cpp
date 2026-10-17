@@ -579,7 +579,8 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     game::Mat4 shift = game::Mat4::Identity();
     shift.m[12] = cx * 0.0031250000465661287f - 1.0f;  // 0x004ED1DC
     shift.m[13] = 1.0f - cy * 0.004166666883975267f;   // 0x004ED1D8
-    return view * game::DeviceView() * game::DeviceProjection() * shift;
+    projection = game::DeviceView() * game::DeviceProjection() * shift;
+    return view * projection;
 }
 
 game::Mat4 Scene::Build(ModelRenderer& renderer, float t, int frame) {
@@ -644,7 +645,8 @@ game::Mat4 Scene::Build(ModelRenderer& renderer, float t, int frame) {
     for (const auto& s : def_.skies) itemIds_.push_back(s.modelId);
     for (int id : staticIds_) itemIds_.push_back(id);
     renderer.SetScene(*assets_, items);
-    return view * game::DeviceView() * game::DeviceProjection();
+    projection = game::DeviceView() * game::DeviceProjection();
+    return view * projection;
 }
 
 std::vector<ModelRenderer::SpriteDraw> Scene::BuildSprites(int frame) {

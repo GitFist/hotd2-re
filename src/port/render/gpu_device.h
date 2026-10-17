@@ -18,6 +18,12 @@
 
 namespace port {
 
+// The GPU stores reversed depth (near 1, far 0), while game materials keep D3D7 comparisons.
+inline int ReversedDepthCompare(int comparison) {
+    constexpr int reversed[9] = {0, 1, 5, 3, 7, 2, 6, 4, 8};
+    return reversed[comparison];
+}
+
 struct RgbaImage;
 
 using GpuTexture = uintptr_t;  // backend handle, 0 = none
@@ -41,6 +47,8 @@ constexpr int kMaxLocalLights = 8;
 struct ModelConstants {
     float viewProj[16];
     float world[16];
+    float modelView[16];  // model -> camera, kept separate from projection for depth precision
+    float projection[16];
     float lightDir[4];
     float diffuse[4];
     float flags[4];       // x: textured, y: unlit, z: alpha-test threshold (<0 off), w: alpha source (1 tex*mat, 2 tex)
@@ -49,7 +57,7 @@ struct ModelConstants {
     float litAmbient[4];  // light ambient + AMBIENT render state (rgb)
     float fogParams[4];   // x: FOGSTART, y: FOGEND, z: 1 = fog on for this material
     float fogColor[4];
-    float localCount[4];  // x: number of local lights, y: normal transform (0 renormalised, 1 WORLD, 2 inverse transpose)
+    float localCount[4];  // x: local lights, y: normal transform (0 normalised, 1 WORLD, 2 inverse transpose), z: split projection
     float matSpecular[4]; // material specular rgb, w: power (0: no specular; Mdl_Draw: words 16..18, 1 << word 9)
     float litSpecular[4]; // light 0 specular rgb (= its diffuse, 0x004AA120); SPECULARENABLE is on (0x004A7630)
     float eyePos[4];      // camera position, world space (D3DRENDERSTATE_LOCALVIEWER default TRUE)
@@ -114,7 +122,7 @@ public:
     virtual void SetDynamicVertices(const game::ModelVertex* v, size_t count) = 0;
     virtual void SetSpriteVertices(const game::TLVertex* v, size_t count) = 0;
 
-    // Frame: BeginFrame binds the target and clears colour (RGBA) and depth (1.0); Submit draws (may be called several
+    // Frame: BeginFrame binds the target and clears colour (RGBA) and reversed depth (0.0); Submit draws (may be called several
     // times); EndFrame presents (window) or finishes (off-screen).
     virtual bool BeginFrame(const float clear[4]) = 0;
     virtual void Submit(const GpuDrawList& list) = 0;

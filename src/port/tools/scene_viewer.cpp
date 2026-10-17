@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
         if (simple) renderer.DrawWithMatrix(width, height, vp.m, !lit);
         else {
             const auto sprites = no2d ? std::vector<port::ModelRenderer::SpriteDraw>() : scene.BuildSprites(frame >= 0 ? frame : static_cast<int>(time));
-            renderer.DrawGame(width, height, vp.m, &scene.lighting, nofog ? nullptr : &scene.fog, scene.view.m, &sprites, &scene.itemLights);
+            renderer.DrawGame(width, height, vp.m, &scene.lighting, nofog ? nullptr : &scene.fog, scene.view.m, &sprites, &scene.itemLights, scene.projection.m);
             if (dumpPass1) {
                 printf("pass1 %zu", renderer.lastPass1.size());
                 for (const auto& e : renderer.lastPass1) {
@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
         if (simple) renderer.DrawWithMatrix(width, height, vp.m, !lit);
         else {
             const auto sprites = no2d ? std::vector<port::ModelRenderer::SpriteDraw>() : scene.BuildSprites(frame >= 0 ? frame++ : static_cast<int>(time));
-            renderer.DrawGame(width, height, vp.m, &scene.lighting, nofog ? nullptr : &scene.fog, scene.view.m, &sprites, &scene.itemLights);
+            renderer.DrawGame(width, height, vp.m, &scene.lighting, nofog ? nullptr : &scene.fog, scene.view.m, &sprites, &scene.itemLights, scene.projection.m);
         }
         if (sndDriver)
             for (const auto& s : scene.TakeSounds()) game::PlaySoundEvent(*sndDriver, sndTable, s);

@@ -22,6 +22,8 @@ inline const char kModelShaderHlsl[] = R"(
 cbuffer Frame : CB_REG {
     row_major float4x4 viewProj;  // uploaded row-major (C++ side uses row vectors)
     row_major float4x4 world;     // item world transform (model space -> world)
+    row_major float4x4 modelView;
+    row_major float4x4 projection;
     float4 lightDir;
     float4 diffuse;
     float4 flags;   // x: textured, y: unlit, z: alpha-test threshold (<0 = off), w: alpha source (1 tex*mat, 2 tex)
@@ -30,7 +32,7 @@ cbuffer Frame : CB_REG {
     float4 litAmbient;  // light ambient + AMBIENT render state, premultiplied sum (rgb)
     float4 fogParams;   // x: FOGSTART, y: FOGEND, z: 1 = fog on for this material
     float4 fogColor;
-    float4 localCount;  // x: number of local lights, y: normal transform mode
+    float4 localCount;  // x: number of local lights, y: normal transform mode, z: split projection
     float4 matSpecular; // rgb, w: power (0 = none)
     float4 litSpecular;
     float4 eyePos;
@@ -48,7 +50,15 @@ struct VSOut { float4 pos : SV_Position; float3 nrm : NORMAL; float2 uv : TEXCOO
 VSOut vsmain(VSIn i) {
     VSOut o;
     float4 wp = mul(float4(i.pos, 1), world);
-    o.pos = mul(wp, viewProj);
+    if (localCount.z > 0.5) {
+        // Project only after moving into camera space. A combined world-to-clip matrix loses
+        // depth precision far from the origin (the Emperor rooftop's closely layered floor).
+        // Keep this intermediate precise so the shader compiler cannot reassociate the products.
+        precise float4 eye = mul(float4(i.pos, 1), modelView);
+        o.pos = mul(eye, projection);
+    } else {
+        o.pos = mul(wp, viewProj);
+    }
     o.nrm = mul(i.nrm, (float3x3)world);
     o.uv = i.uv;
     o.depth = o.pos.w;  // eye-space depth (W-friendly projection: D3D table fog uses w)
@@ -146,7 +156,7 @@ VSOut vsmain(VSIn i) {
     float w = 1.0 / i.pos.w;
     float x = (i.pos.x + 0.5) / 320.0 - 1.0;
     float y = 1.0 - (i.pos.y + 0.5) / 240.0;
-    o.pos = float4(x * w, y * w, i.pos.z * w, w);
+    o.pos = float4(x * w, y * w, (1.0 - i.pos.z) * w, w); // same reversed depth as models
 #ifdef SDLGPU_UBYTE4
     o.col = i.col.zyxw;
 #else

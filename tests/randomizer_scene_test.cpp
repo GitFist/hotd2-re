@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
             auto sprites = scene.MakeSpriteDraws(world.Hud().sprites);
             const float clear[4] = {0,0,0,1};
             gpu->BeginFrame(clear);
-            renderer.DrawGame(640,480,vp.m,&scene.lighting,&scene.fog,scene.view.m,&sprites,&scene.itemLights);
+            renderer.DrawGame(640,480,vp.m,&scene.lighting,&scene.fog,scene.view.m,&sprites,&scene.itemLights,scene.projection.m);
             if (stage == 2 && frame == 200) {
                 std::vector<uint8_t> rgba;
                 Require(gpu->ReadPixels(&rgba), "read desk frame");

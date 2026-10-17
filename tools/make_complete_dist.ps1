@@ -160,6 +160,8 @@ Training instructions and Retry/Back, ranking-page arrows and BACK are clickable
 Online menus have clickable rows, a room-code number pad, DELETE, BACK and cancel buttons.
 At the end of a chapter, the results show each player's stage totals and the team summary.
 After three seconds, click, shoot, or press Enter to continue. Either online player can advance both games.
+Click, shoot, or press Enter to skip the ending credits. Qualifying scores still reach name entry;
+online players return to their shared lobby. Either player can skip.
 Close the window or use Exit on the main menu to quit.
 Pause > Display: fullscreen, aspect ratio, render resolution, and CRT scanlines.
 Pause also offers separate music, gunshot, and sound-effect volumes.

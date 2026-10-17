@@ -297,6 +297,12 @@ void ModelRenderer::AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelCo
     d.state = st;
     d.constants = static_cast<uint32_t>(list.model.size());
     list.model.push_back(fc);
+    // Reverse clip depth on the CPU, before projection, so the float depth target has
+    // useful precision on distant surfaces too. Subtracting z from w in the shader
+    // would already have lost that precision. Culling and game material state stay conventional.
+    auto& constants = list.model.back();
+    float* matrix = constants.localCount[2] > 0.5f ? constants.projection : constants.viewProj;
+    for (int row = 0; row < 4; ++row) matrix[row * 4 + 2] = matrix[row * 4 + 3] - matrix[row * 4 + 2];
     list.draws.push_back(d);
 }
 
@@ -406,9 +412,13 @@ void UploadSprites(GpuDevice* device, const std::vector<ModelRenderer::SpriteDra
 
 void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], const Lighting* light, const Fog* fog,
                              const float* gameView, const std::vector<SpriteDraw>* sprites,
-                             const std::vector<Lighting>* itemLights) {
+                             const std::vector<Lighting>* itemLights, const float* projection) {
     if (!haveStatic_ && !haveDynamic_ && (!sprites || sprites->empty())) return;  // sprites alone: e.g. the game-over letters
     ModelConstants fc = {};
+    if (gameView && projection) {
+        memcpy(fc.projection, projection, sizeof(fc.projection));
+        fc.localCount[2] = 1;
+    }
     // The light constants of one item (its own light when it has one, else the frame light).
     const Lighting* curLight = reinterpret_cast<const Lighting*>(1);  // none set yet
     auto setLight = [&](const Lighting* l) {
@@ -471,6 +481,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         const Mesh* b = bb->mesh;
         setLight(itemLighting(bb->item));
         memcpy(fc.world, itemWorld_[bb->item].data(), sizeof(fc.world));
+        if (gameView && projection) Multiply(fc.world, gameView, fc.modelView);
         memcpy(fc.diffuse, b->diffuse, sizeof(fc.diffuse));
         const float itemAlpha = itemAlpha_[bb->item];
         if (itemAlpha >= 0) fc.diffuse[3] *= itemAlpha;  // Mdl_DrawAlt: material alpha * record alpha

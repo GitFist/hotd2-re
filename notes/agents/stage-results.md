@@ -17,8 +17,9 @@ and hits are captured when the page opens; counters reset at StartStage and game
 WorldHash includes every result field, including the timer and dismissal state, for desync and
 recovery checks. The new code neither writes original assets nor changes source save formats.
 
-The native rescue-screen task is replaced only for supported port game modes. Its capped life
-bonus and event flag FE are applied once, while the old automatic 420-frame timeout is removed.
+The totals page pauses the native rescue-screen task in supported port game modes. Dismissing
+the totals resumes the original 420-frame rescue scene, with its civilian cast, camera animation,
+capped life bonus and event flag FE. The life bonus is awarded once by the native rescue task.
 StageEnd provides the fallback for final-chapter/boss routes without the rescue-screen actor.
 A shown flag prevents a second page at the same boundary. While active, stage tasks stop, inputs
 and network frames continue, and the results counter advances. After 180 frames a fresh trigger
@@ -48,3 +49,9 @@ Validation:
 
 Both players need build K (2026100803). No server update is required. The network tests above
 ran two clients on this PC, not a two-household session. Packages: build/dist-k/.
+
+Build S (2026101601) restores the rescued-civilian scene after the totals. Stage-results tests
+cover all five rescue-scene chapters in Arcade and Original, with full and empty rescue lists,
+the single life award, all six chapter boundaries, and recorded chapter-1 rendering and replay.
+Two local network clients pass through totals, rescue animation and the next chapter in sync.
+Both players need S; the lobby server and optional graphics pack are unchanged.

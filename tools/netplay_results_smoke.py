@@ -2,6 +2,7 @@
 
 Uses isolated folders and a direct loopback connection. Requires build/script_auto_st1.txt.
 """
+import argparse
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import time
 REPO = Path(__file__).resolve().parents[1]
 
 
-def run():
+def run(exe=None):
     output = Path(tempfile.mkdtemp(prefix='hotd2_results_net_'))
     print(output, flush=True)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -44,10 +45,10 @@ def run():
             folder = output / role
             folder.mkdir()
             log = (output / f'{role}.log').open('w'); logs.append(log)
-            args = [str(REPO / 'build/src/port/Release/play.exe'), str(REPO / 'game'),
+            args = [str(exe or REPO / 'build/src/port/Release/play.exe'), str(REPO / 'game'),
                     '--config', str(config), '--seed', '902', '--credits', '6', '--net-delay', '1',
                     '--scene', str(REPO / 'scenes/st1_play.scene'), '--script', str(inputs), '--trace',
-                    '--screenshot', str(folder / 'frame-%d.png'), '--frame', '14000',
+                    '--screenshot', str(folder / 'frame-%d.png'), '--frame', '14700',
                     '--every', '100', '--every-from', '13400', '--width', '640', '--height', '480']
             args += ['--host', str(port)] if role == 'host' else ['--join', f'127.0.0.1:{port}']
             processes.append(subprocess.Popen(args, cwd=folder, env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -66,7 +67,7 @@ def run():
             continued = re.search(r'trace frame (\d+) note: stage results: continue', text)
             assert opened and continued, text[-2500:]
             assert int(continued[1]) - int(opened[1]) >= 180
-            final = re.search(r'final state hash ([A-F0-9]+) at frame 14000', text)
+            final = re.search(r'final state hash ([A-F0-9]+) at frame 14700', text)
             assert final
             signatures.append((opened[1], continued[1], final[1]))
         assert signatures[0] == signatures[1], signatures
@@ -82,4 +83,6 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--exe', type=Path, help='Path to the console play.exe build to test')
+    run(parser.parse_args().exe)

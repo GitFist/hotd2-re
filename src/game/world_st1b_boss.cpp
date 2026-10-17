@@ -1940,18 +1940,11 @@ void TaskClear(Task& t) {
     const int count = w.rescueCount[st];
     int8_t bonus = 0;
     exe.Read(0x0055E044 + static_cast<uint32_t>(st * 8 + std::min(count, 7)), &bonus, 1);
-    if (w.cfg.portStageResults && w.gameMode == 6 && w.cfg.eventMode >= 0 && w.cfg.eventMode < 6 && w.cfg.gameType != 2) {
-        // Replace the timed rescue-only page, keeping its life award and event completion exactly once.
-        w.Sound(0x10000003);
-        w.canShoot = 0;
-        for (int p = 0; p < 2; ++p) {
-            const int cap = w.runner->cfg.gameType == 1 ? ItemLivesMax(w, p) : 5;
-            w.player[p].lives = static_cast<int16_t>(std::min(cap, w.player[p].lives + bonus));
-        }
-        w.runner->flags[0xFE] = 1;
-        w.flags5900 &= ~0x10u;
+    if (w.cfg.portStageResults && w.gameMode == 6 && w.cfg.eventMode >= 0 && w.cfg.eventMode < 6 &&
+        w.cfg.gameType != 2 && !w.stageResults.shown) {
+        // Hold this task for the score page, then run the original rescue scene on dismissal.
+        // It owns the civilian actors, timed life award and event-completion flag.
         w.BeginStageResults(bonus);
-        w.ts.KillCurrent();
         return;
     }
     if (k.sub == 0) {

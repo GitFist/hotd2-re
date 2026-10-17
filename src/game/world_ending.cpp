@@ -913,6 +913,18 @@ void World::Impl::EndingFrame() {
         return;
     }
     if (subState == 8) {  // 0x00431660
+        // Port: either player's fresh trigger/click or Start/Enter finishes the credits.
+        // Follow the normal ending exit so a qualifying score still reaches name entry.
+        if (cfg.portFeatures && (pressed & 0x000C000Cu)) {
+            EndingState& e = ES(*this);
+            for (int p = 0; p < 2; ++p) e.cls[p] = static_cast<int16_t>(ScoreClass(*this, p));
+            projCenter[0] = 320.0f;
+            projCenter[1] = 240.0f;
+            SoundStopAll();
+            StageEnd();
+            EndingCheck(*this);
+            return;
+        }
         ts.RunFrame();
         EndingCheck(*this);
         return;

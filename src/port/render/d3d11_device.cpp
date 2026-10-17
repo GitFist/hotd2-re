@@ -388,7 +388,7 @@ ID3D11DepthStencilState* D3D11Device::DepthState(int zfunc, bool zwrite) {
         D3D11_DEPTH_STENCIL_DESC dd = {};
         dd.DepthEnable = TRUE;
         dd.DepthWriteMask = zwrite ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
-        dd.DepthFunc = static_cast<D3D11_COMPARISON_FUNC>(zfunc);  // D3D7 and D3D11 comparison values coincide (1..8)
+        dd.DepthFunc = static_cast<D3D11_COMPARISON_FUNC>(ReversedDepthCompare(zfunc));
         device_->CreateDepthStencilState(&dd, &s);
     }
     return s.Get();
@@ -472,7 +472,7 @@ bool D3D11Device::BeginFrame(const float clear[4]) {
     ID3D11RenderTargetView* rt = rtv_.Get();
     ctx_->OMSetRenderTargets(1, &rt, dsv_.Get());
     ctx_->ClearRenderTargetView(rt, clear);
-    ctx_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+    ctx_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH, 0.0f, 0);
     return rtv_ && dsv_;
 }
 

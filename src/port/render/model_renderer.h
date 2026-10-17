@@ -111,9 +111,11 @@ public:
     // gameView: the game's row-vector view matrix (game::ViewMatrix); with it, pass 1 reproduces the game's mixed list of
     // translucent models and sprites (Mdl_DrawPass1 0x004A88E0). Without it, translucent batches are sorted by clip w.
     // itemLights: per-item lights (SceneItem::light indexes it).
+    // projection: camera -> clip (including DeviceView and screen shift). With gameView, separates
+    // projection from model/view transforms to retain depth precision on distant stage geometry.
     void DrawGame(int width, int height, const float viewProj[16], const Lighting* light = nullptr,
                   const Fog* fog = nullptr, const float* gameView = nullptr, const std::vector<SpriteDraw>* sprites = nullptr,
-                  const std::vector<Lighting>* itemLights = nullptr);
+                  const std::vector<Lighting>* itemLights = nullptr, const float* projection = nullptr);
 
 
     // Pass-1 list of the last DrawGame with a game view, in draw order (item = scene item index or -1; sprite = index).

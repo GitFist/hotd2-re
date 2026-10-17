@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -9,8 +10,56 @@ static void Require(bool ok, const char* why) {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); }
 }
 
+static void CheckRescueScene(const char* gameDir, int stage, int gameType, bool rescued) {
+    game::World::Impl w;
+    w.gameDir = gameDir;
+    Require(w.exe.Load((std::filesystem::path(gameDir) / "Hod2.exe").string()), "load rescue tables");
+    w.runner = std::make_unique<game::EventRunner>(w.mem, w, &w.env, &w.exe);
+    w.cfg.portStageResults = true;
+    w.cfg.eventMode = stage;
+    w.cfg.gameType = w.runner->cfg.gameType = gameType;
+    w.gameMode = 6;
+    w.subState = 2;
+    const uint32_t list = w.exe.U32(0x0055DF50 + stage * 4);
+    int count = 0;
+    while (count < 10 && w.exe.S16(list + count * 20) != -1) {
+        w.rescueKinds[stage][count] = w.exe.S16(list + count * 20);
+        ++count;
+    }
+    Require(count > 0, "chapter has a rescue-scene cast");
+    w.rescueCount[stage] = rescued ? count : 0;
+    for (auto& p : w.player) { p.state = 5; p.lives = 1; }
+    game::SetCurrentWorld(&w);
+    w.ts.Create([](game::Task& t) {
+        game::SpawnTask s;
+        s.rec.type = 0x61;
+        game::CurrentWorld()->SpawnStageClear(t, s);
+    });
+    w.ts.RunFrame();
+    Require(w.stageResults.active && w.runner->flags[0xFE] == 0, "score page holds rescue scene open");
+    const int bonus = w.stageResults.lifeBonus;
+    for (int f = 0; f < 220; ++f) w.Mode6Frame();
+    Require(w.player[0].lives == 1 && w.player[1].lives == 1, "score page does not award lives early");
+    w.stageResults.dismiss = true;
+    for (int f = 0; f < 420; ++f) {
+        w.BeginFrame();
+        w.Mode6Frame();
+        int cast = 0;
+        for (auto* task : w.ts.Live())
+            if (task->data && static_cast<game::WTask*>(task->data.get())->fn == 0x00435760) ++cast;
+        Require(cast == count, "rescued cast or zero-rescue fallback stays present");
+        Require(w.runner->flags[0xFE] == (f == 419), "rescue scene finishes after its full animation");
+    }
+    for (const auto& p : w.player)
+        Require(p.lives == std::min(5, 1 + bonus), "native life bonus is applied exactly once to each player");
+    game::SetCurrentWorld(nullptr);
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) return 2;
+    for (int stage = 0; stage < 5; ++stage)
+        for (int gameType : {0, 1})
+            for (bool rescued : {false, true}) CheckRescueScene(argv[1], stage, gameType, rescued);
     // Exercise the actual stage-end boundary for every chapter, including the ending and boss route.
     game::World::Impl w;
     Require(w.exe.Load((std::filesystem::path(argv[1]) / "Hod2.exe").string()), "load tables");
@@ -51,7 +100,7 @@ int main(int argc, char** argv) {
     w.StageEnd();
     Require(!w.stageResults.active, "training keeps its own results");
 
-    // A real stage-1 input recording reaches the replacement of the native rescue page.
+    // A real stage-1 clear shows the new totals, then the original rescued-civilian scene.
     struct Input { int frame, player; float x, y; int buttons; };
     std::vector<Input> inputs;
     std::ifstream file(argv[2]);
@@ -86,6 +135,7 @@ int main(int argc, char** argv) {
            game.Frame(), result.chapter, result.player[0].shots, result.player[0].hits, result.player[0].headshots,
            result.civilians, result.lifeBonus, result.player[0].score);
     Require(result.active && result.chapter == 1, "real stage clear opens results");
+    Require(result.civilians > 0, "replay rescued civilians");
     Require(result.player[0].participated && !result.player[1].participated, "solo player columns");
     Require(result.player[0].shots > 0 && result.player[0].hits > 0 && result.player[0].headshots > 0, "real combat totals");
     const int lives = game.Hud().player[0].lives;
@@ -114,7 +164,24 @@ int main(int argc, char** argv) {
     Require(game.Hud().stageResults.active && game.Hud().player[0].lives == lives, "hold does not repeat life bonus");
     game::WorldInput confirm; confirm.pressed = confirm.held = 8;
     game.SetInput(1, confirm); game.Step();
-    for (int f = 0; f < 600; ++f) { game.SetInput(0, {}); game.SetInput(1, {}); game.Step(); }
+    bool sawRescueScene = false, sawRescueDraws = false, sawLifeBonus = false;
+    for (int f = 0; f < 600; ++f) {
+        game.SetInput(0, {}); game.SetInput(1, {}); game.Step();
+        int civilians = 0;
+        for (const auto& task : game.Tasks()) if (task.fn == 0x00435760) ++civilians;
+        if (civilians) {
+            Require(!game.Hud().stageResults.active, "rescue scene follows the score page");
+            Require(civilians == result.civilians, "all rescued civilians appear");
+            sawRescueScene = true;
+            for (const auto& draw : game.Draws()) if (draw.fn == 0x00435760) sawRescueDraws = true;
+            const int expectedLives = std::min(5, lives + result.lifeBonus);
+            Require(game.Hud().player[0].lives == lives || game.Hud().player[0].lives == expectedLives,
+                    "life bonus is awarded once during the rescue scene");
+            if (game.Hud().player[0].lives == expectedLives) sawLifeBonus = true;
+        }
+    }
+    Require(sawRescueScene && sawRescueDraws, "rescued civilians are spawned and drawn after the score page");
+    Require(sawLifeBonus, "rescue scene gives the life bonus");
     Require(game.Hud().titleChapter == 1 && !game.Hud().stageResults.active, "real next chapter loads after skip");
     Require(!game.Hud().stageResults.shown && game.Hud().stageResults.player[0].headshots == 0,
             "next stage starts fresh totals");
@@ -124,5 +191,5 @@ int main(int argc, char** argv) {
     Require(replay.Frame() == game.Frame() && replay.RandState() == game.RandState() &&
             replay.Hud().player[0].score == game.Hud().player[0].score && replay.Hud().titleChapter == game.Hud().titleChapter,
             "replay remains synchronized after guest confirmation and chapter load");
-    puts("PASS stage results: all chapters, skip delay, both players, awards and real next-stage load");
+    puts("PASS stage results: all chapters, skip delay, both players, rescued civilians, awards and real next-stage load");
 }

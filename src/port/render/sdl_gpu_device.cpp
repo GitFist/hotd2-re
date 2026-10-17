@@ -463,7 +463,7 @@ SDL_GPUGraphicsPipeline* SdlGpuDevice::Pipeline(GpuDraw::Pipeline kind, const Gp
     pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     pi.depth_stencil_state.enable_depth_test = true;
     pi.depth_stencil_state.enable_depth_write = s.zwrite != 0;
-    pi.depth_stencil_state.compare_op = static_cast<SDL_GPUCompareOp>(s.zfunc);  // D3D7 D3DCMPFUNC 1..8 = SDL_GPUCompareOp 1..8
+    pi.depth_stencil_state.compare_op = static_cast<SDL_GPUCompareOp>(ReversedDepthCompare(s.zfunc));
     pi.target_info.color_target_descriptions = &ct;
     pi.target_info.num_color_targets = 1;
     pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
@@ -529,7 +529,7 @@ void SdlGpuDevice::Submit(const GpuDrawList& list) {
     ct.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPUDepthStencilTargetInfo dt = {};
     dt.texture = depth_;
-    dt.clear_depth = 1.0f;
+    dt.clear_depth = 0.0f;
     dt.load_op = needClear_ ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
     dt.store_op = SDL_GPU_STOREOP_STORE;
     dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;

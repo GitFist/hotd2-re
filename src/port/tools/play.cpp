@@ -136,8 +136,8 @@ uint32_t WorldHash(const game::World& w) {
 
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
-constexpr uint32_t kBuildId = 2026101505;
-const char* const kBuildName = "2026 10 15 R";  // (the menu font has no period)
+constexpr uint32_t kBuildId = 2026101602;
+const char* const kBuildName = "2026 10 16 U";  // (the menu font has no period)
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -1875,7 +1875,7 @@ int main(int argc, char** argv) {
         }
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         gpu->BeginFrame(clear);
-        renderer.DrawGame(gpu->TargetWidth(), gpu->TargetHeight(), vp.m, &scene.lighting, &scene.fog, scene.view.m, &sprites, &scene.itemLights);
+        renderer.DrawGame(gpu->TargetWidth(), gpu->TargetHeight(), vp.m, &scene.lighting, &scene.fog, scene.view.m, &sprites, &scene.itemLights, scene.projection.m);
         if (world.Hud().stageResults.active && !resultsPresented) {
             resultsPresented = true;
             resultsPresentedAt = plat.Seconds();

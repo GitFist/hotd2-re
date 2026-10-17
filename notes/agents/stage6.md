@@ -1,5 +1,40 @@
 # Stage 6: the native stage 6, the final boss, the ending and the name entry
 
+## Skippable credits (build U, 2026-10-16)
+
+With port features enabled, either player's fresh trigger/click or Start/Enter edge exits
+ending sub-state 8 through StageEnd and EndingCheck. Held input does not dismiss the credits.
+Skipping stops ending audio and recenters the staff roll's shifted projection. Scores and
+score classes are retained for qualifying name entry; other solo games return to the title,
+and connected co-op games return to their existing lobby. The original exactness path is unchanged.
+Build U uses compatibility ID 2026101602, so both online clients need U.
+
+`credits_skip_test game` covers Arcade/Original, either player and confirmation input, held and
+unrelated inputs, qualifying/nonqualifying scores, co-op lobby return, and deterministic replay.
+Optional arguments `build/final-boss-flicker/start.txt build/script_auto_full2.txt` replay the
+real final chapter into the credits and verify that skipping reaches name entry with the final
+score intact (frame 86633, score 150060). Both local and distribution builds pass.
+
+## Rooftop rendering (build T, 2026-10-16)
+
+The Emperor reveal exposed depth precision loss on the closely layered rooftop and bridge.
+The combined world-to-clip transform lost precision at the stage's large coordinates;
+separating model/view from projection helped but left intermittent stripes with conventional
+floating-point depth. Game draws now project from camera space, and both GPU backends use
+reversed depth with matching model/sprite transforms, clear values, and comparison functions.
+The original camera, near/far limits, stage geometry, lighting, fog and simulation are unchanged.
+Build T retains S's multiplayer compatibility ID because this is a rendering change.
+
+`render_depth_test` (optionally `sdlgpu`) checks closely layered surfaces across 24 translated,
+moving-camera views, plus sprite/model occlusion in both directions. Both backends pass.
+As a negative control, restoring conventional depth produces 35,568 D3D11 / 76,412 SDL_GPU
+rear-surface pixels bleeding through the test's first frame. The fixed version has no such
+bleed and identical images at each translated origin.
+
+Visual checks cover the Emperor reveal through the start of the fight, consecutive reveal
+frames on both backends, original and 2x textures, stage-1 scenery, and the title scene against
+the original capture. Local screenshots and test logs are in `build/final-boss-flicker/`.
+
 **Result: every logic check is exact from the stage-6 start to the title.**
 
 - Stage 6: `world_test game build\scene_capture_auto_st6.txt --script build\script_auto_full2.txt --stage-start 70806
