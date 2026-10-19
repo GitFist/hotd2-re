@@ -11,7 +11,7 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 - **Game modes:** Arcade, Original, Training, Boss, Scene Select, and Horde.
 - **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
 - **Online co-op:** two-player rooms, public lobbies, private room codes, and reconnect support.
-- **Flexible controls:** mouse, touchpad, touch, and light-gun support, including clickable and shootable menus.
+- **Flexible controls:** mouse, touchpad, touch, light guns, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
 - **Display options:** fullscreen and windowed play, aspect ratio settings, render scaling, CRT filtering, and optional 2× textures.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
 
@@ -53,6 +53,10 @@ Connections use a direct route when available, with an automatic server relay fa
 | Quit | Main menu **Exit** or close the window |
 
 If touchpad clicks do not register, close the game and set `input=mouse` in `hotd2re_settings.ini`.
+
+## Wii Remotes
+
+Open **Options > Wii Remotes** or **Pause > Wii Remotes** to connect and configure up to two remotes. Use a powered sensor bar with a compatible Bluetooth adapter, or a DolphinBar in Mode 4. See the [setup and calibration guide](docs/WII-REMOTES.md). Native support is new and has not yet been tested with physical Wii Remotes.
 
 ## Optional 2× graphics
 

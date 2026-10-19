@@ -42,6 +42,7 @@ custom_maps/
 
 # Local settings, credentials and generated packages
 hotd2re_settings.ini
+hotd2re_wii.ini
 hotd2re_*.bin
 *.log
 *.dmp

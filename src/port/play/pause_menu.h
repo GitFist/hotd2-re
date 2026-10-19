@@ -45,8 +45,8 @@ using VolumeSettings = Settings;  // the old name
 class PauseMenu {
 public:
     using Input = MenuInput;
-    enum class Action { None, Resume, ReturnToTitle };
-    enum Row { kResume = 0, kMusic, kGuns, kSfx, kDisplay, kReturn, kRowCount };
+    enum class Action { None, Resume, ReturnToTitle, WiiRemotes };
+    enum Row { kResume = 0, kMusic, kGuns, kSfx, kDisplay, kWii, kReturn, kRowCount };
 
     void Open();
     void Close() {

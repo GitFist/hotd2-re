@@ -58,6 +58,7 @@
 #include "port/play/gun_input.h"
 #include "port/play/keyboard.h"
 #include "port/play/pause_menu.h"
+#include "port/play/wii_menu.h"
 #include "game/world_sound.h"
 #include "platform/fixed_clock.h"
 #include "platform/platform.h"
@@ -136,8 +137,8 @@ uint32_t WorldHash(const game::World& w) {
 
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
-constexpr uint32_t kBuildId = 2026101602;
-const char* const kBuildName = "2026 10 16 U";  // (the menu font has no period)
+constexpr uint32_t kBuildId = 2026101901;
+const char* const kBuildName = "2026 10 19 V";  // (the menu font has no period)
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -783,7 +784,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "renderer: %s\n", err.c_str());
         return 1;
     }
-    input::GunSource* guns = plat.Guns();
+    input::WiiRemotes wii(plat.Guns());
+    const std::string wiiSettingsPath = "hotd2re_wii.ini";
+    if (!headless) { wii.settings.Load(wiiSettingsPath); wii.Configure(); }
+    input::GunSource* guns = headless ? nullptr : &wii;
     if (!headless) printf("play: renderer %s, input %s\n", gpu->Name(), guns ? guns->Name() : "none");
     play::DisplaySettings appliedDisplay = volumes.display;
     auto applyDisplay = [&] {  // after a change on a display page: window / fullscreen / internal resolution
@@ -844,6 +848,10 @@ int main(int argc, char** argv) {
     uint32_t menuPrevKeys = 0;
     // The display settings page over the Options screen (its port-only "Display Settings" row, WorldHud::
     // portDisplayRequests): play.exe draws the page as the whole frame and takes the input while it is open.
+    play::WiiMenu wiiPage;
+    int wiiRequestsSeen = 0;
+    play::MenuInput wiiMouse;
+    if (getenv("HOTD2_WII_MENU")) wiiPage.Open(); // isolated screenshot/test entry
     play::DisplayMenu optionsPage;
     int displayRequestsSeen = 0;
     // One frame of menu input from the keyboard edges and the pointing device (the given player's device first).
@@ -862,6 +870,7 @@ int main(int argc, char** argv) {
             mi.trigger = (ps.pressed & input::kTrigger) != 0;
             mi.reload = (ps.pressed & input::kReload) != 0;
             mi.start = mi.start || (ps.pressed & input::kStart) != 0;
+            mi.pressed |= ps.menuPressed;
             break;
         }
         return mi;
@@ -1025,6 +1034,14 @@ int main(int argc, char** argv) {
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
                 if (ev.type == T::Quit) quit = true;
+                if (wiiPage.IsOpen() && (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
+                    int ww, wh; plat.ClientSize(&ww, &wh);
+                    const auto image = input::FitImage(ww, wh, volumes.display.stretch ? input::Aspect::Stretch : input::Aspect::Pillarbox43);
+                    float x, y;
+                    wiiMouse.pointer = input::WindowToImage(ev.x, ev.y, image, &x, &y);
+                    wiiMouse.px = x * 640; wiiMouse.py = y * 480;
+                    if (ev.type == T::MouseDown) { wiiMouse.trigger |= ev.button == 1; wiiMouse.reload |= ev.button == 3; }
+                }
                 if (ev.type == T::KeyDown) g_keys |= KeyBit(ev.key);
                 if (ev.type == T::KeyUp) g_keys &= ~KeyBit(ev.key);
                 if (ev.type == T::KeyDown && !ev.repeat && ev.ch && isalnum(static_cast<unsigned char>(ev.ch))) typed += static_cast<char>(toupper(ev.ch));
@@ -1045,6 +1062,8 @@ int main(int argc, char** argv) {
                 }
             }
             if (quit) break;
+            wii.Update();
+            if (!active) wii.BeginFrame();
             // (netplay: the other side needs our steps; the lobby: the player alt-tabs to read the other's code, the
             // connection must still happen - an inactive window just gives no input)
             if (!active && !netplay && lobby.page == Lobby::kOff) {
@@ -1101,7 +1120,7 @@ int main(int argc, char** argv) {
             }
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
-            bool menuWasOpen = false, menuInjectStart = false;
+            bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
@@ -1129,7 +1148,7 @@ int main(int argc, char** argv) {
                 }
                 menuWasOpen = menu.IsOpen();
                 menuPausePlayer = hh.pausePlayer;
-                if (menuWasOpen && !menuClosing) {
+                if (menuWasOpen && !menuClosing && !wiiPage.IsOpen()) {
                     const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
                     std::vector<uint32_t> menuSounds;
                     const play::Settings before = volumes;
@@ -1140,6 +1159,9 @@ int main(int argc, char** argv) {
                     if (sndDriver)
                         for (uint32_t id : menuSounds) sndDriver->PlayGameSound(sndTable, id, game::SoundContext{ 6, 0 });
                     if (act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen())) volumes.Save(settingsPath);  // leaving the menu / page keeps the settings
+                    if (act == play::PauseMenu::Action::WiiRemotes) {
+                        wiiPage.Open(); wii.BeginFrame(); wiiOpenedThisFrame = true;
+                    }
                     if (act == play::PauseMenu::Action::Resume) {
                         if (netplay) { netCmd |= port::net::kCmdResume; menuClosing = true; }
                         else menuInjectStart = true;
@@ -1159,8 +1181,27 @@ int main(int argc, char** argv) {
             }
             // The display page over the Options screen: opened when the world reports a new request; while open it
             // takes the keys and the device buttons (the world gets no input, so the screen stays as it is).
-            bool pageWasOpen = false;
-            if (menuEnabled && optionsPage.IsOpen()) {
+            bool pageWasOpen = wiiPage.IsOpen();
+            if (menuEnabled && wiiPage.IsOpen() && !wiiOpenedThisFrame) {
+                auto mi = menuInput(g_keys & ~menuPrevKeys, 0);
+                if ((g_keys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
+                for (int dev = 0; dev < 2; ++dev) {
+                    const auto ps = wii.Player(dev);
+                    if (ps.connected && (ps.pressed || ps.menuPressed)) {
+                        mi.pointer = ps.onScreen; mi.px = ps.x * 640; mi.py = ps.y * 480;
+                        mi.trigger = (ps.pressed & input::kTrigger) != 0;
+                        mi.reload = (ps.pressed & input::kReload) != 0;
+                        mi.start |= (ps.pressed & input::kStart) != 0; mi.pressed |= ps.menuPressed;
+                    }
+                }
+                if (wiiMouse.pointer) {
+                    mi.pointer = true; mi.px = wiiMouse.px; mi.py = wiiMouse.py;
+                    mi.trigger |= wiiMouse.trigger; mi.reload |= wiiMouse.reload;
+                }
+                if (wiiPage.Update(mi, wii) && !wii.settings.Save(wiiSettingsPath)) fprintf(stderr, "Wii Remote settings could not be saved\n");
+                wiiMouse = {};
+            }
+            if (menuEnabled && optionsPage.IsOpen() && !wiiPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
@@ -1209,8 +1250,8 @@ int main(int argc, char** argv) {
                         dp.held = ps.held;
                         dp.pressed = ps.pressed;
                         in[p] = play::DeviceWorldInput(dp, world.Hud().player[p].state, prevButtons[p]);
-                        in[p].held |= keys;
-                        in[p].pressed |= keysPressed;
+                        in[p].held |= keys | play::WorldKeyboardBits(ps.menuHeld, inGame, activePlayer);
+                        in[p].pressed |= keysPressed | play::WorldKeyboardBits(ps.menuPressed, inGame, activePlayer);
                     }
                     if (menuWasOpen) {  // the pause menu took this frame's input (the world ignores all but start while paused)
                         in[p].held = in[p].pressed = 0;
@@ -1740,6 +1781,10 @@ int main(int argc, char** argv) {
                 if (req > displayRequestsSeen && menuEnabled) optionsPage.Open();
                 displayRequestsSeen = req;
             }
+            if (const int req = world.Hud().portWiiRequests; req != wiiRequestsSeen) {
+                if (req > wiiRequestsSeen && menuEnabled) { wiiPage.Open(); wii.BeginFrame(); }
+                wiiRequestsSeen = req;
+            }
             if (world.QuitRequested()) quit = true;
             if (direct && world.GameMode() != 6 && world.GameMode() != 7) {  // the game-over sequence reached the title: new game
                 if (!startGame()) {
@@ -1790,6 +1835,11 @@ int main(int argc, char** argv) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             sprites = scene.MakeSpriteDraws(world.Hud().sprites, 0.001f, nullptr);
+        } else if (wiiPage.IsOpen()) {
+            renderer.SetScene(assets, {}); vp = game::Mat4::Identity();
+            std::vector<game::SpriteDef> md;
+            wiiPage.Sprites(assets.Exe(), wii, md);
+            sprites = scene.MakeSpriteDraws(md, 0.001f, nullptr);
         } else if (menu.IsOpen() && menu.DisplayOpen() && !lastSceneDraws.empty()) {
             // The display page over the paused game: the last unpaused frame's draws again, undimmed (the original's
             // pause overlay 0x93E, the world's only draw while paused, is left out so the scene shows as it will play),

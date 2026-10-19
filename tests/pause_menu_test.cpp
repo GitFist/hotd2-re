@@ -45,16 +45,19 @@ int main() {
     play::Settings v;
     std::vector<uint32_t> snd;
 
-    // keyboard: Down x6 wraps back to Resume, Up goes to the last row
+    // keyboard: Down through every row wraps back to Resume, Up goes to the last row
     PauseMenu m;
     m.Open();
     Check(m.IsOpen() && m.Cursor() == PauseMenu::kResume, "opens on Resume");
-    for (int i = 0; i < 6; ++i) m.Update(Pad(0x20), v, snd);
+    for (int i = 0; i < PauseMenu::kRowCount; ++i) m.Update(Pad(0x20), v, snd);
     Check(m.Cursor() == PauseMenu::kResume, "Down wraps");
     m.Update(Pad(0x10), v, snd);
     Check(m.Cursor() == PauseMenu::kReturn, "Up wraps to Return");
-    Check(snd.size() == 7, "a cursor sound per move");
+    Check(snd.size() == PauseMenu::kRowCount + 1, "a cursor sound per move");
 
+    m.Open();
+    for (int i = 0; i < PauseMenu::kWii; ++i) m.Update(Pad(0x20), v, snd);
+    Check(m.Update(Pad(8), v, snd) == Action::WiiRemotes && m.IsOpen(), "Wii setup opens while the game remains paused");
     // volumes: Right / Left on the Music row, clamped to 0..10
     m.Open();
     m.Update(Pad(0x20), v, snd);

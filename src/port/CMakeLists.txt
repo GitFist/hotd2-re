@@ -5,10 +5,13 @@
 #                   port_input (Windows raw input; also used by the hook)
 #   platform layer: port_platform (SDL3: window, events, clock, input sources, device / audio creation, PNG)
 
-add_library(port_input_core STATIC input/aim_map.cpp input/pointer_guns.cpp input/touch_guns.cpp)
+add_library(port_input_core STATIC input/aim_map.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp)
 target_include_directories(port_input_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(WIN32)
+  target_sources(port_input_core PRIVATE input/wii_remote_win.cpp)
+  target_compile_definitions(port_input_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(port_input_core PUBLIC hid setupapi bthprops)
   add_library(port_input STATIC input/raw_input.cpp input/raw_input_guns.cpp)
   target_include_directories(port_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(port_input PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)

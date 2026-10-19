@@ -54,6 +54,7 @@ struct ModesState {
     // the options screen, 0..10; off in the exactness tests
     bool optPortRows = false;
     int optVolume[3] = { 10, 10, 10 };
+    int optWiiRequests = 0;
     int optDisplayRequests = 0;     // port only: times the "Display Settings" row (14) was confirmed; play.exe opens its
                                     // display page (src/port/play/display_menu.h) over the screen when it grows
     int optState = 0;               // 0x009CA0F0 handler: 0 main list, 1 calibration (0x004882D0), 2 controller (0x00485F90)

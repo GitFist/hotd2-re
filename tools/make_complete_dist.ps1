@@ -162,6 +162,14 @@ At the end of a chapter, the results show each player's stage totals and the tea
 After three seconds, click, shoot, or press Enter to continue. Either online player can advance both games.
 Click, shoot, or press Enter to skip the ending credits. Qualifying scores still reach name entry;
 online players return to their shared lobby. Either player can skip.
+Native Wii Remotes: Options > Wii Remotes, or Pause > Wii Remotes.
+Select Connect remotes and press red SYNC (or 1 + 2). A powered sensor bar and compatible
+Bluetooth adapter are required; for DolphinBar, use Mode 4 and sync with the bar first.
+Choose Player 1/2 setup to calibrate aim and change buttons. Defaults: B fires, A reloads,
++ confirms, HOME pauses. D-pad navigates. Aim at each calibration cross and press B.
+Automatic reconnect keeps searching; Swap players also swaps their saved profiles.
+Native Wii support has automated coverage; real-hardware pairing and aiming are not yet verified.
+
 Close the window or use Exit on the main menu to quit.
 Pause > Display: fullscreen, aspect ratio, render resolution, and CRT scanlines.
 Pause also offers separate music, gunshot, and sound-effect volumes.

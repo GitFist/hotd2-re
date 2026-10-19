@@ -33,9 +33,9 @@ int main(int argc, char** argv) {
     Step(w, 639, 0);
     auto& m = *w.modes;
     // Coordinates are the visible original-font rows, including the inserted volume/display rows.
-    const int ids[] = {0, 1, 2, 4, 6, 7, 11, 12, 13, 14, 9};
-    const int cells[] = {3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14};
-    for (int i = 0; i < 11; ++i)
+    const int ids[] = {0, 1, 2, 4, 5, 6, 7, 11, 12, 13, 14, 9};
+    const int cells[] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+    for (int i = 0; i < 12; ++i)
         for (int ink : {13, 22, 30}) {
             Step(w, 40, cells[i] * 24 + ink);
             Require(m.optCursor == ids[i], "hover visible top/centre/bottom selects the rendered options row");
@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
     Step(w, 41, 334);
     Require(m.optCursor == 14, "small mouse movement restores hover selection");
     Step(w, 40, 190, true);
-    Require(m.optDisplayRequests == 1, "disabled Sight Speed cannot activate another option");
+    Require(m.optWiiRequests == 1 && m.optDisplayRequests == 1, "shoot Wii Remotes opens the local setup page once");
     Step(w, 40, 358, true);
     Require(m.optVolume[0] == 10 && m.optVolume[1] == 10 && m.optVolume[2] == 10, "shoot Default restores settings");
     Step(w, 600, 94, true);
@@ -109,5 +109,5 @@ int main(int argc, char** argv) {
     Step(w, 40, 94, false, false, 2);
     Require(w.subState == 2, "keyboard Escape/Back leaves Options through the save handler");
     game::SetCurrentWorld(nullptr);
-    puts("PASS: 33 hover points; values, arrows, both sights, audio tests, display, blank shots, keyboard, Default, Exit and saved settings");
+    puts("PASS: 36 hover points; values, arrows, both sights, audio tests, display, blank shots, keyboard, Default, Exit and saved settings");
 }

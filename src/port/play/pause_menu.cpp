@@ -18,7 +18,7 @@ constexpr uint32_t kSelected = 0x111;  // red, depth 0.9 (the options screen's s
 constexpr uint32_t kNormal = 1;
 constexpr uint32_t kSndCursor = 0xA9, kSndConfirm = 0x121A9;
 
-const char* const kLabels[play::PauseMenu::kRowCount] = { "Resume", "Music", "Gun Shots", "Sound Effects", "Display", "Return to Main Menu" };
+const char* const kLabels[play::PauseMenu::kRowCount] = { "Resume", "Music", "Gun Shots", "Sound Effects", "Display", "Wii Remotes", "Return to Main Menu" };
 
 }  // namespace
 
@@ -76,6 +76,7 @@ float PauseMenu::RowY(int row) {
     case kGuns: return 8.0f;
     case kSfx: return 9.0f;
     case kDisplay: return 11.0f;
+    case kWii: return 12.0f;
     case kReturn: return 13.0f;
     default: return 0.0f;
     }
@@ -155,6 +156,7 @@ PauseMenu::Action PauseMenu::Update(const Input& in, Settings& s, std::vector<ui
                 sounds.push_back(kSndConfirm);
                 return Action::Resume;
             }
+            if (cursor_ == kWii) return Action::WiiRemotes;
             if (cursor_ == kDisplay) {
                 display_.Open();
                 sounds.push_back(kSndConfirm);

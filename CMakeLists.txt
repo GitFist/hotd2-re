@@ -174,8 +174,10 @@ if(WIN32 AND HOTD2_SDL3)
 endif()
 
 # Port gameplay glue (device input -> gun records / trigger), pure; tests/gun_input_test.cpp.
-add_library(port_play STATIC src/port/play/gun_input.cpp src/port/play/pause_menu.cpp src/port/play/display_menu.cpp)
-target_link_libraries(port_play PUBLIC game)
+add_library(port_play STATIC src/port/play/gun_input.cpp src/port/play/pause_menu.cpp src/port/play/display_menu.cpp src/port/play/wii_menu.cpp)
+target_link_libraries(port_play PUBLIC game port_input_core)
+add_executable(wii_remote_test tests/wii_remote_test.cpp)
+target_link_libraries(wii_remote_test PRIVATE port_play)
 add_executable(gun_input_test tests/gun_input_test.cpp)
 target_link_libraries(gun_input_test PRIVATE port_play)
 # play.exe's pause menu state machine, the display settings page and the settings file (src/port/play/pause_menu.h,

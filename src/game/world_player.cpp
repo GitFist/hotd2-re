@@ -1198,6 +1198,7 @@ void World::Impl::FillHud() {
     hud.pausePlayer = pausePlayer;
     for (int k = 0; k < 3; ++k) hud.portVolumes[k] = modes && modes->optPortRows ? modes->optVolume[k] : -1;  // port only
     hud.portDisplayRequests = modes ? modes->optDisplayRequests : 0;
+    hud.portWiiRequests = modes ? modes->optWiiRequests : 0;
     hud.netState = modes && gameMode == 15 ? modes->netState : 0;
     hud.stageResults = stageResults;
     hud.randomizerSeed = RandomizerActive(*this) ? modes->randomizer.seed : 0;

@@ -82,7 +82,7 @@ struct Allow {
 };
 Allow Permissions(World::Impl& w) {
     Allow a;
-    if (w.cfg.portFeatures) return a;  // the legacy calibration/controller pages have no native implementation
+    if (w.cfg.portFeatures) { a.calibrate = true; return a; } // the calibration row opens native Wii Remote setup
     const int m0 = w.input[0].deviceMode, m1 = w.input[1].deviceMode;
     if ((w.player[0].inputKind == 1 && m0 != 6) || (w.player[1].inputKind == 1 && m1 != 6)) a.controller = true;
     if (w.player[0].inputKind == 0 || w.player[1].inputKind == 0) a.calibrate = true;
@@ -322,7 +322,8 @@ void Handler(World::Impl& w, int i) {
     case 5:  // 0x004878E0 calibration (0x004882D0)
         if (m.optCursor == 5 && Pressed(w, 0xC000C)) {
             w.Sound(0x3016A9);
-            w.Note("options: gun calibration screen (0x004882D0) not ported");
+            if (w.cfg.portFeatures) ++m.optWiiRequests;
+            else w.Note("options: gun calibration screen (0x004882D0) not ported");
         }
         return;
     case 6: case 7: {  // 0x00487910 sound test (0..0x2EE, 0x00569798 {id, bgm}) / 0x00487A50 voice test (0..0x12, 0x005970C4)
@@ -425,7 +426,7 @@ void TaskOptList(Task&) {
         if (i < 10) {
             const float x = static_cast<float>(ItemX(exe, i));
             const float y = static_cast<float>(ItemY(exe, i)) + (i < 3 ? 0.0f : sc) + (i == 8 || i == 9 ? shift : 0.0f);
-            const std::string label = ItemText(exe, i);
+            const std::string label = i == 5 && w.cfg.portFeatures ? "Wii Remotes" : ItemText(exe, i);
             if (m.optCursor == i) {
                 if (i == 3) {
                     if (m.optHidden != 0) Text(w, x, static_cast<float>(ItemY(exe, 3)), label, 0x111);
@@ -508,6 +509,7 @@ void OptionsFrame(World::Impl& w) {
         m.optPortRows = w.cfg.portVolumes[0] >= 0;  // port: the volume / display rows (play.exe), from the current settings
         for (int k = 0; k < 3; ++k) m.optVolume[k] = std::clamp(w.cfg.portVolumes[k], 0, 10);
         m.optDisplayRequests = 0;
+        m.optWiiRequests = 0;
         m.optScroll = -1;  // 0x007DD028 = 0xFFFF
         w.front.dimCounter = 0;
         w.subState = 1;
