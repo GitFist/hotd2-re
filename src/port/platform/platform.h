@@ -16,6 +16,7 @@
 #include "audio/audio_output.h"
 #include "input/aim_map.h"
 #include "input/player_state.h"
+#include "input/lightguns.h"
 #include "render/gpu_device.h"
 
 namespace platform {
@@ -59,6 +60,7 @@ struct Options {
     std::string title = "hotd2-re";
     int width = 960, height = 720;  // client size
     bool window = true;             // false: headless (no window, no SDL video)
+    bool hidden = false;            // an actual hidden window for platform integration tests
     bool resizable = true;
     Input input = Input::Auto;      // gun source for the window (play.exe); Input::Auto picks per platform
     bool guns = false;              // create a gun source
@@ -82,6 +84,9 @@ public:
 
     input::GunSource* Guns();       // null without a window / guns
     void ClientSize(int* w, int* h) const;
+    Input CurrentInput() const;
+    bool SetInput(Input mode, std::string* error);
+    input::Lightguns& Lightguns();
 
     // Display settings of play.exe (notes/agents/display.md). Fullscreen = SDL's borderless desktop fullscreen;
     // SetWindowSize sets the windowed client size; UsableDisplaySize = the usable bounds of the window's display (the

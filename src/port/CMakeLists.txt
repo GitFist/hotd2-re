@@ -5,7 +5,7 @@
 #                   port_input (Windows raw input; also used by the hook)
 #   platform layer: port_platform (SDL3: window, events, clock, input sources, device / audio creation, PNG)
 
-add_library(port_input_core STATIC input/aim_map.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp)
+add_library(port_input_core STATIC input/aim_map.cpp input/aim_calibration.cpp input/lightguns.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp)
 target_include_directories(port_input_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(WIN32)
@@ -93,6 +93,11 @@ if(HOTD2_SDL3)
   # play.exe - playable game on the native world (game mode 6): gun input, gameplay HUD, sound.
   add_executable(play tools/play.cpp)
   target_link_libraries(play PRIVATE port_platform game_hud port_play port_net)
+  if(WIN32)
+    add_executable(lightgun_platform_test ${CMAKE_SOURCE_DIR}/tests/lightgun_platform_test.cpp)
+    target_link_libraries(lightgun_platform_test PRIVATE port_platform)
+  endif()
+
   if(MSVC)
     # 32-bit: 4 GB of address space on 64-bit Windows (the asset pack's decoded textures are up to 16 MB each)
     target_link_options(play PRIVATE /LARGEADDRESSAWARE)

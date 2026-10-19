@@ -54,6 +54,7 @@ struct ModesState {
     // the options screen, 0..10; off in the exactness tests
     bool optPortRows = false;
     int optVolume[3] = { 10, 10, 10 };
+    int optLightgunRequests = 0;
     int optWiiRequests = 0;
     int optDisplayRequests = 0;     // port only: times the "Display Settings" row (14) was confirmed; play.exe opens its
                                     // display page (src/port/play/display_menu.h) over the screen when it grows

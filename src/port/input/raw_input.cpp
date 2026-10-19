@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <vector>
+#include <iomanip>
+#include <cwctype>
+#include <sstream>
 
 namespace input {
 
@@ -10,6 +13,17 @@ constexpr USHORT kUsagePageGeneric = 0x01;
 constexpr USHORT kUsageMouse = 0x02;
 
 Rect FromWin(const RECT& r) { return { r.left, r.top, r.right, r.bottom }; }
+
+std::string DeviceKey(HANDLE handle) {
+    UINT count=0;
+    if(GetRawInputDeviceInfoW(handle,RIDI_DEVICENAME,nullptr,&count)==UINT(-1)||!count)return {};
+    std::vector<wchar_t> name(count+1);
+    if(GetRawInputDeviceInfoW(handle,RIDI_DEVICENAME,name.data(),&count)==UINT(-1))return {};
+    // Store an opaque identifier locally, never the Windows device path.
+    uint64_t hash=14695981039346656037ULL;
+    for(wchar_t ch:name){if(!ch)break;hash^=uint16_t(towlower(ch));hash*=1099511628211ULL;}
+    std::ostringstream text;text<<std::hex<<std::setfill('0')<<std::setw(16)<<hash;return text.str();
+}
 }  // namespace
 
 bool RawInput::Init(HWND window, HWND coordWindow) {
@@ -72,6 +86,7 @@ void RawInput::RemoveDevice(HANDLE handle) {
     if (it == devices_.end()) {
         return;
     }
+    if(setup)setup->RemoveDevice(it->second.key);
     if (it->second.player >= 0) {
         players_[it->second.player] = PlayerState{};
     }
@@ -93,6 +108,28 @@ bool RawInput::ProcessMouse(HANDLE handle, const RAWMOUSE& m) {
     if (flags & RI_MOUSE_RIGHT_BUTTON_UP)    up   |= kReload;
     if (flags & RI_MOUSE_MIDDLE_BUTTON_DOWN) down |= kStart;
     if (flags & RI_MOUSE_MIDDLE_BUTTON_UP)   up   |= kStart;
+
+    if(setup){
+        if(dev.key.empty())dev.key=deviceKeyProvider?deviceKeyProvider(handle):DeviceKey(handle);
+        if(dev.key.empty())return false;
+        if(flags&RI_MOUSE_BUTTON_4_DOWN)down|=8;
+        if(flags&RI_MOUSE_BUTTON_4_UP)up|=8;
+        if(flags&RI_MOUSE_BUTTON_5_DOWN)down|=16;
+        if(flags&RI_MOUSE_BUTTON_5_UP)up|=16;
+        const auto g=QueryGeometry();bool inside=false;
+        float x=dev.relX,y=dev.relY;
+        if(m.usFlags&MOUSE_MOVE_ABSOLUTE){
+            float sx,sy;AbsoluteToScreen(m.lLastX,m.lLastY,(m.usFlags&MOUSE_VIRTUAL_DESKTOP)?g.virtualDesk:g.primary,&sx,&sy);
+            inside=ScreenToNormalized(sx,sy,g.client,&x,&y);dev.absolute=true;dev.hasPosition=true;
+        }else if(!dev.absolute){
+            POINT pt{};
+            if(GetCursorPos(&pt))inside=ScreenToNormalized(float(pt.x),float(pt.y),g.client,&x,&y);
+            dev.hasPosition=true;
+        }else inside=x>=0&&x<1&&y>=0&&y<1;
+        dev.relX=x;dev.relY=y;
+        setup->Feed(dev.key,x,y,inside&&dev.hasPosition,!dev.absolute,down,up);
+        return true;
+    }
 
     // Unassigned devices join on their first trigger pull.
     if (dev.player < 0) {

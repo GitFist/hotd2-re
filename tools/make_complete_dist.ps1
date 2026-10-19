@@ -173,8 +173,13 @@ Native Wii support has automated coverage; real-hardware pairing and aiming are 
 Close the window or use Exit on the main menu to quit.
 Pause > Display: fullscreen, aspect ratio, render resolution, and CRT scanlines.
 Pause also offers separate music, gunshot, and sound-effect volumes.
-Mouse/touchpad input is enabled by default. For raw light-gun input, close the game
-and change input=mouse to input=raw in hotd2re_settings.ini.
+Mouse/touchpad input is enabled by default. Open Options > Light Guns or Pause > Light Guns.
+Choose LIGHT GUNS, then Assign Player 1 and pull that gun's trigger. Repeat for Player 2.
+Player settings offer button capture, four-target aim calibration, and Test both guns.
+ESC cancels setup or leaves the test. Assignments and settings save automatically.
+Choose MOUSE to use a mouse or touchpad again. Input changes release native Wii Remote
+control; it can be enabled again in Wii Remotes. Sinden users must keep their border enabled.
+Online players should assign their local gun to Player 1. Light-gun hardware testing is pending.
 
 BUILD.txt identifies this build. SHA256SUMS.txt lists the packaged file hashes.
 '@ | Set-Content -LiteralPath (Join-Path $packageDir "README.txt") -Encoding ascii

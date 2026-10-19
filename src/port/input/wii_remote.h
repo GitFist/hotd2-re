@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include "input/player_state.h"
+#include "input/aim_calibration.h"
 
 namespace input {
 namespace wii {
@@ -15,14 +16,8 @@ constexpr uint16_t Two=0x0001, One=0x0002, B=0x0004, A=0x0008, Minus=0x0010,
                    Home=0x0080, Left=0x0100, Right=0x0200, Down=0x0400, Up=0x0800, Plus=0x1000;
 constexpr std::array<uint16_t, 7> Bindable{B,A,Plus,Home,One,Two,Minus};
 const char* ButtonName(uint16_t button);
-struct Point { double x=0, y=0; };
-struct Calibration {
-    std::array<double,9> h{1,0,0,0,1,0,0,0,1};
-    bool calibrated=false;
-    bool Apply(Point raw, Point& mapped) const;
-    // Four points taken at the displayed inset targets, clockwise from top left.
-    bool Fit(const std::array<Point,4>& samples);
-};
+using Point = input::AimPoint;
+using Calibration = input::AimCalibration;
 struct Profile {
     // Fire, reload, confirm, pause. Assignment is exclusive: changing a binding swaps duplicates.
     std::array<uint16_t,4> buttons{B,A,Plus,Home};

@@ -103,7 +103,7 @@ public:
     input::GunSource* inner = nullptr;
     SDL_Window* window = nullptr;
     input::ImageRect image;
-    bool mapped = false;
+    bool mapped = false, gameSpace = false;
 
     const char* Name() const override { return inner ? inner->Name() : "none"; }
     void BeginFrame() override {
@@ -111,7 +111,7 @@ public:
     }
     input::PlayerState Player(int index) const override {
         input::PlayerState ps = inner ? inner->Player(index) : input::PlayerState{};
-        if (!ps.connected || !mapped || !window) return ps;
+        if (!ps.connected || !mapped || !window || gameSpace) return ps;
         int w = 1, h = 1;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         float gx, gy;
@@ -130,6 +130,7 @@ struct Platform::Impl {
     SDL_Cursor* cursor = nullptr;
     Input input = Input::Auto;
     input::PointerGuns pointer;
+    input::Lightguns lightguns;
     input::TouchGuns touch;
     MappedGuns mapped;
     // Application activation (Event::Type::Focus): the last state reported, and the state the platform saw last.
@@ -147,7 +148,7 @@ struct Platform::Impl {
     }
     static bool SDLCALL MessageHook(void* user, MSG* msg) {
         Impl* self = static_cast<Impl*>(user);
-        if (self->input == Input::RawInput && (msg->message == WM_INPUT || msg->message == WM_INPUT_DEVICE_CHANGE))
+        if (self->input == Input::RawInput && ((msg->message == WM_INPUT && self->activeNow) || msg->message == WM_INPUT_DEVICE_CHANGE))
             self->raw.HandleMessage(msg->message, msg->wParam, msg->lParam);
         return true;  // SDL still dispatches it (DefWindowProc cleans up WM_INPUT)
     }
@@ -226,7 +227,7 @@ bool Platform::Init(const Options& o, std::string* error) {
         return false;
     }
     m.sdlVideo = true;
-    m.window = SDL_CreateWindow(o.title.c_str(), o.width, o.height, o.resizable ? SDL_WINDOW_RESIZABLE : 0);
+    m.window = SDL_CreateWindow(o.title.c_str(), o.width, o.height, (o.resizable ? SDL_WINDOW_RESIZABLE : 0) | (o.hidden ? SDL_WINDOW_HIDDEN : 0));
     if (!m.window) {
         if (error) *error = std::string("SDL_CreateWindow: ") + SDL_GetError();
         return false;
@@ -242,6 +243,8 @@ bool Platform::Init(const Options& o, std::string* error) {
         m.cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
         if (m.cursor) SDL_SetCursor(m.cursor);
 #ifdef _WIN32
+        m.raw.Raw().setup = &m.lightguns;
+        SDL_SetWindowsMessageHook(&Impl::MessageHook, &m);
         if (m.input == Input::RawInput) {
             // Our raw-input registration on SDL's window. SDL only registers raw mouse input itself in relative mouse
             // mode (which would take the registration over), so the port never enables relative mode.
@@ -359,14 +362,33 @@ void Platform::Delay(int ms) { SDL_Delay(static_cast<Uint32>(ms)); }
 input::GunSource* Platform::Guns() {
     Impl& m = *impl_;
     if (!m.window || !m.opt.guns) return nullptr;
-    if (m.input == Input::Touch) return &m.touch;
     m.mapped.window = m.window;
+    m.mapped.gameSpace = m.input == Input::Touch || m.input == Input::RawInput;
+    m.mapped.inner = m.input == Input::RawInput ? static_cast<input::GunSource*>(&m.lightguns) :
+                     m.input == Input::Touch ? static_cast<input::GunSource*>(&m.touch) : &m.pointer;
+    return &m.mapped; // stable address when the source changes with a Wii wrapper attached
+}
+input::Lightguns& Platform::Lightguns() { return impl_->lightguns; }
+Input Platform::CurrentInput() const { return impl_->input; }
+bool Platform::SetInput(Input mode, std::string* error) {
+    auto& m=*impl_;
+    if(mode!=Input::Mouse && mode!=Input::RawInput){if(error)*error="Choose mouse or light guns";return false;}
+    if(!m.window || !m.opt.guns){if(error)*error="Input requires a game window";return false;}
+    if(mode==m.input)return true;
 #ifdef _WIN32
-    m.mapped.inner = m.input == Input::RawInput ? static_cast<input::GunSource*>(&m.raw) : &m.pointer;
+    if(mode==Input::RawInput && !m.raw.Init(m.hwnd)){if(error)*error="Could not read light guns";return false;}
 #else
-    m.mapped.inner = &m.pointer;
+    if(mode==Input::RawInput){if(error)*error="Separate light guns require Windows";return false;}
 #endif
-    return &m.mapped;
+    #ifdef _WIN32
+    m.raw.Raw().ClearDevices();
+    #endif
+    m.lightguns.ClearLive();
+    m.pointer = input::PointerGuns{};
+    m.pointer.pointerQuery=[&m](float* x,float* y){return m.PointerQuery(x,y);};
+    m.input=mode;
+    Guns();
+    return true;
 }
 
 void Platform::ClientSize(int* w, int* h) const {
@@ -424,6 +446,7 @@ void Platform::SetGameImage(const input::ImageRect& image) {
     m.touch.config.aspect = whole ? input::Aspect::Stretch : input::Aspect::Pillarbox43;
     m.touch.config.displayW = static_cast<float>(w);
     m.touch.config.displayH = static_cast<float>(h);
+    m.lightguns.SetImage(float(image.x)/w,float(image.y)/h,float(image.w)/w,float(image.h)/h);
 }
 
 std::unique_ptr<port::GpuDevice> Platform::CreateGpu(Renderer r, int width, int height, bool followWindowSize, int syncInterval,

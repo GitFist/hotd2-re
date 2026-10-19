@@ -183,6 +183,7 @@ struct WorldHud {
     StageResults stageResults;
     uint32_t randomizerSeed = 0, randomizerHash = 0;  // port-only lockstep/recovery checks
     bool prototype = false;
+    int portLightgunRequests = 0; // opens the local light-gun setup page
     int portWiiRequests = 0; // opens the local native Wii Remote setup page
     int portDisplayRequests = 0;  // port only: the options screen's "Display Settings" row confirmed that many times (play.exe
                                   // shows its display page over the screen while the row count grows)

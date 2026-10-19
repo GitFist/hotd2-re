@@ -82,7 +82,7 @@ struct Allow {
 };
 Allow Permissions(World::Impl& w) {
     Allow a;
-    if (w.cfg.portFeatures) { a.calibrate = true; return a; } // the calibration row opens native Wii Remote setup
+    if (w.cfg.portFeatures) { a.calibrate = a.controller = true; return a; } // the calibration row opens native Wii Remote setup
     const int m0 = w.input[0].deviceMode, m1 = w.input[1].deviceMode;
     if ((w.player[0].inputKind == 1 && m0 != 6) || (w.player[1].inputKind == 1 && m1 != 6)) a.controller = true;
     if (w.player[0].inputKind == 0 || w.player[1].inputKind == 0) a.calibrate = true;
@@ -362,7 +362,8 @@ void Handler(World::Impl& w, int i) {
     case 8:  // 0x00487B50 controller setup (0x00485F90)
         if (m.optCursor == 8 && Pressed(w, 0xC000C)) {
             w.Sound(0x3016A9);
-            w.Note("options: controller screen (0x00485F90) not ported");
+            if (w.cfg.portFeatures) ++m.optLightgunRequests;
+            else w.Note("options: controller screen (0x00485F90) not ported");
         }
         return;
     case 11: case 12: case 13: {  // port only: Music / Gun Shots / Sound Effects volume 0..10 (L / R), in the controller line's slot
@@ -426,7 +427,7 @@ void TaskOptList(Task&) {
         if (i < 10) {
             const float x = static_cast<float>(ItemX(exe, i));
             const float y = static_cast<float>(ItemY(exe, i)) + (i < 3 ? 0.0f : sc) + (i == 8 || i == 9 ? shift : 0.0f);
-            const std::string label = i == 5 && w.cfg.portFeatures ? "Wii Remotes" : ItemText(exe, i);
+            const std::string label = i == 5 && w.cfg.portFeatures ? "Wii Remotes" : i == 8 && w.cfg.portFeatures ? "Light Guns" : ItemText(exe, i);
             if (m.optCursor == i) {
                 if (i == 3) {
                     if (m.optHidden != 0) Text(w, x, static_cast<float>(ItemY(exe, 3)), label, 0x111);
@@ -510,6 +511,7 @@ void OptionsFrame(World::Impl& w) {
         for (int k = 0; k < 3; ++k) m.optVolume[k] = std::clamp(w.cfg.portVolumes[k], 0, 10);
         m.optDisplayRequests = 0;
         m.optWiiRequests = 0;
+        m.optLightgunRequests = 0;
         m.optScroll = -1;  // 0x007DD028 = 0xFFFF
         w.front.dimCounter = 0;
         w.subState = 1;

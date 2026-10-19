@@ -59,6 +59,7 @@
 #include "port/play/keyboard.h"
 #include "port/play/pause_menu.h"
 #include "port/play/wii_menu.h"
+#include "port/play/lightgun_menu.h"
 #include "game/world_sound.h"
 #include "platform/fixed_clock.h"
 #include "platform/platform.h"
@@ -137,8 +138,8 @@ uint32_t WorldHash(const game::World& w) {
 
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
-constexpr uint32_t kBuildId = 2026101901;
-const char* const kBuildName = "2026 10 19 V";  // (the menu font has no period)
+constexpr uint32_t kBuildId = 2026101902;
+const char* const kBuildName = "2026 10 19 W";  // (the menu font has no period)
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -784,6 +785,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "renderer: %s\n", err.c_str());
         return 1;
     }
+    auto& lightguns = plat.Lightguns();
+    const std::string lightgunSettingsPath = "hotd2re_lightguns.ini";
+    if (!headless) lightguns.settings.Load(lightgunSettingsPath);
     input::WiiRemotes wii(plat.Guns());
     const std::string wiiSettingsPath = "hotd2re_wii.ini";
     if (!headless) { wii.settings.Load(wiiSettingsPath); wii.Configure(); }
@@ -848,6 +852,9 @@ int main(int argc, char** argv) {
     uint32_t menuPrevKeys = 0;
     // The display settings page over the Options screen (its port-only "Display Settings" row, WorldHud::
     // portDisplayRequests): play.exe draws the page as the whole frame and takes the input while it is open.
+    play::LightgunMenu lightgunPage;
+    int lightgunRequestsSeen = 0;
+    if (getenv("HOTD2_LIGHTGUN_MENU")) lightgunPage.Open();
     play::WiiMenu wiiPage;
     int wiiRequestsSeen = 0;
     play::MenuInput wiiMouse;
@@ -1034,7 +1041,7 @@ int main(int argc, char** argv) {
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
                 if (ev.type == T::Quit) quit = true;
-                if (wiiPage.IsOpen() && (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
+                if ((wiiPage.IsOpen() || lightgunPage.IsOpen()) && (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
                     int ww, wh; plat.ClientSize(&ww, &wh);
                     const auto image = input::FitImage(ww, wh, volumes.display.stretch ? input::Aspect::Stretch : input::Aspect::Pillarbox43);
                     float x, y;
@@ -1056,7 +1063,7 @@ int main(int argc, char** argv) {
                     printf("play: %s at game frame %d\n", active ? "active" : "inactive (paused)", world.Frame());
                     fflush(stdout);
                     if (sndDriver) sndDriver->OnActivate(active);
-                    if (!active) g_keys = 0;  // key-ups are not seen while inactive
+                    if (!active) { g_keys = 0; lightguns.ReleaseButtons(); } // key-ups are not seen while inactive
                     if (active && guns) guns->BeginFrame();  // drop button edges from the inactive time (raw input sinks)
                     clock.Reset(plat.Seconds());
                 }
@@ -1120,7 +1127,7 @@ int main(int argc, char** argv) {
             }
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
-            bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false;
+            bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false, lightgunOpenedThisFrame = false;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
@@ -1148,7 +1155,7 @@ int main(int argc, char** argv) {
                 }
                 menuWasOpen = menu.IsOpen();
                 menuPausePlayer = hh.pausePlayer;
-                if (menuWasOpen && !menuClosing && !wiiPage.IsOpen()) {
+                if (menuWasOpen && !menuClosing && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                     const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
                     std::vector<uint32_t> menuSounds;
                     const play::Settings before = volumes;
@@ -1161,6 +1168,9 @@ int main(int argc, char** argv) {
                     if (act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen())) volumes.Save(settingsPath);  // leaving the menu / page keeps the settings
                     if (act == play::PauseMenu::Action::WiiRemotes) {
                         wiiPage.Open(); wii.BeginFrame(); wiiOpenedThisFrame = true;
+                    }
+                    if (act == play::PauseMenu::Action::Lightguns) {
+                        lightgunPage.Open(); wii.BeginFrame(); lightgunOpenedThisFrame = true;
                     }
                     if (act == play::PauseMenu::Action::Resume) {
                         if (netplay) { netCmd |= port::net::kCmdResume; menuClosing = true; }
@@ -1181,7 +1191,7 @@ int main(int argc, char** argv) {
             }
             // The display page over the Options screen: opened when the world reports a new request; while open it
             // takes the keys and the device buttons (the world gets no input, so the screen stays as it is).
-            bool pageWasOpen = wiiPage.IsOpen();
+            bool pageWasOpen = wiiPage.IsOpen() || lightgunPage.IsOpen();
             if (menuEnabled && wiiPage.IsOpen() && !wiiOpenedThisFrame) {
                 auto mi = menuInput(g_keys & ~menuPrevKeys, 0);
                 if ((g_keys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
@@ -1201,7 +1211,44 @@ int main(int argc, char** argv) {
                 if (wiiPage.Update(mi, wii) && !wii.settings.Save(wiiSettingsPath)) fprintf(stderr, "Wii Remote settings could not be saved\n");
                 wiiMouse = {};
             }
-            if (menuEnabled && optionsPage.IsOpen() && !wiiPage.IsOpen()) {
+            if (menuEnabled && lightgunPage.IsOpen() && !lightgunOpenedThisFrame) {
+                auto mi = menuInput(g_keys & ~menuPrevKeys, 0);
+                if ((g_keys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
+                bool deviceAction = false;
+                for (int dev = 0; dev < 2; ++dev) {
+                    const auto ps = wii.Player(dev);
+                    if (ps.connected && (ps.pressed || ps.menuPressed)) {
+                        deviceAction = true;
+                        mi.pointer = ps.onScreen; mi.px = ps.x * 640; mi.py = ps.y * 480;
+                        mi.trigger = (ps.pressed & input::kTrigger) != 0;
+                        mi.reload = (ps.pressed & input::kReload) != 0;
+                        mi.start |= (ps.pressed & input::kStart) != 0; mi.pressed |= ps.menuPressed;
+                    }
+                }
+                if (!deviceAction && wiiMouse.pointer) {
+                    mi.pointer = true; mi.px = wiiMouse.px; mi.py = wiiMouse.py;
+                    mi.trigger |= wiiMouse.trigger; mi.reload |= wiiMouse.reload;
+                }
+                auto act = lightgunPage.Update(mi, lightguns, plat.CurrentInput() == platform::Input::RawInput);
+                using LA = play::LightgunMenu::Action;
+                if (act == LA::GunMode || act == LA::MouseMode) {
+                    auto mode = act == LA::GunMode ? platform::Input::RawInput : platform::Input::Mouse;
+                    std::string inputError;
+                    if (plat.SetInput(mode, &inputError)) {
+                        if (wii.settings.enabled) {
+                            wii.settings.enabled = false; wii.Configure();
+                            if (!wii.settings.Save(wiiSettingsPath)) fprintf(stderr, "Wii Remote settings could not be saved\n");
+                        }
+                        volumes.input = act == LA::GunMode ? "raw" : "mouse";
+                        if (!volumes.Save(settingsPath)) lightgunPage.Notice("Could not save input mode - check folder access");
+                        else lightgunPage.Notice(act == LA::GunMode ? "Assign each gun to a player" : "Mouse input enabled");
+                    } else lightgunPage.Notice(inputError);
+                }
+                if (act == LA::Save && !lightguns.settings.Save(lightgunSettingsPath))
+                    lightgunPage.Notice("Could not save gun settings - check folder access");
+                wiiMouse = {};
+            }
+            if (menuEnabled && optionsPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
@@ -1781,6 +1828,10 @@ int main(int argc, char** argv) {
                 if (req > displayRequestsSeen && menuEnabled) optionsPage.Open();
                 displayRequestsSeen = req;
             }
+            if (const int req = world.Hud().portLightgunRequests; req != lightgunRequestsSeen) {
+                if (req > lightgunRequestsSeen && menuEnabled) { lightgunPage.Open(); wii.BeginFrame(); }
+                lightgunRequestsSeen = req;
+            }
             if (const int req = world.Hud().portWiiRequests; req != wiiRequestsSeen) {
                 if (req > wiiRequestsSeen && menuEnabled) { wiiPage.Open(); wii.BeginFrame(); }
                 wiiRequestsSeen = req;
@@ -1835,6 +1886,11 @@ int main(int argc, char** argv) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             sprites = scene.MakeSpriteDraws(world.Hud().sprites, 0.001f, nullptr);
+        } else if (lightgunPage.IsOpen()) {
+            renderer.SetScene(assets, {}); vp = game::Mat4::Identity();
+            std::vector<game::SpriteDef> md;
+            lightgunPage.Sprites(assets.Exe(), lightguns, plat.CurrentInput() == platform::Input::RawInput, md);
+            sprites = scene.MakeSpriteDraws(md, 0.001f, nullptr);
         } else if (wiiPage.IsOpen()) {
             renderer.SetScene(assets, {}); vp = game::Mat4::Identity();
             std::vector<game::SpriteDef> md;

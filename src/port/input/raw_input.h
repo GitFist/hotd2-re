@@ -19,6 +19,7 @@
 
 #include "aim_map.h"
 #include "player_state.h"  // PlayerState, Button, kMaxPlayers
+#include "lightguns.h"
 
 namespace input {
 
@@ -52,6 +53,11 @@ public:
 
     // Unassigns all devices so the next trigger pulls pick P1/P2 again.
     void ResetAssignments();
+    void ClearDevices(){devices_.clear();players_={};if(setup)setup->ClearLive();}
+
+    // Optional port setup layer. The original-game hook retains its legacy behavior.
+    Lightguns* setup = nullptr;
+    std::function<std::string(HANDLE)> deviceKeyProvider;
 
     // Mouse sensitivity for relative devices, in window-widths per 1000 counts.
     float relativeSensitivity = 0.6f;
@@ -63,6 +69,8 @@ private:
     struct Device {
         int player = -1;
         float relX = 0.5f, relY = 0.5f;  // accumulated position for relative mice
+        std::string key;
+        bool hasPosition = false, absolute = false;
     };
 
     Geometry QueryGeometry() const;
