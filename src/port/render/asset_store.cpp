@@ -25,6 +25,9 @@ bool AssetStore::Open(const std::filesystem::path& gameDir, std::string* error) 
         auto& list = byFile_[f.name];
         for (int i = 0; i < f.count; ++i) list.push_back({ f.index, f.name, game::ReadTextureDesc(exe_, f, i), i });
     }
+    redBloodTextures_.clear();
+    if (auto it = byFile_.find("scr_blood_red.bin"); it != byFile_.end())
+        for (const auto& r : it->second) redBloodTextures_.emplace(r.desc.id, r);
     return true;
 }
 
@@ -97,17 +100,9 @@ std::string AssetStore::TextureFileFor(const std::string& polName) const {
 const RgbaImage* AssetStore::Texture(const std::string& polName, uint32_t ref) {
     if (ref == 0xFFFFFFFF) return nullptr;
     const std::string texName = TextureFileFor(polName);
-    const auto key = std::make_pair(texName, ref);
-    auto it = textures_.find(key);
-    if (it != textures_.end()) return it->second.get();
-    const TexRef* r = nullptr;
-    if (!texName.empty()) {
-        const auto& list = byFile_.at(texName);
-        if (ref < list.size()) r = &list[ref];
-    }
-    auto& slot = textures_[key];
-    slot = r ? Decode(*r) : nullptr;
-    return slot.get();
+    const auto file = byFile_.find(texName);
+    if (file == byFile_.end() || ref >= file->second.size()) return nullptr;
+    return ResolvedTexture(file->second[ref]);
 }
 
 const RgbaImage* AssetStore::TextureById(int fileIndex, uint32_t id) {
@@ -115,16 +110,27 @@ const RgbaImage* AssetStore::TextureById(int fileIndex, uint32_t id) {
         if (list.empty() || list[0].fileIndex != fileIndex) continue;
         for (size_t i = 0; i < list.size(); ++i) {
             if (list[i].desc.id != id) continue;
-            const auto key = std::make_pair(name, static_cast<uint32_t>(i));
-            auto it = textures_.find(key);
-            if (it != textures_.end()) return it->second.get();
-            auto& slot = textures_[key];
-            slot = Decode(list[i]);
-            return slot.get();
+            return ResolvedTexture(list[i]);
         }
         return nullptr;
     }
     return nullptr;
+}
+
+const RgbaImage* AssetStore::ResolvedTexture(const TexRef& original) {
+    const TexRef* r = &original;
+    if (redBlood_) {
+        // 0x0041CD70 loads the selected blood file before models: its shared global
+        // texture IDs replace sprays, pools and wounds from every model file.
+        auto blood = redBloodTextures_.find(original.desc.id);
+        if (blood != redBloodTextures_.end()) r = &blood->second;
+    }
+    const TexKey key(r->fileName, static_cast<uint32_t>(r->texIndex));
+    auto it = textures_.find(key);
+    if (it != textures_.end()) return it->second.get();
+    auto& slot = textures_[key];
+    slot = Decode(*r); // uses the selected color's optional PNG override too
+    return slot.get();
 }
 
 std::unique_ptr<RgbaImage> AssetStore::LoadOverride(const TexRef& r) {

@@ -41,6 +41,7 @@ bool Settings::Load(const std::string& path) {
         else if (key == "aspect") display.stretch = val == "stretch";
         else if (key == "crt") display.crt = std::clamp(v, 0, 3);
         else if (key == "render") display.renderScale = std::clamp(v, 1, 4);
+        else if (key == "blood" && (val == "red" || val == "green")) display.redBlood = val == "red";
         else if (key == "assets") assets = val;
         else if (key == "lobby") lobby = val;
     }
@@ -56,6 +57,7 @@ bool Settings::Save(const std::string& path) const {
     if (display.windowScale == 0) f << "scale=fit\n";
     else f << "scale=" << display.windowScale << "\n";
     f << "aspect=" << (display.stretch ? "stretch" : "4:3") << "\ncrt=" << display.crt << "\nrender=" << display.renderScale << "\n";
+    f << "blood=" << (display.redBlood ? "red" : "green") << "\n";
     if (!assets.empty()) f << "assets=" << assets << "\n";
     if (!lobby.empty()) f << "lobby=" << lobby << "\n";
     return static_cast<bool>(f);

@@ -7,6 +7,8 @@
 //  - SoundDriver (Snd_PlayFile 0x004AC020 channel/ring/loop logic) scenarios on a fake backend.
 // --dump prints the full id -> file table. --ids <file>: every id of a list ("<hex id> ..." per line, e.g. the distinct U-line ids
 // of the captures) resolved like the port plays it (game modes 5 and 6): files present, categories, ids without an effect.
+// --cutscene-replay <config> <script> <skip frame> <end frame>: replay a real boss intro and check that skipping
+// stops its voice without allowing the civilian actor's later queued lines to restart during the fight.
 
 #include <cctype>
 #include <cstdio>
@@ -15,12 +17,16 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "game/exe_image.h"
 #include "game/sound_driver.h"
 #include "game/sound_table.h"
+#include "game/world_internal.h"
+#include "game/world_config_io.h"
+#include "game/world_sound.h"
 
 namespace fs = std::filesystem;
 using namespace game;
@@ -180,6 +186,86 @@ static void DriverScenarios(const SoundTable& t) {
     }
 }
 
+static void CutsceneSkipScenarios() {
+    for (bool skippable : {false, true}) for (bool requested : {false, true}) {
+        World::Impl world;
+        world.gameMode = 6;
+        world.runner = std::make_unique<EventRunner>(world.mem, world, &world.env, &world.exe);
+        world.runner->skippable = skippable;
+        world.runner->globals[0x009A2230] = 0;  // event opcode 0x2C arms the cutscene
+        world.runner->camera.playTick = 80;
+        world.runner->camera.endTick = 200;
+        world.skipRequest = requested;
+        world.NewTask<WTask>(WorldTramp<&World::Impl::TaskSkipWatch>, fn::kSkipWatch2);
+        SetCurrentWorld(&world);
+        world.ts.RunFrame();
+        SetCurrentWorld(nullptr);
+        const bool skipped = skippable && requested;
+        // Civilian actors read GlobalInt rather than the subtitle/actor25 skip2230 field.
+        CHECK(world.GlobalInt(0x009A2230, 0) == static_cast<int>(skipped));
+        CHECK(world.skip2230 == static_cast<int>(skipped));
+        CHECK(world.runner->skipping == skipped);
+        CHECK(world.runner->camera.endTick == (skipped ? 80 : 200));
+        // The transient skip ends on the next watcher call; neither reader may retain it.
+        SetCurrentWorld(&world);
+        world.ts.RunFrame();
+        SetCurrentWorld(nullptr);
+        CHECK(world.skip2230 == 0 && world.GlobalInt(0x009A2230, -1) == 0);
+    }
+}
+
+static void CutsceneSkipReplay(const fs::path& game, const SoundTable& table, const std::string& config,
+                               const std::string& script, int skipFrame, int endFrame) {
+    World world;
+    WorldConfig cfg;
+    std::string error;
+    if (!LoadWorldConfig(config, &cfg, &error) || !world.Load(game.string(), cfg.eventMode, &error) ||
+        !world.StartStage(cfg, &error)) {
+        printf("FAIL cutscene replay: %s\n", error.c_str()); ++g_fail; return;
+    }
+    struct Input { int frame, player; float x, y; unsigned buttons; };
+    std::vector<Input> inputs;
+    std::ifstream file(script); std::string line;
+    while (std::getline(file, line)) {
+        Input in{}; std::istringstream row(line);
+        if (row >> in.frame >> in.player >> in.x >> in.y >> in.buttons) inputs.push_back(in);
+    }
+    CHECK(!inputs.empty());
+    FakeBackend backend;
+    SoundDriver driver(backend);
+    size_t pos = 0; float x[2] = {.5f, .5f}, y[2] = {.5f, .5f}; uint8_t buttons[2] = {};
+    bool skipped = false, voiceBefore = false, stopped = false, resumed = false;
+    for (const auto& sound : world.Sounds()) PlaySoundEvent(driver, table, sound);
+    while (world.Frame() < endFrame) {
+        const int frame = world.Frame() + 1;
+        uint8_t prev[2] = {buttons[0], buttons[1]};
+        while (pos < inputs.size() && inputs[pos].frame <= frame) {
+            const auto in = inputs[pos++]; x[in.player] = in.x; y[in.player] = in.y;
+            buttons[in.player] = static_cast<uint8_t>(in.buttons);
+        }
+        for (int p = 0; p < 2; ++p) world.SetInput(p, MakeWorldInput(x[p], y[p], buttons[p], prev[p]));
+        if (frame == skipFrame) {
+            CHECK(world.Hud().skippable);
+            voiceBefore = backend.ch[kSndVoiceChannel].playing;
+            world.SetInput(0, MakeWorldInput(.5f, .5f, 2, 0));  // reload accepts the real cutscene skip
+        }
+        world.Step();
+        if (frame == skipFrame) skipped = world.Hud().skipping;
+        for (const auto& sound : world.Sounds()) {
+            if (frame > skipFrame && sound.kind == World::kPlayGameSound) {
+                stopped |= sound.id == 0x80000002u;
+                resumed |= (sound.id >> 28) == 2;
+            }
+            PlaySoundEvent(driver, table, sound);
+        }
+    }
+    CHECK(voiceBefore && skipped && stopped && !resumed);
+    CHECK(!backend.ch[kSndVoiceChannel].playing && !backend.ch[kSndVoiceChannel].buffer);
+    CHECK(backend.ch[kSndBgmChannel].playing && world.Hud().canShoot);
+    printf("cutscene replay %d..%d: active voice %d, skip %d, stop %d, later voice %d, boss playable %d\n",
+           skipFrame, endFrame, voiceBefore, skipped, stopped, resumed, world.Hud().canShoot);
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: sound_test <game dir> [--dump]\n");
@@ -302,6 +388,10 @@ int main(int argc, char** argv) {
     }
 
     DriverScenarios(t);
+    CutsceneSkipScenarios();
+    for (int i = 2; i + 4 < argc; ++i)
+        if (std::string(argv[i]) == "--cutscene-replay")
+            CutsceneSkipReplay(game, t, argv[i + 1], argv[i + 2], std::stoi(argv[i + 3]), std::stoi(argv[i + 4]));
 
     if (dump) {
         for (const auto& [id, rel] : all) {

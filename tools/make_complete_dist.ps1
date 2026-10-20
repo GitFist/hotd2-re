@@ -102,6 +102,12 @@ host's code. Only the joining player enters a code. This option also needs the l
 Unlimited Continues OFF gives three continues. Backspace or right click goes back/closes a room.
 The lobby address is already configured. Both players' versions on the Network screen must match.
 
+UPDATES
+Normal launches check the official GitHub release page once in the background. A newer
+build is offered at the local title/main menu: Open download page or Later. Downloading
+and installation are manual. Offline/failed checks stay silent. Pass --no-update-check
+to disable this check. Scripted/headless/direct gameplay launches skip it.
+
 All three room options try a direct connection first and automatically use the online
 server relay when needed. You do not need to set up router port forwarding. If the active
 connection stops responding, the game tries the other path; a brief pause may occur.
@@ -171,7 +177,9 @@ Automatic reconnect keeps searching; Swap players also swaps their saved profile
 Native Wii support has automated coverage; real-hardware pairing and aiming are not yet verified.
 
 Close the window or use Exit on the main menu to quit.
-Pause > Display: fullscreen, aspect ratio, render resolution, and CRT scanlines.
+Pause > Display: fullscreen, aspect ratio, render resolution, CRT scanlines, and Blood Color.
+Blood Color switches between Green and Red immediately and saves your choice.
+It is also available under Options > Display Settings. Each online player chooses independently.
 Pause also offers separate music, gunshot, and sound-effect volumes.
 Mouse/touchpad input is enabled by default. Open Options > Light Guns or Pause > Light Guns.
 Choose LIGHT GUNS, then Assign Player 1 and pull that gun's trigger. Repeat for Player 2.

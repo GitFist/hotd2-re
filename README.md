@@ -12,8 +12,9 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 - **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
 - **Online co-op:** two-player rooms, public lobbies, private room codes, and reconnect support.
 - **Flexible controls:** mouse, touchpad, touch, in-game light-gun setup for two players, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
-- **Display options:** fullscreen and windowed play, aspect ratio settings, render scaling, CRT filtering, and optional 2× textures.
+- **Display options:** fullscreen and windowed play, aspect ratio settings, render scaling, CRT filtering, selectable red or green blood, and optional 2× textures.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
+- Background update notifications at the title/main menu, with a link to the official download page.
 
 ## Getting started
 
@@ -24,6 +25,12 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
+
+Build Z corrects bat, fish and leech lighting/animation, Emperor rendering, car and Magician smoke, scenery texture minification, and Goldman dialogue after skipping his introduction. See the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+
+## Updates
+
+The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. Choose **Open download page** or **Later**. Downloads and installation are manual; failed checks stay silent. Launch with `--no-update-check` to disable the check.
 
 ## Online play
 
@@ -53,6 +60,8 @@ Connections use a direct route when available, with an automatic server relay fa
 | Quit | Main menu **Exit** or close the window |
 
 Open **Options > Light Guns** or **Pause > Light Guns** to switch between mouse/touchpad input and light guns, assign Player 1 and Player 2, remap buttons, calibrate aim, and test both guns. See the [light-gun setup guide](docs/LIGHT-GUNS.md).
+
+Choose **Blood Color: Green / Red** under **Options > Display Settings** or **Pause > Display**. The change applies immediately and is saved locally; online players can choose independently.
 
 ## Wii Remotes
 

@@ -437,6 +437,7 @@ void TaskFish(Task& t) {
         Mat4 d = Mat4::Identity();
         mx::Translate(d, f.pos[0], f.pos[1] + 1.0f, f.pos[2]);
         mx::MulLeft(d, m);
+        w.LightChar();  // 0x00430135: body and shadow use actor lighting
         w.Draw(f.state == 2 ? f.timer + 0x85C : 0x85A, d);
         Mat4 sh = Mat4::Identity();
         mx::Translate(sh, f.pos[0], f.water + F32(exe, 0x004E30F0), f.pos[2]);
@@ -444,6 +445,7 @@ void TaskFish(Task& t) {
         mx::MulLeft(sh, m);
         if (w.runner->scene == 0x1A) w.Note("actor 0x42 fish shadow in scene 0x1A (0x00418620) drawn as 0x004185A0");
         w.Draw(0x85B, sh, 8, 0.5f);  // 0x00430BA0 -> 0x004185A0(model, 0.5)
+        w.LightScene();  // 0x00430A66
     }
     if (sc.cur == f.idx) f.flags34 &= ~0x10000u;
     else f.flags34 |= 0x10000;

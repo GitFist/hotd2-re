@@ -106,6 +106,11 @@ struct WorldDraw {
     // 0x00418660 -> 0x004AA400 ran right before: the uv of the inline vertices of the strips with ctrl 0x100 were
     // rewritten in memory from the model-view normals (sphere map: u = (1 - nx) / 2, v = (ny + 1) / 2)
     bool envMap = false;
+    // Rendering correction for scaled fish/leech bodies: keep specular highlight width
+    // independent of the inverse-transpose normal's length (legacy PC artifact).
+    bool unitSpecular = false;
+    // Tall car-smoke sheets must blend far to near without moving unrelated world/HUD draws.
+    bool sortBackToFront = false;
     // The model's strip control words have bit 0 flipped in memory (cull mode CW <-> CCW): a model of list 0x0057A280
     // (the sky domes 6048 / 6049 / 6307 / 6309) loaded on its own (op 0x50: Res_LoadModel 0x00418B68 -> 0x00419270;
     // a pol-file load does not flip). Where the world does not track the slots, a listed model counts as flipped.

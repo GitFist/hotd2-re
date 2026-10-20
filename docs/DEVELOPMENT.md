@@ -72,6 +72,17 @@ cmake --build build --config Release --target pause_menu_test network_room_test 
 
 Tests that load levels require the game data described above. Some comparison tests also require separately captured reference data.
 
+The startup update check has an offline test suite:
+
+```powershell
+cmake --build build --config Release --target update_check_test
+.\build\src\port\Release\update_check_test.exe
+```
+
+Add `--live` to explicitly test the HTTPS lookup against the public release page. Normal scripted, headless, direct-gameplay, and `--run-frames` launches skip update checks. Interactive launches can also pass `--no-update-check`.
+
+For release notifications, keep `kBuildName` in `src/port/tools/play.cpp` in the form `YYYY MM DD REVISION` and publish the matching GitHub tag as `vYYYY.MM.DD-revision` (for example, `2026 10 19 W` and `v2026.10.19-w`). Revisions advance from `a` through `z`, then `aa`, `ab`, and so on. Unknown tag formats are ignored. The existing numeric `kBuildId` still controls multiplayer compatibility.
+
 ## Source layout
 
 | Directory | Contents |

@@ -449,6 +449,25 @@ void Platform::SetGameImage(const input::ImageRect& image) {
     m.lightguns.SetImage(float(image.x)/w,float(image.y)/h,float(image.w)/w,float(image.h)/h);
 }
 
+void Platform::NotifyUpdate(const std::string& currentBuild, const std::string& availableTag) {
+    if (!impl_->window) return;
+    const std::string message = "HOTD2RE " + availableTag + " is available.\n\nYou are running " + currentBuild +
+        ".\n\nOpen the download page to get the new version, or choose Later to keep playing.";
+    const SDL_MessageBoxButtonData buttons[] = {
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later" },
+        { 0, 1, "Open download page" }
+    };
+    const SDL_MessageBoxData box = {
+        SDL_MESSAGEBOX_INFORMATION, impl_->window, "HOTD2RE - Update available", message.c_str(), 2, buttons, nullptr
+    };
+    int choice = 0;
+    if (SDL_ShowMessageBox(&box, &choice) && choice == 1 &&
+        !SDL_OpenURL("https://github.com/GitFist/hotd2-re/releases/latest")) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "HOTD2RE - Download page",
+            "Open this address in your browser:\nhttps://github.com/GitFist/hotd2-re/releases/latest", impl_->window);
+    }
+}
+
 std::unique_ptr<port::GpuDevice> Platform::CreateGpu(Renderer r, int width, int height, bool followWindowSize, int syncInterval,
                                                      std::string* error) {
     Impl& m = *impl_;

@@ -251,7 +251,7 @@ void TaskKomono51(Task& t) {
 }
 
 // Komono kind 53 (generic ctor 0x00461CF0 case 0x35 -> task 0x0046EBD0): like kind 51 (rotation order Z, Y, X); in
-// scenes 4 / 5 also a fire (models 0x135F + n % 15, 0xB67 + n & 7, n = frame counter 0x009A2BAC) facing the camera
+// scenes 4 / 5 also smoke and fire (0x135F + n % 15, 0xB67 + n & 7, n = frame counter 0x009A2BAC) facing the camera
 void TaskKomono53(Task& t) {
     World::Impl& w = *CurrentWorld();
     Komono51Task& k = t.As<Komono51Task>();
@@ -278,7 +278,7 @@ void TaskKomono53(Task& t) {
         mx::Translate(q, k.pos[0], k.pos[1] + F32(w.exe, 0x0055D2B4), k.pos[2]);
         mx::RotY(q, yaw);
         mx::Scale(q, 1.5f, 2.0f, 1.0f);
-        w.Draw(n % 0xF + 0x135F, q);
+        if (auto* smoke = w.Draw(n % 0xF + 0x135F, q)) smoke->sortBackToFront = true;
         Mat4 r = Mat4::Identity();
         mx::Translate(r, k.pos[0], k.pos[1] + F32(w.exe, 0x004C43A0), k.pos[2]);
         mx::RotY(r, yaw);

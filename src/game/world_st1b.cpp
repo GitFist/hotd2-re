@@ -778,7 +778,10 @@ static void TaskType28(Task& t) {
         mx::Translate(f, k.pos[0], k.pos[1] + F32(exe, 0x0055D2B4), k.pos[2]);
         mx::RotY(f, yaw);
         mx::Scale(f, 1.5f, 2.0f, 1.0f);
-        w.Draw(static_cast<int>(w.seedCounter % 0xF) + 0x135F, f);
+        // These separate tall smoke sheets overlap. The native near-first model
+        // order lets one sheet's depth writes cut a straight edge through the other.
+        if (auto* smoke = w.Draw(static_cast<int>(w.seedCounter % 0xF) + 0x135F, f))
+            smoke->sortBackToFront = true;
         Mat4 g = Mat4::Identity();
         mx::Translate(g, k.pos[0], k.pos[1] + F32(exe, 0x004C43A0), k.pos[2]);
         mx::RotY(g, yaw);

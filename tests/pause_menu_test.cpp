@@ -154,6 +154,12 @@ int main() {
     Check(v.display.renderScale == 4 && DisplayMenu::ValueText(v.display, DisplayMenu::kRender) == "4x", "Render Scale: 4x");
     m.Update(Pad(0x80), v, snd);
     Check(v.display.renderScale == 1, "Render Scale wraps to 1x");
+    m.Update(Pad(0x20), v, snd);  // Blood Color
+    Check(m.Display().Cursor() == DisplayMenu::kBlood && !v.display.redBlood, "Blood Color defaults to green");
+    m.Update(Pad(0x8), v, snd);
+    Check(v.display.redBlood && DisplayMenu::ValueText(v.display, DisplayMenu::kBlood) == "Red", "Enter enables red blood");
+    m.Update(Pad(0x40), v, snd);
+    Check(!v.display.redBlood, "Left restores green blood");
     m.Update(Pad(0x20), v, snd);  // Back
     Check(m.Display().Cursor() == DisplayMenu::kBack, "Down reaches Back");
     Check(m.Update(Pad(0x8), v, snd) == Action::None && !m.DisplayOpen() && m.IsOpen() && m.MainRows() && m.Cursor() == PauseMenu::kDisplay,
@@ -179,6 +185,11 @@ int main() {
     Check(v.display.renderScale == 2, "trigger: 2x");
     m.Update(Point(300.0f, rowRender, false, true), v, snd);
     Check(v.display.renderScale == 1, "reload: back to 1x");
+    const float bloodY = DisplayMenu::RowY(DisplayMenu::kBlood) * 24 + 22;
+    m.Update(Point(620, bloodY, true), v, snd);
+    Check(v.display.redBlood, "shooting Blood Color enables red");
+    m.Update(Point(620, bloodY, false, true), v, snd);
+    Check(!v.display.redBlood, "reload toggles Blood Color to green");
     const float rowBack = (DisplayMenu::RowY(DisplayMenu::kBack) + 0.5f) * 24.0f;
     m.Update(Point(300.0f, rowBack), v, snd);
     m.Update(Point(300.0f, rowBack, true), v, snd);
@@ -247,6 +258,7 @@ int main() {
     a.display.stretch = true;
     a.display.crt = 2;
     a.display.renderScale = 3;
+    a.display.redBlood = true;
     Check(a.Save(path), "settings saved");
     play::Settings b;
     Check(b.Load(path) && b == a && b.input == "mouse", "settings loaded back (display included)");
@@ -262,6 +274,11 @@ int main() {
         fclose(f);
         play::Settings d;
         Check(d.Load(path) && d.music == 5 && d.display == play::DisplaySettings{}, "old settings file: display defaults");
+    }
+    {
+        FILE* f = fopen(path.c_str(), "w"); fputs("blood=invalid\n", f); fclose(f);
+        play::Settings d; d.display.redBlood = true;
+        Check(d.Load(path) && d.display.redBlood, "invalid blood value keeps current choice");
     }
     remove(path.c_str());
 

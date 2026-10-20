@@ -561,7 +561,7 @@ void TaskVanish24(Task& t) {  // 0x00483B40
 }
 
 // 0x00483DD0 (kind 0x53 with motion 0xD9): 30 birds circling (0x00569300 table: centre x, y, radius-ish z), task
-// 0x00483F00 -> 0x00483F90; models 0x21F..0x232 cycled (wing beats), removed at camera 0x1A
+// 0x00483F00 -> 0x00483F90; wing beats, removed at camera 0x1A
 struct Bird24Task : EnemyTask {
     int model = 0;             // +0x13F0
     float centre[3] = {};      // +0x13C0
@@ -643,7 +643,9 @@ void TaskBird24(Task& t) {  // 0x00483F00
     mx::Translate(m, k.pos[0], k.pos[1], k.pos[2]);
     mx::RotY(m, k.rot[1]);
     mx::Scale(m, Bits(0x3F333333), Bits(0x3F333333), Bits(0x3F333333));
-    w.Draw(k.model, m);
+    // The original cycle reaches unresident effect 0x232 for one frame. Hold
+    // the last bird pose while retaining the original 20-frame flight/bob timing.
+    w.Draw(k.model == 0x232 ? 0x231 : k.model, m);
 }
 
 // 0x00483C90 (game mode 11, kind 0x41 with counter 0 and motion 0xEA): task 0x00483CE0, three billboards of model 0xB33

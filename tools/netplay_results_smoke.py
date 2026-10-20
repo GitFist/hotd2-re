@@ -15,7 +15,7 @@ import time
 REPO = Path(__file__).resolve().parents[1]
 
 
-def run(exe=None):
+def run(exe=None, host_blood="green", join_blood="green"):
     output = Path(tempfile.mkdtemp(prefix='hotd2_results_net_'))
     print(output, flush=True)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -46,6 +46,7 @@ def run(exe=None):
             folder.mkdir()
             log = (output / f'{role}.log').open('w'); logs.append(log)
             args = [str(exe or REPO / 'build/src/port/Release/play.exe'), str(REPO / 'game'),
+                    '--blood', host_blood if role == 'host' else join_blood,
                     '--config', str(config), '--seed', '902', '--credits', '6', '--net-delay', '1',
                     '--scene', str(REPO / 'scenes/st1_play.scene'), '--script', str(inputs), '--trace',
                     '--screenshot', str(folder / 'frame-%d.png'), '--frame', '14700',
@@ -85,4 +86,7 @@ def run(exe=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--exe', type=Path, help='Path to the console play.exe build to test')
-    run(parser.parse_args().exe)
+    parser.add_argument('--host-blood', choices=('red', 'green'), default='green')
+    parser.add_argument('--join-blood', choices=('red', 'green'), default='green')
+    args = parser.parse_args()
+    run(args.exe, args.host_blood, args.join_blood)

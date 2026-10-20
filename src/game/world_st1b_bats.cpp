@@ -420,13 +420,18 @@ static void BatSkelDraw(World::Impl& w, BatTask& b) {
             show = x <= lim;
         }
         if (show) {
+            WorldDraw* body = nullptr;
             if (b.f1338 != 0) {
-                w.Draw(d.model, d.m, 8, (F32(exe, 0x004E1FC4) - static_cast<float>(b.counter)) * F32(exe, 0x004E1FC0), false, i);
+                body = w.Draw(d.model, d.m, 8, (F32(exe, 0x004E1FC4) - static_cast<float>(b.counter)) * F32(exe, 0x004E1FC0), false, i);
             } else if (b.state == 6 && i == 7) {
-                w.Draw(b.wing == 0 ? 0x1371 : 0x1370, d.m, 8, -1.0f, false, i);  // (0x0041EBB0 debug no-op before)
+                body = w.Draw(b.wing == 0 ? 0x1371 : 0x1370, d.m, 8, -1.0f, false, i);  // (0x0041EBB0 debug no-op before)
             } else {
-                w.Draw(d.model, d.m, 8, -1.0f, false, i);
+                body = w.Draw(d.model, d.m, 8, -1.0f, false, i);
             }
+            // Deliberate correction of the PC's scaled-normal highlight plateau.
+            // This also covers the mirrored body; separate floor/water shadows
+            // and hit effects retain their existing lighting and material state.
+            if (body) body->unitSpecular = true;
         }
         if (i == 7) b.f1358 = 1;
     }
@@ -915,7 +920,9 @@ static void TaskBat(Task& t) {
             b.pos[1] = (c.dive[1] - (y - c.dive[1])) - F32(exe, 0x0055D228);
             if (b.state == 3) b.pos[1] = b.pos[1] - F32(exe, 0x004C4CA0);
             if (b.state == 2 || b.state == 3) b.rot[0] += 0x8000;
+            w.LightChar();  // 0x0041DC70: the reflection uses the body's actor lighting too
             BatSkelDraw(w, b);
+            w.LightScene();  // 0x0041DCC0
             if (b.state == 2 || b.state == 3) b.rot[0] -= 0x8000;
             b.pos[1] = y;
             b.flags34 &= ~0x1000000u;

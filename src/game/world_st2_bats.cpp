@@ -554,6 +554,9 @@ void BatDraw(World::Impl& w, BatTask& a) {
             mx::RotY(h, 0xFFC0);
             mx::RotX(h, 0xFFF2);
             if (face > 0xE) face = 0x1E - face;
+            // The original midpoint 15 spills into 0xC07, a foot mesh. Hold the
+            // last face frame without changing the other phases or cycle length.
+            if (face == 0xF) face = 0xE;
             if (a.state == 6) face = 0;
             w.Draw(static_cast<int>(face) + 0xBF8, h);
         }
@@ -877,7 +880,9 @@ void BatDeath(World::Impl& w, BatTask& a) {
         w.EnemyDestroy(a);  // 0x00409CC0
         return;
     }
-    w.LightChar();  // 0x0041DC70 (renderer state)
+    // Deliberate correction of the PC's brightness jump on death: keep the
+    // corpse in the same scene light as the living owl, preserving its texture.
+    w.LightScene();
     BatDraw(w, a);
     w.LightScene();  // 0x0041DCC0
 }

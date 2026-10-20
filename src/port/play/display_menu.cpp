@@ -31,7 +31,8 @@ float DisplayMenu::RowY(int row) {
     case kAspect: return 7.0f;
     case kCrt: return 8.0f;
     case kRender: return 9.0f;
-    case kBack: return 11.0f;
+    case kBlood: return 10.0f;
+    case kBack: return 12.0f;
     default: return 0.0f;
     }
 }
@@ -43,7 +44,7 @@ int DisplayMenu::RowAt(float px, float py) {
 }
 
 const char* DisplayMenu::Label(int row) {
-    static const char* const kLabels[kRowCount] = { "Fullscreen", "Window Scale", "Aspect", "CRT Filter", "Render Scale", "Back" };
+    static const char* const kLabels[kRowCount] = { "Fullscreen", "Window Scale", "Aspect", "CRT Filter", "Render Scale", "Blood Color", "Back" };
     return row >= 0 && row < kRowCount ? kLabels[row] : "";
 }
 
@@ -56,6 +57,7 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int row) {
     case kAspect: return d.stretch ? "Stretch" : "4 by 3";
     case kCrt: return d.crt <= 0 ? "Off" : "Scanlines " + std::to_string(d.crt);
     case kRender: return std::to_string(d.renderScale) + "x";
+    case kBlood: return d.redBlood ? "Red" : "Green";
     default: return "";
     }
 }
@@ -74,6 +76,7 @@ void DisplayMenu::Step(DisplaySettings& d, int row, int delta) {
     case kAspect:
         if (delta % 2 != 0) d.stretch = !d.stretch;
         break;
+    case kBlood: if (delta % 2 != 0) d.redBlood = !d.redBlood; break;
     case kCrt: d.crt = Wrap(d.crt + delta, 4); break;
     case kRender: d.renderScale = Wrap(d.renderScale - 1 + delta, 4) + 1; break;
     default: break;

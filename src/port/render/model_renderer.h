@@ -46,6 +46,8 @@ public:
         // drawn in pass 1 with TSP forced to SRCALPHA/INVSRCALPHA ((tsp & 0x03FFFF7F) | 0x94000080) and material alpha *
         // this value (e.g. rain 0.5). HYPOTHESIS: opaque meshes of such items are not drawn in pass 0.
         float alpha = -1;
+        bool unitSpecular = false;  // fish bodies: normalize only the specular normal
+        bool sortBackToFront = false;  // mutually overlapping alpha effects; retain other pass-1 slots
         // Geometry changes every frame (skinned attachments deformed on the CPU): triangulated into a per-frame dynamic
         // vertex buffer instead of the per-model cache.
         bool dynamicGeometry = false;
@@ -153,6 +155,8 @@ private:
         bool dynamic = false;       // vertices live in the per-frame dynamic buffer
         int cull = 1;               // D3DCULL of this run of strips (1 none, 2 CW, 3 CCW)
         bool firstRun = true;       // first run of its material mesh (statistics count material meshes)
+        bool layeredCards = false;  // an alpha billboard whose overlapping cards need back-to-front drawing
+        float cardZ = 0;            // common local Z of this card; ignore its vertical offset when sorting planes
     };
     struct ModelGpu {
         std::vector<Mesh> meshes;
@@ -175,7 +179,7 @@ private:
     static void AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelConstants& fc, const GpuState& st);
     void AddSpriteDraw(GpuDrawList& list, int width, int height, const SpriteDraw& s, size_t index);
     static GpuState StateOf(bool blend, int src, int dst, int zfunc, bool zwrite, bool linear, int addrU, int addrV);
-    GpuTexture TextureView(const RgbaImage* img);
+    GpuTexture TextureView(const RgbaImage* img, bool alphaWeighted = false);
 
     GpuDevice* device_ = nullptr;
     std::map<std::pair<const game::Model*, std::string>, ModelGpu> models_;  // geometry uploaded once per model
@@ -191,9 +195,11 @@ private:
     std::vector<char> itemCullable_;
     std::vector<uint32_t> itemPriority_;
     std::vector<float> itemAlpha_;
+    std::vector<uint8_t> itemUnitSpecular_;
+    std::vector<uint8_t> itemSortBackToFront_;
     std::vector<uint8_t> itemCullFlip_;
     std::vector<int> itemLight_;
-    std::map<const RgbaImage*, GpuTexture> textures_;
+    std::map<std::pair<const RgbaImage*, bool>, GpuTexture> textures_;
 
 public:
     size_t TextureCount() const { return textures_.size(); }  // GPU textures created so far (timing diagnostics)

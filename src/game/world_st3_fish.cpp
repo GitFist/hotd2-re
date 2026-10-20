@@ -551,8 +551,11 @@ void DrawFish(World::Impl& w, FishTask& f) {  // 0x00439860
     Mat4 m = Mat4::Identity();
     ops(m);
     w.LightChar();  // 0x0041DC70 (0x00439AB5)
-    if (!(c.flags & 4)) w.Draw(c.model, m, 8, c.alpha);  // 0x004185A0
-    else w.Draw(c.model, m);
+    // Flag 4 makes this physical body opaque; its flattened shadow is a
+    // separate submission above (and in TaskEscape). Both body paths keep the
+    // specular normal unit length despite their common 0.3 model scale.
+    auto* body = (c.flags & 4) ? w.Draw(c.model, m) : w.Draw(c.model, m, 8, c.alpha);
+    if (body) body->unitSpecular = true;
     w.LightScene();  // 0x0041DCC0
     Mat4 mv = w.cam.view;  // +0x70 = the model-view translation (0x004A8CC0)
     ops(mv);
@@ -576,7 +579,7 @@ void TaskEscape(World::Impl& w, FishTask& f) {  // 0x00439C20: swims off and fad
     }
     w.LightChar();  // 0x0041DC70 (+ 0x004AA0A0(0.1, 0.1, 0.1) for the water shadow)
     if (c.flags & 4) w.LightColor(Bits(0x3DCCCCCD), Bits(0x3DCCCCCD), Bits(0x3DCCCCCD));
-    w.Draw(c.model, m);
+    if (auto* draw = w.Draw(c.model, m)) draw->unitSpecular = (c.flags & 4) == 0;
     w.LightScene();  // 0x0041DCC0
     NextModel(c);
     if (c.swimFrames <= ++c.counter) {

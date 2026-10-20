@@ -151,6 +151,7 @@ void World::Impl::TaskSkipWatch(Task& t) {
         w.fn = fn::kSkipWatch2;
     } else if (w.fn == fn::kSkipWatch3) {
         skip2230 = 0;
+        runner->globals[0x009A2230] = 0;
         ts.KillCurrent();
     }
     if (!runner->skippable) ts.KillCurrent();
@@ -159,6 +160,7 @@ void World::Impl::TaskSkipWatch(Task& t) {
     skipRequest = false;
     runner->skipping = true;
     skip2230 = 1;
+    runner->globals[0x009A2230] = 1;  // civilian actors read this through GlobalInt (e.g. Goldman's speech task)
     Resource(0x58, 0);  // Res_FlushRequests 0x0041D970
     w.fn = fn::kSkipWatch3;
 }

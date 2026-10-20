@@ -27,11 +27,12 @@ struct DisplaySettings {
     bool fullscreen = false;
     int windowScale = 2;   // 1..3: that multiple of 640x480 as the windowed client size; 0: fit the usable desktop
     bool stretch = false;  // false: the 4:3 image centred with bars; true: stretched to the window
+    bool redBlood = false; // local cosmetic choice: false = green, true = red
     int crt = 0;           // 0 off, 1..3 scanline strength
     int renderScale = 2;   // internal resolution of the frame: 1..4 x 640x480 (1 = the original; default 2 = the 2x window's
                            // own pixels, at least as sharp as the earlier 960x720 default)
     bool operator==(const DisplaySettings& o) const {
-        return fullscreen == o.fullscreen && windowScale == o.windowScale && stretch == o.stretch && crt == o.crt && renderScale == o.renderScale;
+        return fullscreen == o.fullscreen && windowScale == o.windowScale && stretch == o.stretch && crt == o.crt && renderScale == o.renderScale && redBlood == o.redBlood;
     }
     bool operator!=(const DisplaySettings& o) const { return !(*this == o); }
 };
@@ -49,7 +50,7 @@ struct MenuInput {
 
 class DisplayMenu {
 public:
-    enum Row { kFullscreen = 0, kScale, kAspect, kCrt, kRender, kBack, kRowCount };
+    enum Row { kFullscreen = 0, kScale, kAspect, kCrt, kRender, kBlood, kBack, kRowCount };
 
     void Open();
     void Close() { open_ = false; }

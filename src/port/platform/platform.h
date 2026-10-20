@@ -99,6 +99,9 @@ public:
     bool UsableDisplaySize(int* w, int* h) const;
     void SetGameImage(const input::ImageRect& image);
 
+    // Main thread, at the title / main menu: offer the official release page or continue playing.
+    void NotifyUpdate(const std::string& currentBuild, const std::string& availableTag);
+
     // GPU device for the window (fixed back buffer of width x height scaled to the window, or followWindowSize), or an
     // off-screen device when headless.
     std::unique_ptr<port::GpuDevice> CreateGpu(Renderer r, int width, int height, bool followWindowSize, int syncInterval,

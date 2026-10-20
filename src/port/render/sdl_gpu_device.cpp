@@ -9,6 +9,7 @@
 
 #include "asset_store.h"
 #include "hlsl_shaders.h"
+#include "texture_mips.h"
 
 #ifdef _WIN32
 #include <d3dcompiler.h>
@@ -46,7 +47,7 @@ public:
     ~SdlGpuDevice() override;
     bool Init(const GpuDeviceDesc& desc, std::string* error);
     const char* Name() const override { return "sdlgpu"; }
-    GpuTexture CreateTexture(const RgbaImage& img) override;
+    GpuTexture CreateTexture(const RgbaImage& img, bool alphaWeighted = false) override;
     void ClearTextures() override {
         SDL_WaitForGPUIdle(dev_);
         for (auto* texture : textures_) SDL_ReleaseGPUTexture(dev_, texture);
@@ -351,8 +352,11 @@ void SdlGpuDevice::EnsureBuffer(SDL_GPUBuffer*& buf, uint32_t& capacity, uint32_
     capacity = buf ? bytes : 0;
 }
 
-GpuTexture SdlGpuDevice::CreateTexture(const RgbaImage& img) {
-    if (img.width <= 0 || img.height <= 0) return 0;
+GpuTexture SdlGpuDevice::CreateTexture(const RgbaImage& img, bool alphaWeighted) {
+    if (img.width <= 0 || img.height <= 0 || img.pixels.size() != static_cast<size_t>(img.width) * img.height * 4) return 0;
+    const auto mips = BuildTextureMips(img, alphaWeighted);
+    std::vector<const RgbaImage*> levels = {&img};
+    for (const auto& mip : mips) levels.push_back(&mip);
     SDL_GPUTextureCreateInfo ti = {};
     ti.type = SDL_GPU_TEXTURETYPE_2D;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -360,10 +364,19 @@ GpuTexture SdlGpuDevice::CreateTexture(const RgbaImage& img) {
     ti.width = img.width;
     ti.height = img.height;
     ti.layer_count_or_depth = 1;
-    ti.num_levels = 1;
+    ti.num_levels = static_cast<Uint32>(levels.size());
     SDL_GPUTexture* t = SDL_CreateGPUTexture(dev_, &ti);
     if (!t) return 0;
-    const uint32_t bytes = static_cast<uint32_t>(img.width) * img.height * 4;
+    // D3D12 row/offset alignment avoids an additional SDL staging copy on small levels.
+    std::vector<uint32_t> offsets, pitches;
+    uint32_t bytes = 0;
+    for (const auto* level : levels) {
+        bytes = (bytes + 511u) & ~511u;
+        offsets.push_back(bytes);
+        const uint32_t pitch = (static_cast<uint32_t>(level->width) * 4 + 255u) & ~255u;
+        pitches.push_back(pitch);
+        bytes += pitch * level->height;
+    }
     SDL_GPUTransferBufferCreateInfo bi = {};
     bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     bi.size = bytes;
@@ -373,20 +386,32 @@ GpuTexture SdlGpuDevice::CreateTexture(const RgbaImage& img) {
         return 0;
     }
     void* p = SDL_MapGPUTransferBuffer(dev_, tb, false);
-    memcpy(p, img.pixels.data(), bytes);
+    if (!p) {
+        SDL_ReleaseGPUTransferBuffer(dev_, tb);
+        SDL_ReleaseGPUTexture(dev_, t);
+        return 0;
+    }
+    for (size_t i = 0; i < levels.size(); ++i)
+        for (int y = 0; y < levels[i]->height; ++y)
+            memcpy(static_cast<uint8_t*>(p) + offsets[i] + y * pitches[i],
+                   levels[i]->pixels.data() + static_cast<size_t>(y) * levels[i]->width * 4, levels[i]->width * 4);
     SDL_UnmapGPUTransferBuffer(dev_, tb);
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev_);
     SDL_GPUCopyPass* pass = SDL_BeginGPUCopyPass(cmd);
-    SDL_GPUTextureTransferInfo src = {};
-    src.transfer_buffer = tb;
-    src.pixels_per_row = img.width;
-    src.rows_per_layer = img.height;
-    SDL_GPUTextureRegion dst = {};
-    dst.texture = t;
-    dst.w = img.width;
-    dst.h = img.height;
-    dst.d = 1;
-    SDL_UploadToGPUTexture(pass, &src, &dst, false);
+    for (size_t i = 0; i < levels.size(); ++i) {
+        SDL_GPUTextureTransferInfo src = {};
+        src.transfer_buffer = tb;
+        src.offset = offsets[i];
+        src.pixels_per_row = pitches[i] / 4;
+        src.rows_per_layer = levels[i]->height;
+        SDL_GPUTextureRegion dst = {};
+        dst.texture = t;
+        dst.mip_level = static_cast<Uint32>(i);
+        dst.w = levels[i]->width;
+        dst.h = levels[i]->height;
+        dst.d = 1;
+        SDL_UploadToGPUTexture(pass, &src, &dst, false);
+    }
     SDL_EndGPUCopyPass(pass);
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(dev_, tb);  // deferred until the upload is done
@@ -475,17 +500,18 @@ SDL_GPUGraphicsPipeline* SdlGpuDevice::Pipeline(GpuDraw::Pipeline kind, const Gp
 }
 
 SDL_GPUSampler* SdlGpuDevice::Sampler(const GpuState& s) {
-    const int key = (s.linear ? 1 : 0) | (s.addrU << 1) | (s.addrV << 4);
+    const int key = (s.linear ? 1 : 0) | (s.addrU << 1) | (s.addrV << 4) | (s.mipmapped ? 1 << 8 : 0);
     auto it = samplers_.find(key);
     if (it != samplers_.end()) return it->second;
     SDL_GPUSamplerCreateInfo si = {};
     si.min_filter = si.mag_filter = s.linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
-    si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    if (s.mipmapped) si.min_filter = SDL_GPU_FILTER_LINEAR;
+    si.mipmap_mode = s.mipmapped ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     si.address_mode_u = ToAddress(s.addrU);
     si.address_mode_v = ToAddress(s.addrV);
     si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     si.min_lod = 0;
-    si.max_lod = 1000;
+    si.max_lod = s.mipmapped ? 1000.f : 0.f;
     SDL_GPUSampler* smp = SDL_CreateGPUSampler(dev_, &si);
     if (smp) samplers_[key] = smp;
     return smp;

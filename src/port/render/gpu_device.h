@@ -35,7 +35,8 @@ struct GpuState {
                                          // 7 DESTALPHA, 8 INVDESTALPHA, 9 DESTCOLOR, 10 INVDESTCOLOR)
     uint8_t zfunc = 4;                   // D3DCMPFUNC 1..8 (NEVER, LESS, EQUAL, LESSEQUAL, GREATER, NOTEQUAL, GREATEREQUAL, ALWAYS)
     uint8_t zwrite = 1;
-    uint8_t linear = 0;                  // bilinear filter (else point), no mips
+    uint8_t linear = 0;                  // authored magnification filter: bilinear (else point)
+    uint8_t mipmapped = 0;               // filtered smaller levels for minified 3D textures; sprites keep level zero
     uint8_t addrU = 1, addrV = 1;        // D3DTEXTUREADDRESS (1 wrap, 2 mirror, 3 clamp)
     uint8_t cull = 1;                    // D3DCULL (1 none, 2 CW, 3 CCW): per strip in Mdl_Draw 0x004A7EF0 (table 0x00598B20)
 };
@@ -57,7 +58,7 @@ struct ModelConstants {
     float litAmbient[4];  // light ambient + AMBIENT render state (rgb)
     float fogParams[4];   // x: FOGSTART, y: FOGEND, z: 1 = fog on for this material
     float fogColor[4];
-    float localCount[4];  // x: local lights, y: normal transform (0 normalised, 1 WORLD, 2 inverse transpose), z: split projection
+    float localCount[4];  // x: local lights, y: normal transform, z: split projection, w: unit specular normal
     float matSpecular[4]; // material specular rgb, w: power (0: no specular; Mdl_Draw: words 16..18, 1 << word 9)
     float litSpecular[4]; // light 0 specular rgb (= its diffuse, 0x004AA120); SPECULARENABLE is on (0x004A7630)
     float eyePos[4];      // camera position, world space (D3DRENDERSTATE_LOCALVIEWER default TRUE)
@@ -113,7 +114,9 @@ public:
     virtual const char* Name() const = 0;
 
     // Immutable RGBA8 texture (rows in the game's stored order). Returns 0 on failure.
-    virtual GpuTexture CreateTexture(const RgbaImage& img) = 0;
+    // Opaque materials can contain meaningful RGB beneath zero alpha. Only
+    // alpha-blended material variants weight smaller levels by alpha coverage.
+    virtual GpuTexture CreateTexture(const RgbaImage& img, bool alphaWeighted = false) = 0;
     // Between frames: invalidate every texture handle when the owning scene cache is discarded.
     virtual void ClearTextures() = 0;
     // Vertex streams. Static: the model cache (replaced whole when it grows); Dynamic: this frame's CPU-skinned

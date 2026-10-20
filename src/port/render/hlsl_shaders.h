@@ -32,7 +32,7 @@ cbuffer Frame : CB_REG {
     float4 litAmbient;  // light ambient + AMBIENT render state, premultiplied sum (rgb)
     float4 fogParams;   // x: FOGSTART, y: FOGEND, z: 1 = fog on for this material
     float4 fogColor;
-    float4 localCount;  // x: number of local lights, y: normal transform mode, z: split projection
+    float4 localCount;  // x: local lights, y: normal mode, z: split projection, w: unit specular normal
     float4 matSpecular; // rgb, w: power (0 = none)
     float4 litSpecular;
     float4 eyePos;
@@ -83,7 +83,14 @@ VSOut vsmain(VSIn i) {
         // table lights leave their specular 0); added after the texture stage
         if (matSpecular.w > 0 && ndl > 0) {
             float3 h = normalize(normalize(eyePos.xyz - wp.xyz) + litDir.xyz);
-            o.spec = float4(saturate(matSpecular.rgb * litSpecular.rgb * pow(max(0, dot(n, h)), matSpecular.w)), 0);
+            // Scaled PC fish/leech bodies are drawn without NORMALIZENORMALS.
+            // Their longer normals turn a narrow highlight into a white plateau.
+            // Correct only opted-in bodies; retain their original diffuse lighting.
+            float3 specNormal = localCount.w > 0.5 ? normalize(n) : n;
+            // D3D7 clamps the normal/halfway dot before raising it to the material's power.
+            // Unnormalized inverse-transpose normals can exceed unit length on scaled actors;
+            // clamping only the final colour turns their highlights into solid white flashes.
+            o.spec = float4(saturate(matSpecular.rgb * litSpecular.rgb * pow(saturate(dot(specNormal, h)), matSpecular.w)), 0);
         }
         int count = (int)localCount.x;
         for (int k = 0; k < count; ++k) {

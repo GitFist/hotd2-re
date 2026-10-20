@@ -64,6 +64,10 @@ public:
     int OverridesDecodedInline() const { return inlineDecodes_; }
     int OverridesPrefetched() const { return prefetchDecodes_; }
 
+    // Matches the original global blood texture override by texture ID. Rendering only.
+    void SetRedBlood(bool red) { redBlood_ = red; }
+    bool RedBlood() const { return redBlood_; }
+
     // Decoded (PRS or raw) contents of a file in the game directory, cached.
     const std::vector<uint8_t>& File(const std::string& relPath);
 
@@ -98,6 +102,9 @@ private:
     };
     using TexKey = std::pair<std::string, uint32_t>;  // texture file name, descriptor index
     std::unique_ptr<RgbaImage> Decode(const TexRef& r);
+    const RgbaImage* ResolvedTexture(const TexRef& r);
+    std::map<uint32_t, TexRef> redBloodTextures_;
+    bool redBlood_ = false;
     // Asset pack: <HOTD2_ASSET_DIR>/tex/<file stem>/<index>.png (any size, upright) -> flipped to the stored order.
     // Pure (file read + decode): also run by the prefetch threads.
     std::unique_ptr<RgbaImage> LoadOverride(const TexRef& r);

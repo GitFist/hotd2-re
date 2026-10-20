@@ -67,6 +67,22 @@ const int kSrc[8] = { 1, 2, 9, 10, 5, 6, 7, 8 };
 const int kDst[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 const int kAddr[4] = { 1, 2, 3, 2 };
 
+bool HasLayeredAlphaCards(const game::Model& model) {
+    if (model.meshes.size() < 2) return false;
+    for (const auto& mesh : model.meshes) {
+        const uint32_t isp = mesh.material.Isp(), tsp = mesh.material.Tsp();
+        if ((tsp & 0x180000) == 0x80000 || (tsp >> 29) != 4 || ((tsp >> 26) & 7) != 5 ||
+            (isp >> 29) != 4 || (isp & 0x4000000) || mesh.strips.size() != 1) return false;
+        const auto& strip = mesh.strips.front();
+        if (strip.triangleList || strip.vertices.size() != 4) return false;
+        const float z = strip.vertices.front().pos[2];
+        for (const auto& v : strip.vertices)
+            if (v.pos[2] != z || v.normal[0] != 0 || v.normal[1] != 0 || std::abs(v.normal[2]) < 0.99f)
+                return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool ModelRenderer::Init(GpuDevice* device, std::string* error) {
@@ -78,12 +94,13 @@ bool ModelRenderer::Init(GpuDevice* device, std::string* error) {
     return true;
 }
 
-GpuTexture ModelRenderer::TextureView(const RgbaImage* img) {
+GpuTexture ModelRenderer::TextureView(const RgbaImage* img, bool alphaWeighted) {
     if (!img) return 0;
-    auto it = textures_.find(img);
+    const auto key = std::make_pair(img, alphaWeighted);
+    auto it = textures_.find(key);
     if (it != textures_.end()) return it->second;
-    const GpuTexture t = device_->CreateTexture(*img);
-    if (t) textures_[img] = t;  // failures are retried (like the D3D11 renderer did)
+    const GpuTexture t = device_->CreateTexture(*img, alphaWeighted);
+    if (t) textures_[key] = t;  // failures are retried (like the D3D11 renderer did)
     return t;
 }
 
@@ -139,10 +156,13 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
     // starts with "none").
     static const int kCull[4] = { 1, 1, 3, 2 };
     const bool cullOff = getenv("HOTD2_CULL_OFF") != nullptr;
+    const bool layeredCards = HasLayeredAlphaCards(*model);
     int cull = 1;
     for (const game::ModelMesh& mesh : model->meshes) {
         Mesh m;
         m.dynamic = dynamic;
+        m.layeredCards = layeredCards;
+        if (layeredCards) m.cardZ = mesh.strips.front().vertices.front().pos[2];
         m.first = static_cast<uint32_t>(verts.size());
         std::vector<std::pair<uint32_t, int>> runs;  // first vertex, cull mode
         for (const game::ModelStrip& s : mesh.strips) {
@@ -173,7 +193,7 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         const float d[4] = { mesh.material.DiffuseR(), mesh.material.DiffuseG(), mesh.material.DiffuseB(), mesh.material.DiffuseA() };
         memcpy(m.diffuse, d, sizeof(d));
         if (mesh.material.Textured()) {
-            m.tex = TextureView(assets.Texture(polName, mesh.material.TextureRef()));
+            m.tex = TextureView(assets.Texture(polName, mesh.material.TextureRef()), m.translucent);
             m.textured = true;
         }
         if (!m.count) continue;
@@ -196,6 +216,8 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
     itemCullable_.clear();
     itemPriority_.clear();
     itemAlpha_.clear();
+    itemUnitSpecular_.clear();
+    itemSortBackToFront_.clear();
     itemCullFlip_.clear();
     itemLight_.clear();
     itemWorld_.clear();
@@ -240,6 +262,8 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
         itemCullable_.push_back(item.cullable);
         itemPriority_.push_back(item.priority);
         itemAlpha_.push_back(item.alpha);
+        itemUnitSpecular_.push_back(item.unitSpecular ? 1 : 0);
+        itemSortBackToFront_.push_back(item.sortBackToFront ? 1 : 0);
         itemCullFlip_.push_back(item.cullFlip ? 1 : 0);
         itemLight_.push_back(item.light);
         std::array<float, 16> w;
@@ -486,6 +510,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         const float itemAlpha = itemAlpha_[bb->item];
         if (itemAlpha >= 0) fc.diffuse[3] *= itemAlpha;  // Mdl_DrawAlt: material alpha * record alpha
         fc.litDiffuse[3] = b->ambientScale;
+        fc.localCount[3] = itemUnitSpecular_[bb->item] ? 1.0f : 0.0f;
         memcpy(fc.matSpecular, b->specular, sizeof(fc.matSpecular));
         if (noSpecular) fc.matSpecular[3] = 0;
         if (!b->tex && !anyLight) fc.diffuse[0] = fc.diffuse[1] = fc.diffuse[2] = 0.7f;
@@ -499,6 +524,8 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
                                  ? StateOf(true, 5, 6, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV)  // forced SRCALPHA/INVSRCALPHA
                                  : StateOf(pass == 1, b->srcBlend, b->dstBlend, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV);
         GpuState cs = st;
+        static const bool noMips = getenv("HOTD2_NO_MIPS") != nullptr;
+        cs.mipmapped = noMips ? 0 : 1;
         cs.cull = static_cast<uint8_t>(b->cull);
         // D3D culls by the screen winding, mirrored WORLD matrices included. The sky domes of list 0x0057A280 (6048,
         // 6049, 6307, 6309; Sky_Task 0x004132D0 draws them with S(1.2, 1.2, -1.2)) stay visible because Res_LoadModel
@@ -539,7 +566,11 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         for (const Batch& b : batches_)
             if (b.mesh->translucent) translucent.push_back(&b);
         auto depth = [&](const Batch* b) {
-            return b->center[0] * viewProj[3] + b->center[1] * viewProj[7] + b->center[2] * viewProj[11] + viewProj[15];
+            const auto& w = itemWorld_[b->item];
+            const float z = b->mesh->cardZ;
+            const float plane[3] = {z * w[8] + w[12], z * w[9] + w[13], z * w[10] + w[14]};
+            const float* center = b->mesh->layeredCards ? plane : b->center;
+            return center[0] * viewProj[3] + center[1] * viewProj[7] + center[2] * viewProj[11] + viewProj[15];
         };
         std::stable_sort(translucent.begin(), translucent.end(), [&](const Batch* a, const Batch* b) { return depth(a) > depth(b); });
         for (const Batch* b : translucent) drawBatch(b, 1);
@@ -575,6 +606,22 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     }
     for (size_t i = 0; i < itemOrigin_.size(); ++i)
         if (deferred[i]) list.push_back({ (itemAlpha_[i] >= 0 ? 0x60000000u : 0x40000000u) | itemPriority_[i], itemDepth[i], static_cast<int>(i), -1 });
+    // Smoke and similar billboards contain overlapping alpha cards, sometimes authored
+    // front first. Precise depth then hides rear cards and cuts holes through the plume.
+    // Sort those cards within the model; keep its place in the mixed pass-1 list and
+    // retain depth testing/writes so scenery still occludes the effect correctly.
+    for (auto& cards : itemBatches)
+        if (cards.size() > 1 && cards.front()->mesh->layeredCards) {
+            auto planeDepth = [&](const Batch* b) {
+                const auto& w = itemWorld_[b->item];
+                const float z = b->mesh->cardZ;
+                const float plane[3] = {z * w[8] + w[12], z * w[9] + w[13], z * w[10] + w[14]};
+                return viewZ(plane);
+            };
+            std::stable_sort(cards.begin(), cards.end(), [&](const Batch* a, const Batch* b) {
+                return planeDepth(a) < planeDepth(b);
+            });
+        }
     const bool haveSprites = sprites && !sprites->empty();
     if (haveSprites) {
         UploadSprites(device_, *sprites);
@@ -582,6 +629,54 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     }
     game::CrtQsort(list.data(), list.size(),
                    [](const Entry& a, const Entry& b) { return game::ComparePass1(a.key, a.depth, b.key, b.depth); });
+    // The original's unstable qsort can reverse equal-depth model layers whenever
+    // an unrelated HUD sprite blinks. Emperor's core and reflective skin share
+    // exact sort depths, so this changes large body patches between blue and grey.
+    // Keep authored model submission order for ties. Leave sprite slots and their
+    // original CRT tie order intact (menus depend on that compositing order).
+    std::vector<Entry> tiedModels;
+    for (size_t first = 0; first < list.size();) {
+        size_t end = first + 1;
+        while (end < list.size() && game::ComparePass1(list[first].key, list[first].depth,
+                                                      list[end].key, list[end].depth) == 0) ++end;
+        tiedModels.clear();
+        if (end - first > 1)
+            for (size_t i = first; i < end; ++i)
+                if (list[i].item >= 0) tiedModels.push_back(list[i]);
+        if (tiedModels.size() > 1) {
+            std::sort(tiedModels.begin(), tiedModels.end(), [](const Entry& a, const Entry& b) { return a.item < b.item; });
+            size_t next = 0;
+            for (size_t i = first; i < end; ++i)
+                if (list[i].item >= 0) list[i] = tiedModels[next++];
+        }
+        first = end;
+    }
+    // The original near-first list lets one graded-alpha effect write depth
+    // before a rear effect contributes. Callers can opt overlapping effects
+    // into far-first compositing without changing their depth/blend state or
+    // any other model/sprite slot. Camera distance handles off-axis billboards
+    // whose view-Z order can reverse while their overlapping planes do not.
+    // Priorities remain separate; the original depth keys stay unchanged.
+    std::array<std::vector<size_t>,16> alphaSlots;
+    for (size_t i=0;i<list.size();++i) {
+        const auto& e=list[i];
+        if(e.item>=0 && itemSortBackToFront_[e.item]) alphaSlots[e.key&0xF].push_back(i);
+    }
+    for (const auto& slots:alphaSlots) if(slots.size()>1) {
+        std::vector<Entry> effects;
+        for(size_t i:slots)effects.push_back(list[i]);
+        auto distanceSquared = [&](const Entry& e) {
+            const auto& p=itemOrigin_[e.item];
+            double distance=0;
+            for(int k=0;k<3;++k) {
+                const double d=static_cast<double>(p[k])-fc.eyePos[k];
+                distance+=d*d;
+            }
+            return distance;
+        };
+        std::stable_sort(effects.begin(),effects.end(),[&](const Entry& a,const Entry& b){return distanceSquared(a)>distanceSquared(b);});
+        for(size_t i=0;i<slots.size();++i)list[slots[i]]=effects[i];
+    }
     lastPass1 = list;
     for (const Entry& e : list) {
         if (e.item >= 0) {

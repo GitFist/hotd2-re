@@ -447,6 +447,8 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         si.cullable = d.cull;
         si.priority = d.drawMode;
         si.alpha = d.alpha;
+        si.unitSpecular = d.unitSpecular;
+        si.sortBackToFront = d.sortBackToFront;
         si.cullFlip = d.cullFlip;
         // the pause overlay (above): scaled to the near plane, its material sphere misses the frustum test; never cull it
         si.noMeshCull = d.viewSpace && d.model == 0x93E && d.alpha >= 0;

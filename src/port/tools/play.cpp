@@ -1,5 +1,6 @@
 // play.exe <game dir> [--audio] [--width W --height H] [--script file --screenshot out.png --frame F]
 //          [--renderer d3d11|sdlgpu] [--input auto|raw|mouse|touch] [--audio-backend sdl|xaudio2]
+//          [--no-update-check]
 //
 // The game from boot on the native world runtime (World::Boot, notes/agents/frontend.md): boot logos, title, attract
 // loop, START -> mode select -> game (game mode 6, notes/agents/gameplay.md) -> game over -> title. --direct starts a game
@@ -66,6 +67,7 @@
 #include "assets/asset_override.h"
 #include "game/stage.h"
 #include "net/netplay.h"
+#include "update/update_check.h"
 #include "render/asset_store.h"
 #include "render/front_screens.h"
 #include "render/model_renderer.h"
@@ -138,8 +140,8 @@ uint32_t WorldHash(const game::World& w) {
 
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
-constexpr uint32_t kBuildId = 2026101902;
-const char* const kBuildName = "2026 10 19 W";  // (the menu font has no period)
+constexpr uint32_t kBuildId = 2026101904;
+const char* const kBuildName = "2026 10 19 Z";  // (the menu font has no period)
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -458,7 +460,7 @@ int main(int argc, char** argv) {
     if (argc < 2 || argv[1][0] == '-') {
         dir = FindGameDir(argv[0]);
         firstOpt = 1;
-        audio = argc < 2;  // double-click: with sound
+        audio = argc < 2 || (argc == 2 && std::string(argv[1]) == "--no-update-check");  // normal launch: with sound
         if (dir.empty()) {
             fprintf(stderr, "usage: play <game dir> [--audio] [--width W --height H] [--script file --screenshot out.png --frame F] %s\n"
                             "(no game folder found next to or above the executable)\n", platform::CommonUsage());
@@ -480,8 +482,10 @@ int main(int argc, char** argv) {
     std::string scriptPath, screenshot, scenePath = "scenes/st1_play.scene", savePath = "hotd2re_save.bin";
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> savePatch;
     bool trace = false;  // --trace: one line per game mode / sub-state change and the world's notes (headless checks)
+    std::string bloodOverride;
     bool noHud = false;  // --no-hud: 3D only (clean screenshots)
     bool pace = false;   // --pace: a headless run steps at 60 Hz instead of as fast as it can (netplay tests)
+    bool checkUpdates = true;  // --no-update-check: skip the launch-time release check
     // Online two-player (net/netplay.h): --host [port] waits for a joiner on that UDP port (default 27015), --join
     // <address[:port]> connects to a host; the host is P1. --net-delay N: input delay in frames (host; default 3).
     // --code: codes instead of addresses (both sides show their code and enter the other's; --peer <code> gives it on
@@ -513,7 +517,9 @@ int main(int argc, char** argv) {
         else if (a == "--p2mode" && i + 1 < argc) p2mode = atoi(argv[++i]);
         else if (a == "--save" && i + 1 < argc) savePath = argv[++i];  // the port's own save file (headless: none unless given)
         else if (a == "--trace") trace = true;
+        else if (a == "--blood" && i + 1 < argc) bloodOverride = argv[++i];
         else if (a == "--no-hud") noHud = true;  // screenshots: the 3D scene only (no HUD / world 2D / bitmap screens)
+        else if (a == "--no-update-check") checkUpdates = false;
         else if (a == "--host") {
             netHostMode = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') netPort = atoi(argv[++i]);
@@ -568,6 +574,12 @@ int main(int argc, char** argv) {
         height = 480 * volumes.display.windowScale;
     }
     if (!volumes.assets.empty()) port::SetAssetDir(volumes.assets);  // optional asset pack (assets= line; HOTD2_ASSET_DIR wins)
+    if (!bloodOverride.empty()) {
+        if (bloodOverride != "red" && bloodOverride != "green") {
+            fprintf(stderr, "--blood must be red or green\n"); return 1;
+        }
+        volumes.display.redBlood = bloodOverride == "red";
+    }
     static port::AssetStore assets;
     static port::ModelRenderer renderer;
     port::SceneDef def;
@@ -577,6 +589,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
+    assets.SetRedBlood(volumes.display.redBlood);
     g_subtitles.Load(assets.Exe());
     if (!port::AssetDir().empty() && screenshot.empty()) {
         // Asset pack: the front end's textures decode during the boot logos (10 s of idle): the title flythrough's
@@ -698,7 +711,7 @@ int main(int argc, char** argv) {
         boot.startFrame = 0;
         boot.gameOver = true;
         boot.portStageResults = getenv("HOTD2_STAGE_RESULTS") != nullptr;  // capture the page with original-menu replay inputs
-        if (screenshot.empty() || getenv("HOTD2_PLAY_MENU")) {  // the port's additions (interactive runs; tests see the original)
+        if (screenshot.empty() || (getenv("HOTD2_PLAY_MENU") && !getenv("HOTD2_PLAY_MENU_NATIVE_BOOT"))) {  // native boot for matched replay captures
             boot.portVolumes[0] = netVolumesSet ? netVolumes[0] : volumes.music;  // the options screen's volume rows
             boot.portVolumes[1] = netVolumesSet ? netVolumes[1] : volumes.guns;   // (netplay joiner: the host's)
             boot.portVolumes[2] = netVolumesSet ? netVolumes[2] : volumes.sfx;
@@ -745,7 +758,7 @@ int main(int argc, char** argv) {
     };
     port::FrontScreens screens(dir);
     // the modern main menu's background (the baked labels in-painted out of the tiles): with the port's features only
-    if (screenshot.empty() || getenv("HOTD2_PLAY_MENU")) screens.SetModernMenu(true);
+    if (screenshot.empty() || (getenv("HOTD2_PLAY_MENU") && !getenv("HOTD2_PLAY_MENU_NATIVE_BOOT"))) screens.SetModernMenu(true);
     if (screenshot.empty() && !port::AssetDir().empty())  // the mode select's six tiles (the pack's are 1024 x 1024 PNGs)
         for (const char* t : { "tex\\hod2title00.bin", "tex\\hod2title01.bin", "tex\\hod2title02.bin", "tex\\hod2title03.bin",
                                "tex\\hod2title10.bin", "tex\\hod2title11.bin" })
@@ -785,6 +798,13 @@ int main(int argc, char** argv) {
         fprintf(stderr, "renderer: %s\n", err.c_str());
         return 1;
     }
+    // Version discovery never waits on the game thread. Automated and direct gameplay launches stay deterministic.
+    port::update::UpdateCheck updates;
+    if (checkUpdates && !headless && !direct && !netplay && runFrames == 0 && scriptPath.empty() &&
+        !getenv("HOTD2_PLAY_KEYS") && !getenv("HOTD2_PLAY_MENU") &&
+        !getenv("HOTD2_WII_MENU") && !getenv("HOTD2_LIGHTGUN_MENU"))
+        updates.Start(kBuildName);
+    std::string availableUpdate;
     auto& lightguns = plat.Lightguns();
     const std::string lightgunSettingsPath = "hotd2re_lightguns.ini";
     if (!headless) lightguns.settings.Load(lightgunSettingsPath);
@@ -796,6 +816,11 @@ int main(int argc, char** argv) {
     play::DisplaySettings appliedDisplay = volumes.display;
     auto applyDisplay = [&] {  // after a change on a display page: window / fullscreen / internal resolution
         const play::DisplaySettings& d = volumes.display;
+        if (d.redBlood != appliedDisplay.redBlood) {
+            assets.SetRedBlood(d.redBlood);
+            renderer.ClearCache(); // cached model meshes retain GPU texture handles
+            if (!headless && !volumes.Save(settingsPath)) fprintf(stderr, "Blood color setting could not be saved\n");
+        }
         if (headless) {
             appliedDisplay = d;
             return;
@@ -1076,6 +1101,38 @@ int main(int argc, char** argv) {
             if (!active && !netplay && lobby.page == Lobby::kOff) {
                 plat.Delay(10);
                 continue;
+            }
+            if (availableUpdate.empty()) availableUpdate = updates.TakeAvailable();
+            if (active && !availableUpdate.empty() && !netplay && lobby.page == Lobby::kOff &&
+                (world.GameMode() == 3 || world.GameMode() == 4) &&
+                !menu.IsOpen() && !optionsPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+                // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
+                if (sndDriver) sndDriver->OnActivate(false);
+                plat.NotifyUpdate(kBuildName, availableUpdate);
+                // The modal can leave input and focus events queued. Preserve window
+                // close/activation, then discard its key/mouse edges before resuming.
+                for (platform::Event ev; plat.PollEvent(&ev);) {
+                    if (ev.type == platform::Event::Type::Quit) quit = true;
+                    if (ev.type == platform::Event::Type::Focus) active = ev.active;
+                }
+                availableUpdate.clear();
+                if (quit) break;
+                if (sndDriver) sndDriver->OnActivate(active);
+                g_keys = menuPrevKeys = 0;
+                typed.clear();
+                typedBackspace = false;
+                lightguns.ReleaseButtons();
+                wii.Update();  // drain remote button edges accumulated while the modal was open
+                if (guns) guns->BeginFrame();
+                for (int p = 0; p < 2; ++p) {
+                    const int dev = deviceForPlayer(p);
+                    const auto ps = dev >= 0 && guns ? guns->Player(dev) : input::PlayerState{};
+                    play::DevicePlayer held;
+                    held.held = ps.held;
+                    play::DeviceWorldInput(held, world.Hud().player[p].state, prevButtons[p]);
+                }
+                clock.Reset(plat.Seconds());
+                continue;  // resume with a fresh clock and cleared dialog input
             }
             steps = clock.Advance(plat.Seconds());
             gameFrames += steps;

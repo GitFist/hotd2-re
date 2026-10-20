@@ -22,6 +22,16 @@ endif()
 add_library(port_assets STATIC assets/asset_override.cpp)
 target_include_directories(port_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Optional startup release check, independent of SDL and deterministic game / net state.
+add_library(port_update STATIC update/update_check.cpp)
+target_include_directories(port_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
+if(WIN32)
+  target_compile_definitions(port_update PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(port_update PUBLIC winhttp)
+endif()
+add_executable(update_check_test ${PROJECT_SOURCE_DIR}/tests/update_check_test.cpp)
+target_link_libraries(update_check_test PRIVATE port_update)
+
 # Online two-player: deterministic lockstep over UDP (net/netplay.h; notes/agents/netplay.md).
 add_library(port_net STATIC net/netplay.cpp)
 target_include_directories(port_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -92,7 +102,7 @@ if(HOTD2_SDL3)
 
   # play.exe - playable game on the native world (game mode 6): gun input, gameplay HUD, sound.
   add_executable(play tools/play.cpp)
-  target_link_libraries(play PRIVATE port_platform game_hud port_play port_net)
+  target_link_libraries(play PRIVATE port_platform game_hud port_play port_net port_update)
   if(WIN32)
     add_executable(lightgun_platform_test ${CMAKE_SOURCE_DIR}/tests/lightgun_platform_test.cpp)
     target_link_libraries(lightgun_platform_test PRIVATE port_platform)
@@ -122,7 +132,7 @@ if(HOTD2_SDL3)
       endif()
     endif()
     add_executable(hotd2 WIN32 tools/play.cpp ${HOTD2_RC_SOURCES})
-    target_link_libraries(hotd2 PRIVATE port_platform game_hud port_play port_net)
+    target_link_libraries(hotd2 PRIVATE port_platform game_hud port_play port_net port_update)
     target_compile_definitions(hotd2 PRIVATE PLAY_GUI=1)
     if(MSVC)
       # The GUI subsystem's own entry (WinMain in play.cpp forwards to main): a GUI exe entered through the console

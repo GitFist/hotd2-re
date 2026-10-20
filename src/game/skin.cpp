@@ -1,39 +1,10 @@
 #include "game/skin.h"
+#include "game/mstack.h"
 
 #include <cstring>
 #include <unordered_map>
 
 namespace game {
-
-namespace {
-
-// General 4x4 inverse (row-vector convention irrelevant: inverse is inverse).
-bool Invert(const float m[16], float out[16]) {
-    float inv[16];
-    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
-    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
-    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
-    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-    if (det == 0) return false;
-    det = 1.0f / det;
-    for (int i = 0; i < 16; ++i) out[i] = inv[i] * det;
-    return true;
-}
-
-}  // namespace
 
 bool LoadSkinDef(const ExeImage& exe, uint32_t defVa, SkinDef& out) {
     out = SkinDef{};
@@ -126,33 +97,33 @@ void SkinDeform(const SkinDef& def, uint32_t offsetBase, const Mat4& base, const
     for (auto& mesh : model.meshes)
         for (auto& s : mesh.strips)
             for (size_t i = 0; i < s.vertices.size() && i < s.offsets.size(); ++i) at[s.offsets[i]].push_back(&s.vertices[i]);
-    float binv[16];
-    if (!Invert(base.m, binv)) return;
+    const Mat4 inverse = mx::Inverse(base);
     for (int r = 0; r < 4; ++r) {
         const auto& rec = def.rec[r];
         if (rec.count == 0) continue;
         const int ni = nodeCount == 4 ? r : (r == 0 ? 0 : (r == 2 ? 1 : -1));
         if (ni < 0 || ni >= nodeCount) continue;
-        // M = node * base^-1 (row vectors: v' = v * node * base^-1)
-        float m[16];
-        const float* n = nodes[ni].m;
-        for (int i = 0; i < 4; ++i)
-            for (int j = 0; j < 4; ++j) {
-                float s = 0;
-                for (int k = 0; k < 4; ++k) s += n[i * 4 + k] * binv[k * 4 + j];
-                m[i * 4 + j] = s;
-            }
+        // 0x00419980 uses the engine's 24-bit x87 operation order for the inverse,
+        // multiplication and vertex transforms; generic matrix formulas round differently.
+        Mat4 transform = inverse;
+        mx::MulLeft(transform, nodes[ni]);
         for (size_t v = 0; v < def.vertexOffsets.size() && v < rec.groups.size(); ++v) {
             const int g = rec.groups[v];
             if (g < 0 || g >= rec.count) continue;
             const float* p = &rec.src[g * 6];
             const float* q = p + 3;
             float pos[3], nrm[3];
-            for (int c = 0; c < 3; ++c) {
-                pos[c] = p[0] * m[c] + p[1] * m[4 + c] + p[2] * m[8 + c] + m[12 + c];
-                nrm[c] = q[0] * m[c] + q[1] * m[4 + c] + q[2] * m[8 + c];
-                if (negateNormals) nrm[c] = -nrm[c];
-            }
+            mx::Transform(transform, p, pos);
+            mx::TransformDir(transform, q, nrm);
+            // 0x0041A480 / 0x0041A4D0 also set the inline-record flag bits.
+            uint32_t bits;
+            std::memcpy(&bits, &pos[0], sizeof(bits));
+            bits |= 1;
+            std::memcpy(&pos[0], &bits, sizeof(bits));
+            std::memcpy(&bits, &nrm[2], sizeof(bits));
+            bits |= 1;
+            std::memcpy(&nrm[2], &bits, sizeof(bits));
+            if (negateNormals) for (float& value : nrm) value = -value;
             for (uint32_t o : def.vertexOffsets[v]) {
                 auto it = at.find(offsetBase + o);
                 if (it == at.end()) continue;
