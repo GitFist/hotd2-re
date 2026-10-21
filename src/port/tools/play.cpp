@@ -14,7 +14,7 @@
 //   render  - the world's draws (Scene::BuildFromWorld: skinning, culling, pass-1 list) + the gameplay HUD
 //             (game/hud.*, from World::Hud) through ModelRenderer::DrawGame (GPU backend: D3D11 or SDL_GPU),
 //             lighting / fog from scenes/st1_play.scene;
-//   sound   - --audio: the world's sound commands through game::SoundDriver + SDL3 audio (or XAudio2).
+//   sound   - hotd2.exe enables sound by default; play.exe accepts --audio for SDL3 audio (or XAudio2).
 // Headless check: --script replays an input script in the hook's format (<boot frame> <player> <x> <y> <buttons>,
 // frames counted from boot like the capture's F numbers = world frame) and --screenshot saves --frame.
 // Esc pauses/resumes or backs out of menus; quit through the window close button or the mode select's EXIT.
@@ -736,11 +736,15 @@ int main(int argc, char** argv) {
 #endif
     std::string dir;
     int firstOpt = 2;
-    bool audio = false;
+#ifdef PLAY_GUI
+    bool audio = true;  // Player launches keep sound enabled with custom game paths and options.
+#else
+    bool audio = false;  // Command-line tools opt in with --audio, apart from normal no-path launches below.
+#endif
     if (argc < 2 || argv[1][0] == '-') {
         dir = FindGameDir(argv[0]);
         firstOpt = 1;
-        audio = argc < 2 || (argc == 2 && std::string(argv[1]) == "--no-update-check");  // normal launch: with sound
+        audio = audio || argc < 2 || (argc == 2 && std::string(argv[1]) == "--no-update-check");
         if (dir.empty()) {
             fprintf(stderr,
                     "usage: play <game dir> [--audio] [--width W --height H] [--script file --screenshot out.png --frame F] %s\n"
