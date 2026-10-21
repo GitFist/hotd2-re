@@ -140,5 +140,67 @@ int main(int argc, char** argv) {
         requireRgb(pixels,160,firstOpted ? 0 : 20,"left item's specular opt-in leaked across scenes");
         requireRgb(pixels,480,firstOpted ? 20 : 0,"specular opt-in leaked between items");
     }
-    std::puts("PASS bounded native specular and fish-only unit specular; diffuse and unrelated draws unchanged");
+
+    // A curved normal field has equal native brightness at all four vertices, but
+    // its interpolated center faces the light. Per-pixel evaluation must reveal the
+    // smooth center, rather than merely normalizing Gouraud vertex colors.
+    auto curved = Plane(.6f, false);
+    for (auto& v : curved.meshes[0].strips[0].vertices) v.normal[0] = v.pos[0] < 0 ? -.8f : .8f;
+    fish = {};
+    fish.model = &curved; fish.cullable = false; fish.noMeshCull = true; fish.transform[14] = -1;
+    const auto originalCurved = render({fish});
+    requireRgb(originalCurved,320,12,"native Gouraud lighting unexpectedly changed");
+    auto graphics = gpu->EffectiveGraphics();
+    graphics.perPixelLighting = true;
+    Require(gpu->ConfigureGraphics(graphics,&error),error.c_str());
+    requireRgb(render({fish}),320,20,"per-pixel lighting did not normalize the interpolated surface normal");
+
+    // Modern diffuse/specular remain bounded through nonuniform scales and the
+    // fish-specific native correction can never reintroduce the white plateau.
+    fish.model = &aligned; fish.unitSpecular = true;
+    fish.transform[0] = .3f; fish.transform[5] = .6f; fish.transform[10] = .3f;
+    requireRgb(render({fish}),320,20,"modern lighting changed an aligned bounded highlight");
+
+    // Pass-1 alpha effects keep the exact original lighting and blending even
+    // with this option enabled. This protects layered smoke and flashes.
+    auto alphaCurved = curved;
+    alphaCurved.meshes[0].material.words[2] = 0x94100000u;
+    float half = .5f;
+    std::memcpy(alphaCurved.meshes[0].material.words + 11,&half,sizeof(half));
+    fish = {}; fish.model = &alphaCurved; fish.cullable = false; fish.noMeshCull = true; fish.transform[14] = -1;
+    const auto modernAlpha = render({fish});
+    graphics.perPixelLighting = false;
+    Require(gpu->ConfigureGraphics(graphics,&error),error.c_str());
+    Require(render({fish}) == modernAlpha,"per-pixel option changed a blended effect");
+
+    // An unlit frame remains unchanged; re-enable native lighting afterwards and
+    // confirm setting transitions do not leak modern state into later draws.
+    light.enabled = false;
+    const auto originalUnlit = render({fish});
+    graphics.perPixelLighting = true;
+    Require(gpu->ConfigureGraphics(graphics,&error),error.c_str());
+    Require(render({fish}) == originalUnlit,"per-pixel option changed unlit rendering");
+    light.enabled = true;
+    fish.model = &curved;
+    graphics.perPixelLighting = false;
+    Require(gpu->ConfigureGraphics(graphics,&error),error.c_str());
+    Require(render({fish}) == originalCurved,"switching to Original did not restore the exact native image");
+
+    // A close point light should be evaluated at the center, not interpolated
+    // from four distant corners. Its range cut-off is preserved.
+    auto wide = Plane(1.f,false);
+    for (auto& v : wide.meshes[0].strips[0].vertices) { v.pos[0] *= 100; v.pos[1] *= 100; }
+    projection.m[0] = projection.m[5] = 1;
+    fish.model = &wide;
+    for (float& c : light.diffuse) c = 0;
+    light.localCount = 1;
+    light.local[0].pos[2] = -.75f;
+    light.local[0].range = 2;
+    for (float& c : light.local[0].diffuse) c = .4f;
+    graphics.perPixelLighting = true;
+    Require(gpu->ConfigureGraphics(graphics,&error),error.c_str());
+    requireRgb(render({fish}),320,20,"per-pixel point light was not evaluated at the surface");
+    light.local[0].range = .1f;
+    requireRgb(render({fish}),320,0,"modern point-light range was ignored");
+    std::puts("PASS native specular/fish corrections, optional per-pixel diffuse/specular/point lights, exact alpha/unlit/Original transitions");
 }

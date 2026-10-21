@@ -1,4 +1,5 @@
 #include "model_renderer.h"
+#include "mesh_refinement.h"
 
 #include "game/crt_qsort.h"
 
@@ -112,6 +113,7 @@ void ModelRenderer::ClearCache() {
     cacheDirty_ = boundsValid_ = haveStatic_ = haveDynamic_ = dynUploadPending_ = false;
     device_->SetStaticVertices(nullptr, 0);
     device_->ClearTextures();
+    previousMotion_.clear(); currentMotion_.clear(); haveTemporalHistory_ = false;
 }
 
 GpuState ModelRenderer::StateOf(bool blend, int src, int dst, int zfunc, bool zwrite, bool linear, int addrU, int addrV) {
@@ -138,18 +140,18 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<const game::M
     SetScene(assets, items);
 }
 
-const ModelRenderer::ModelGpu& ModelRenderer::CachedModel(AssetStore& assets, const game::Model* model, const std::string& polName) {
-    auto key = std::make_pair(model, polName);
+const ModelRenderer::ModelGpu& ModelRenderer::CachedModel(AssetStore& assets, const game::Model* model, const std::string& polName,int refinement) {
+    auto key = std::make_tuple(model, polName,refinement);
     auto it = models_.find(key);
     if (it != models_.end()) return it->second;
     ModelGpu& g = models_[key];
-    BuildMeshes(assets, model, polName, g, cacheVerts_, false);
+    BuildMeshes(assets, model, polName, g, cacheVerts_, false,refinement);
     cacheDirty_ = true;
     return g;
 }
 
 void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, const std::string& polName, ModelGpu& g,
-                                std::vector<game::ModelVertex>& verts, bool dynamic) {
+                                std::vector<game::ModelVertex>& verts, bool dynamic,int refinement) {
     // Mdl_Draw 0x004A7EF0: each strip's control word sets D3DRENDERSTATE_CULLMODE = 0x00598B20[ctrl & 3] = {none, none,
     // CCW, CW} unless bit 0x80 (keep the current mode); the mode also stays set across strips. Strips are grouped into
     // runs of one cull mode (one draw each). The state carried over from the previous model is not modelled (a model
@@ -171,7 +173,34 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
             if (runs.empty() || runs.back().second != c) runs.push_back({ static_cast<uint32_t>(verts.size()), c });
             game::Triangulate(s, verts);  // model space
         }
+        bool refined=false;
+        const bool refineEligible=refinement>0&&!layeredCards&&(mesh.material.Tsp()&0x180000)==0x80000&&((mesh.material.Isp()>>26)&1)==0;
+        if(refineEligible&&!runs.empty()) {
+            const std::vector<game::ModelVertex> original(verts.begin()+m.first,verts.end());
+            const auto oldRuns=runs;verts.resize(m.first);runs.clear();
+            for(size_t r=0;r<oldRuns.size();++r){
+                const size_t first=oldRuns[r].first-m.first;
+                const size_t end=r+1<oldRuns.size()?oldRuns[r+1].first-m.first:original.size();
+                runs.push_back({static_cast<uint32_t>(verts.size()),oldRuns[r].second});
+                std::vector<game::ModelVertex> detailed;
+                if(RefinePnTriangles(original.data()+first,end-first,refinement,&detailed)) {verts.insert(verts.end(),detailed.begin(),detailed.end());refined=true;}
+                else verts.insert(verts.end(),original.begin()+first,original.begin()+end);
+            }
+        }
         m.count = static_cast<uint32_t>(verts.size()) - m.first;
+        for(int k=0;k<3;++k){m.shadowBounds[k]=1e30f;m.shadowBounds[k+3]=-1e30f;}
+        for(uint32_t v=m.first;v<m.first+m.count;++v)for(int k=0;k<3;++k){
+            m.shadowBounds[k]=std::min(m.shadowBounds[k],verts[v].pos[k]);
+            m.shadowBounds[k+3]=std::max(m.shadowBounds[k+3],verts[v].pos[k]);
+        }
+        uint64_t topology = 1469598103934665603ull;
+        auto mix = [&](uint32_t value) { topology = (topology ^ value) * 1099511628211ull; };
+        mix(static_cast<uint32_t>(mesh.strips.size()));
+        if(refined)mix(0x504e0000u|static_cast<uint32_t>(refinement));
+        for (const auto& strip : mesh.strips) {
+            mix(strip.ctrl); mix(strip.triangleList ? 1u : 0u); mix(static_cast<uint32_t>(strip.vertices.size()));
+            for (uint32_t offset : strip.offsets) mix(offset);
+        }
         // Pass selection in Mdl_Draw 0x004A7EF0.
         const uint32_t isp = mesh.material.Isp(), tsp = mesh.material.Tsp();
         m.translucent = (tsp & 0x180000) != 0x80000;
@@ -185,6 +214,9 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         m.alphaFromTexture = ((tsp >> 6) & 3) == 1;
         m.fog = ((tsp >> 23) & 1) == 0;  // FOGENABLE = !bit 23
         for (int k = 0; k < 4; ++k) m.sphere[k] = mesh.material.Sphere(k);  // material bounding sphere (words 4-7)
+        if(refined) {
+            float radius2=0;for(int k=0;k<3;++k){m.sphere[k]=(m.shadowBounds[k]+m.shadowBounds[k+3])*.5f;const float half=(m.shadowBounds[k+3]-m.shadowBounds[k])*.5f;radius2+=half*half;}m.sphere[3]=std::sqrt(radius2);
+        }
         m.ambientScale = mesh.material.AmbientScale();
         if (const int n = mesh.material.SpecularExponent(); n > 0 && n < 31) {  // Mdl_Draw 0x004A8026: power = 1 << n
             for (int k = 0; k < 3; ++k) m.specular[k] = mesh.material.Specular(k);
@@ -195,6 +227,7 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         if (mesh.material.Textured()) {
             m.tex = TextureView(assets.Texture(polName, mesh.material.TextureRef()), m.translucent);
             m.textured = true;
+            if (!m.translucent) m.normalRoughness = TextureView(assets.NormalRoughness(polName, mesh.material.TextureRef()));
         }
         if (!m.count) continue;
         const uint32_t end = m.first + m.count;
@@ -204,6 +237,8 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
             part.count = (r + 1 < runs.size() ? runs[r + 1].first : end) - part.first;
             part.cull = runs[r].second;
             part.firstRun = r == 0;
+            part.topology = topology;
+            part.ordinal = static_cast<uint32_t>(g.meshes.size());
             if (part.count) g.meshes.push_back(part);
         }
     }
@@ -221,23 +256,33 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
     itemCullFlip_.clear();
     itemLight_.clear();
     itemWorld_.clear();
+    itemMotionIdentity_.clear(); itemMotionTracked_.clear(); itemMotionReactive_.clear();
+    itemShadowCaster_.clear();
     stats_ = {};
     boundsValid_ = false;
     dynModels_.clear();
     dynVerts_.clear();
     for (const SceneItem& item : items) {
         const float* t = item.transform;
+        const int refinement=device_->EffectiveGraphics().meshRefinement>0&&item.shadowCaster&&item.alpha<0&&
+            (item.refineGeometry||(item.motionTracked&&assets.RefineModel(item.motionIdentity.model)))?device_->EffectiveGraphics().meshRefinement:0;
         const ModelGpu* gp;
         if (item.dynamicGeometry) {
             dynModels_.push_back(std::make_unique<ModelGpu>());
-            BuildMeshes(assets, item.model, item.polName, *dynModels_.back(), dynVerts_, true);
+            BuildMeshes(assets, item.model, item.polName, *dynModels_.back(), dynVerts_, true,refinement);
             gp = dynModels_.back().get();
         } else {
-            gp = &CachedModel(assets, item.model, item.polName);
+            gp = &CachedModel(assets, item.model, item.polName,refinement);
         }
         const ModelGpu& g = *gp;
         const int itemIndex = static_cast<int>(itemOrigin_.size());
         const float* sc = item.model->sphere;
+        float refinedSphere[4]={};
+        if(refinement&&!g.meshes.empty()) {
+            float lo[3]={1e30f,1e30f,1e30f},hi[3]={-1e30f,-1e30f,-1e30f};
+            for(const auto& mesh:g.meshes)for(int k=0;k<3;++k){lo[k]=std::min(lo[k],mesh.shadowBounds[k]);hi[k]=std::max(hi[k],mesh.shadowBounds[k+3]);}
+            float radius2=0;for(int k=0;k<3;++k){refinedSphere[k]=(lo[k]+hi[k])*.5f;const float half=(hi[k]-lo[k])*.5f;radius2+=half*half;}refinedSphere[3]=std::sqrt(radius2);sc=refinedSphere;
+        }
         float center[3];
         for (int k = 0; k < 3; ++k) center[k] = sc[0] * t[k] + sc[1] * t[4 + k] + sc[2] * t[8 + k] + t[12 + k];
         const float scale = MaxAxisScale(t);
@@ -266,6 +311,10 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
         itemSortBackToFront_.push_back(item.sortBackToFront ? 1 : 0);
         itemCullFlip_.push_back(item.cullFlip ? 1 : 0);
         itemLight_.push_back(item.light);
+        itemMotionIdentity_.push_back(item.motionIdentity);
+        itemMotionTracked_.push_back(item.motionTracked ? 1 : 0);
+        itemMotionReactive_.push_back(item.motionReactive ? 1 : 0);
+        itemShadowCaster_.push_back(item.shadowCaster ? 1 : 0);
         std::array<float, 16> w;
         memcpy(w.data(), t, sizeof(float) * 16);
         itemWorld_.push_back(w);
@@ -318,6 +367,7 @@ void ModelRenderer::AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelCo
     d.first = m.first;
     d.count = m.count;
     d.texture = m.tex;
+    d.normalRoughnessTexture = m.normalRoughness;
     d.state = st;
     d.constants = static_cast<uint32_t>(list.model.size());
     list.model.push_back(fc);
@@ -326,8 +376,154 @@ void ModelRenderer::AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelCo
     // would already have lost that precision. Culling and game material state stay conventional.
     auto& constants = list.model.back();
     float* matrix = constants.localCount[2] > 0.5f ? constants.projection : constants.viewProj;
+    if (list.temporal.enabled && list.width > 0 && list.height > 0) {
+        const float dx = 2 * list.temporal.jitterPixels[0] / list.width;
+        const float dy = -2 * list.temporal.jitterPixels[1] / list.height;
+        for (int row = 0; row < 4; ++row) {
+            matrix[row*4] += dx * matrix[row*4+3];
+            matrix[row*4+1] += dy * matrix[row*4+3];
+        }
+    }
     for (int row = 0; row < 4; ++row) matrix[row * 4 + 2] = matrix[row * 4 + 3] - matrix[row * 4 + 2];
     list.draws.push_back(d);
+}
+
+bool ModelRenderer::BeginTemporal(int width, int height, const float* view, const float* projection) {
+    currentMotion_.clear();
+    temporalCamera_={};
+    bool validCamera=width>0&&height>0&&view&&projection;
+    if(validCamera)for(int k=0;k<16;++k)if(!std::isfinite(view[k])||!std::isfinite(projection[k]))validCamera=false;
+    // Depth-based scene passes need the real current camera even with history Off.
+    if(validCamera) {
+        std::copy(view,view+16,temporalCamera_.view);
+        std::copy(view,view+16,temporalCamera_.previousView);
+        for(int k=0;k<16;++k)temporalCamera_.projection[k]=temporalCamera_.previousProjection[k]=projection[k];
+        for(int row=0;row<4;++row)temporalCamera_.projection[row*4+2]=temporalCamera_.previousProjection[row*4+2]=projection[row*4+3]-projection[row*4+2];
+        temporalCamera_.valid=true;
+    }
+    temporalActive_ = temporalFrame_.enabled && width > 0 && height > 0 && view && projection;
+    if (temporalActive_) {
+        for (int k=0;k<16;++k) if (!std::isfinite(view[k]) || !std::isfinite(projection[k])) temporalActive_=false;
+        for (float jitter : temporalFrame_.jitterPixels) if (!std::isfinite(jitter) || std::abs(jitter)>1) temporalActive_=false;
+    }
+    if (!temporalActive_) {
+        previousMotion_.clear(); haveTemporalHistory_=false;
+        return false;
+    }
+    temporalReset_ = temporalFrame_.reset || !haveTemporalHistory_ ||
+        temporalFrame_.frameId != previousTemporalFrame_.frameId+1 ||
+        width!=previousTemporalWidth_ || height!=previousTemporalHeight_ ||
+        temporalScene_.world!=previousTemporalScene_.world ||
+        temporalScene_.simulationFrame<previousTemporalScene_.simulationFrame ||
+        temporalScene_.camera!=previousTemporalScene_.camera;
+    if (haveTemporalHistory_ && !temporalReset_) {
+        for (int k : {0,5,10,11,14,15})
+            if (std::abs(projection[k]-previousTemporalProjection_[k])>1e-5f) temporalReset_=true;
+        float distance2=0,alignment=0;
+        for (int k=0;k<3;++k) {
+            const float eye=-(view[12]*view[k*4]+view[13]*view[k*4+1]+view[14]*view[k*4+2]);
+            const auto& old=previousTemporalView_;
+            const float oldEye=-(old[12]*old[k*4]+old[13]*old[k*4+1]+old[14]*old[k*4+2]);
+            distance2+=(eye-oldEye)*(eye-oldEye);
+            alignment+=view[k*4+2]*old[k*4+2];
+        }
+        if (distance2>256.f*256.f || alignment<0.5f) temporalReset_=true;
+    }
+    if (temporalReset_) previousMotion_.clear();
+    std::copy(view,view+16,temporalCamera_.view);
+    std::copy(projection,projection+16,temporalCamera_.projection);
+    if(temporalReset_) {
+        std::copy(view,view+16,temporalCamera_.previousView);
+        std::copy(projection,projection+16,temporalCamera_.previousProjection);
+    } else {
+        std::copy(previousTemporalView_.begin(),previousTemporalView_.end(),temporalCamera_.previousView);
+        std::copy(previousTemporalProjection_.begin(),previousTemporalProjection_.end(),temporalCamera_.previousProjection);
+    }
+    for(int row=0;row<4;++row){
+        temporalCamera_.projection[row*4+2]=temporalCamera_.projection[row*4+3]-temporalCamera_.projection[row*4+2];
+        temporalCamera_.previousProjection[row*4+2]=temporalCamera_.previousProjection[row*4+3]-temporalCamera_.previousProjection[row*4+2];
+    }
+    temporalCamera_.valid=true;
+    std::copy(view,view+16,previousTemporalView_.begin());
+    std::copy(projection,projection+16,previousTemporalProjection_.begin());
+    previousTemporalWidth_=width; previousTemporalHeight_=height;
+    return true;
+}
+
+void ModelRenderer::AddMotionDraw(GpuDrawList& list, const Batch& batch, const GpuDraw& draw) {
+    const int item=batch.item;
+    const Mesh& mesh=*batch.mesh;
+    // Opaque-only velocity: transparent cards require reactive coverage, not an
+    // invented solid correspondence. Retain prior CPU deformation, not bone IDs.
+    if (!temporalActive_ || item<0 || !itemMotionTracked_[item] || draw.state.blendEnable || !draw.state.zwrite ||
+        list.motionVertices.size()+mesh.count>1024u*1024u) return;
+    const auto& vertices=mesh.dynamic?dynVerts_:cacheVerts_;
+    if (static_cast<size_t>(mesh.first)+mesh.count>vertices.size()) return;
+    const MotionKey key{itemMotionIdentity_[item],mesh.ordinal};
+    // Repeated identities must not silently match two distinct pieces of a model.
+    if (currentMotion_.find(key)!=currentMotion_.end()) return;
+    MotionSnapshot snapshot;
+    snapshot.topology=mesh.topology;
+    const ModelConstants& color=list.model[draw.constants];
+    std::copy(color.modelView,color.modelView+16,snapshot.modelView.begin());
+    std::copy(color.projection,color.projection+16,snapshot.projection.begin());
+    auto old=previousMotion_.find(key);
+    const bool valid=old!=previousMotion_.end() && old->second.topology==mesh.topology &&
+        old->second.positions.size()==mesh.count && !itemMotionReactive_[item];
+    MotionConstants constants{};
+    std::copy(color.modelView,color.modelView+16,constants.modelView);
+    std::copy(color.projection,color.projection+16,constants.projection);
+    std::copy(valid?old->second.modelView.begin():snapshot.modelView.begin(),valid?old->second.modelView.end():snapshot.modelView.end(),constants.previousModelView);
+    std::copy(valid?old->second.projection.begin():snapshot.projection.begin(),valid?old->second.projection.end():snapshot.projection.end(),constants.previousProjection);
+    constants.target[0]=static_cast<float>(list.width); constants.target[1]=static_cast<float>(list.height);
+    constants.target[2]=valid?1.f:0.f; // previous depth readiness remains backend-owned, zero initially
+    constants.jitter[0]=temporalFrame_.jitterPixels[0]; constants.jitter[1]=temporalFrame_.jitterPixels[1];
+    constants.jitter[2]=valid?previousTemporalFrame_.jitterPixels[0]:constants.jitter[0];
+    constants.jitter[3]=valid?previousTemporalFrame_.jitterPixels[1]:constants.jitter[1];
+    constants.alpha[0]=color.flags[0]; constants.alpha[1]=color.flags[2];
+    constants.alpha[2]=color.diffuse[3]; constants.alpha[3]=color.flags[3];
+    GpuMotionDraw motion;
+    motion.first=static_cast<uint32_t>(list.motionVertices.size()); motion.count=mesh.count;
+    motion.constants=static_cast<uint32_t>(list.motionConstants.size()); motion.texture=draw.texture; motion.state=draw.state;
+    snapshot.positions.reserve(mesh.count);
+    for (uint32_t k=0;k<mesh.count;++k) {
+        const auto& v=vertices[mesh.first+k];
+        MotionVertex mv{};
+        std::copy(v.pos,v.pos+3,mv.position); std::copy(v.uv,v.uv+2,mv.uv);
+        if(valid) std::copy(old->second.positions[k].begin(),old->second.positions[k].end(),mv.previous);
+        else std::copy(v.pos,v.pos+3,mv.previous);
+        snapshot.positions.push_back({v.pos[0],v.pos[1],v.pos[2]});
+        list.motionVertices.push_back(mv);
+    }
+    list.motionConstants.push_back(constants); list.motionDraws.push_back(motion);
+    currentMotion_.emplace(key,std::move(snapshot));
+}
+
+void ModelRenderer::SubmitGame(GpuDrawList& list) {
+    if (device_->RequiresSceneProcessing()) {
+        GpuDrawList hud;
+        hud.width=list.width; hud.height=list.height; hud.sprite=list.sprite;
+        auto first=std::remove_if(list.draws.begin(),list.draws.end(),[&](const GpuDraw& draw) {
+            if (draw.pipeline!=GpuDraw::Pipeline::Sprite || !draw.hud) return false;
+            hud.draws.push_back(draw); return true;
+        });
+        list.draws.erase(first,list.draws.end());
+        device_->Submit(list);
+        device_->ProcessScene(); // SDK failure retains the scene; HUD remains readable
+        if (!hud.draws.empty()) {
+            hud.width=device_->HudTargetWidth(); hud.height=device_->HudTargetHeight();
+            for(auto& c:hud.sprite) {c.screen[0]=hud.width/640.f;c.screen[1]=hud.height/480.f;}
+            device_->Submit(hud);
+        }
+    } else {
+        device_->Submit(list);
+        device_->ProcessScene(); // no-op on ordinary backends; original draw order untouched
+    }
+    if (temporalActive_) {
+        previousMotion_=std::move(currentMotion_);
+        previousTemporalFrame_=temporalFrame_; previousTemporalScene_=temporalScene_;
+        haveTemporalHistory_=true;
+    }
 }
 
 void ModelRenderer::Draw(int width, int height, const Camera& cam) {
@@ -418,8 +614,10 @@ void ModelRenderer::AddSpriteDraw(GpuDrawList& list, int width, int height, cons
     d.first = static_cast<uint32_t>(index * 4);
     d.count = 4;
     d.texture = tex;
+    d.hud = s.hud;
+    d.reactive = !s.hud;
     d.state = StateOf(translucent, kSrc[s.tsp >> 29], kDst[(s.tsp >> 26) & 7], kZFunc[s.isp >> 29], ((s.isp >> 26) & 1) == 0,
-                      (s.tsp & 0x6000) != 0, kAddr[(((s.tsp >> 3) & 0x8000) | (s.tsp & 0x10000)) >> 15],
+                      s.linear || (s.tsp & 0x6000) != 0, kAddr[(((s.tsp >> 3) & 0x8000) | (s.tsp & 0x10000)) >> 15],
                       kAddr[(((s.tsp >> 3) & 0x4000) | (s.tsp & 0x8000)) >> 14]);
     d.constants = static_cast<uint32_t>(list.sprite.size());
     list.sprite.push_back(sc);
@@ -437,6 +635,7 @@ void UploadSprites(GpuDevice* device, const std::vector<ModelRenderer::SpriteDra
 void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], const Lighting* light, const Fog* fog,
                              const float* gameView, const std::vector<SpriteDraw>* sprites,
                              const std::vector<Lighting>* itemLights, const float* projection) {
+    BeginTemporal(width,height,gameView,projection);
     if (!haveStatic_ && !haveDynamic_ && (!sprites || sprites->empty())) return;  // sprites alone: e.g. the game-over letters
     ModelConstants fc = {};
     if (gameView && projection) {
@@ -500,8 +699,12 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     GpuDrawList out;
     out.width = width;
     out.height = height;
+    out.temporalCamera=temporalCamera_;
+    out.sceneEffects.cinematic=cinematicEffectsAllowed_;
+    if(fog&&fog->enabled)std::copy(fog->color,fog->color+3,out.sceneEffects.fogColor);
+    if (temporalActive_) {out.temporal=temporalFrame_;out.temporal.reset=temporalReset_;}
     UploadDynamic();
-    auto drawBatch = [&](const Batch* bb, int pass) {
+    auto drawBatch = [&](const Batch* bb, int pass, bool casterOnly = false) {
         const Mesh* b = bb->mesh;
         setLight(itemLighting(bb->item));
         memcpy(fc.world, itemWorld_[bb->item].data(), sizeof(fc.world));
@@ -520,12 +723,28 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         // TSP bit 7 (shading 2 / 3: ALPHAOP MODULATE, 0x004A7780), so the record's factor always reaches the alpha
         fc.flags[3] = b->alphaFromTexture && itemAlpha < 0 ? 2.0f : 1.0f;
         fc.fogParams[2] = fog && fog->enabled && b->fog ? 1.0f : 0.0f;
+        // Modern lighting changes only opaque surfaces with a real game light. Keep the native
+        // interpolation, normal/specular corrections and blending of smoke, sky overlays and
+        // other pass-1 effects; the setting never changes simulation or material visibility.
+        fc.materialParams[0] = device_->EffectiveGraphics().materialMaps && b->normalRoughness && pass == 0 && itemAlpha < 0 ? 1.0f : 0.0f;
+        fc.lightingOptions[0] = (device_->EffectiveGraphics().perPixelLighting || fc.materialParams[0] > 0.5f || (device_->EffectiveGraphics().shadowMaps>0&&out.shadowMap.valid)) && pass == 0 &&
+                                    itemAlpha < 0 && fc.litDir[3] > 0.5f ? 1.0f : 0.0f;
         const GpuState st = itemAlpha >= 0
                                  ? StateOf(true, 5, 6, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV)  // forced SRCALPHA/INVSRCALPHA
                                  : StateOf(pass == 1, b->srcBlend, b->dstBlend, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV);
         GpuState cs = st;
         static const bool noMips = getenv("HOTD2_NO_MIPS") != nullptr;
         cs.mipmapped = noMips ? 0 : 1;
+        const bool softSmoke = pass == 1 && (b->layeredCards || itemSortBackToFront_[bb->item]) &&
+                               cs.srcBlend == 5 && cs.dstBlend == 6 && gameView && projection && std::abs(projection[11]) > 1e-6f;
+        const int softness = device_->EffectiveGraphics().softParticles;
+        fc.depthEffects[0] = softSmoke && softness > 0 ? static_cast<float>(16 << (softness - 1)) : 0;
+        fc.depthEffects[1] = 1.0f / width; fc.depthEffects[2] = 1.0f / height;
+        fc.depthEffects[3] = 0; // backend enables this only after a valid current-frame opaque snapshot
+        if (projection) {
+            fc.depthProjection[0] = projection[11] - projection[10]; fc.depthProjection[1] = projection[15] - projection[14];
+            fc.depthProjection[2] = projection[11]; fc.depthProjection[3] = projection[15];
+        }
         cs.cull = static_cast<uint8_t>(b->cull);
         // D3D culls by the screen winding, mirrored WORLD matrices included. The sky domes of list 0x0057A280 (6048,
         // 6049, 6307, 6309; Sky_Task 0x004132D0 draws them with S(1.2, 1.2, -1.2)) stay visible because Res_LoadModel
@@ -533,7 +752,40 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         // CW <-> CCW. The sky 6047 (type 3) is not in the list and is culled completely (attract 8100 / 20700).
         if (itemCullFlip_[bb->item] && cs.cull >= 2) cs.cull = static_cast<uint8_t>(5 - cs.cull);
         AddModelDraw(out, *b, fc, cs);
+        if(casterOnly) {out.shadowCasters.push_back(out.draws.back());out.draws.pop_back();return;}
+        out.draws.back().reactive = pass==1 || itemMotionReactive_[bb->item];
+        if (pass==0) AddMotionDraw(out,*bb,out.draws.back());
     };
+
+    // Shadows may be cast into the view by geometry outside its frustum. Keep a
+    // dedicated unculled list only for an enabled shadow backend; default draw
+    // order, culling, motion vertices and simulation state remain untouched.
+    float casterBounds[6]={1e30f,1e30f,1e30f,-1e30f,-1e30f,-1e30f};
+    const Lighting* shadowLight=nullptr;
+    if(device_->NeedsShadowCasters())for(const Batch& batch:batches_) {
+        const Mesh& mesh=*batch.mesh;const int item=batch.item;
+        const Lighting* illumination=itemLighting(item);
+        if(item<0||!itemShadowCaster_[item]||itemAlpha_[item]>=0||mesh.translucent||!mesh.zwrite||mesh.layeredCards||
+           !illumination||!illumination->enabled)continue;
+        drawBatch(&batch,0,true);
+        if(!shadowLight&&(illumination->diffuse[0]>0||illumination->diffuse[1]>0||illumination->diffuse[2]>0))shadowLight=illumination;
+        const auto& world=itemWorld_[item];
+        for(int corner=0;corner<8;++corner){
+            const float p[3]={mesh.shadowBounds[(corner&1)?3:0],mesh.shadowBounds[(corner&2)?4:1],mesh.shadowBounds[(corner&4)?5:2]};
+            for(int k=0;k<3;++k){const float v=p[0]*world[k]+p[1]*world[4+k]+p[2]*world[8+k]+world[12+k];casterBounds[k]=std::min(casterBounds[k],v);casterBounds[k+3]=std::max(casterBounds[k+3],v);}
+        }
+    }
+    if(shadowLight) {
+        std::copy(shadowLight->diffuse,shadowLight->diffuse+3,out.sceneEffects.lightColor);
+        std::copy(shadowLight->dirToLight,shadowLight->dirToLight+3,out.sceneEffects.lightDirection);
+        const auto& graphics=device_->EffectiveGraphics();
+        const int quality=graphics.shadowMaps>0?graphics.shadowMaps:graphics.volumetricFog>0?1:0;
+        if(quality>0)MakeShadowMapFrame(gameView,projection,shadowLight->dirToLight,casterBounds,quality,&out.shadowMap);
+        if(!graphics.shadowMaps)out.shadowMap.constants.parameters[0]=0; // visibility for fog only; surface shading stays native
+    } else if(light&&light->enabled) {
+        std::copy(light->diffuse,light->diffuse+3,out.sceneEffects.lightColor);
+        std::copy(light->dirToLight,light->dirToLight+3,out.sceneEffects.lightDirection);
+    }
 
     // Culling (gameView only). Whole items: not submitted when the model's bounding sphere is completely outside
     // the frustum (HYPOTHESIS: matches the pass-1 lists, see notes). Meshes: Mdl_Draw skips a mesh of the current pass
@@ -559,6 +811,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         if (b.item >= 0 && itemAlpha_[b.item] >= 0) continue;  // alpha path: pass 1 only (hypothesis)
         drawBatch(&b, 0);
     }
+    out.opaqueDrawCount = static_cast<uint32_t>(out.draws.size());
 
     if (!gameView) {
         // No game view: approximate pass 1 per batch, back to front by clip w (model viewer).
@@ -578,7 +831,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
             UploadSprites(device_, *sprites);
             for (size_t i = 0; i < sprites->size(); ++i) AddSpriteDraw(out, width, height, (*sprites)[i], i);
         }
-        device_->Submit(out);
+        SubmitGame(out);
         return;
     }
 
@@ -685,7 +938,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
             AddSpriteDraw(out, width, height, (*sprites)[e.sprite], e.sprite);
         }
     }
-    device_->Submit(out);
+    SubmitGame(out);
 }
 
 void ModelRenderer::DrawSprites(int width, int height, const std::vector<SpriteDraw>& sprites) {

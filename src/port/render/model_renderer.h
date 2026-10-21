@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <tuple>
 
 #include "asset_store.h"
 #include "gpu_device.h"
@@ -60,8 +61,16 @@ public:
         // No per-mesh visibility test (the pause overlay 0x93E: scaled to the near plane, its material sphere misses the
         // frustum test although the quad covers the screen).
         bool noMeshCull = false;
+        bool motionTracked = false;
+        MotionIdentity motionIdentity;
+        bool motionReactive = false; // scrolling/environment texture has no single geometric correspondence
+        bool refineGeometry = false; // explicit author/test opt-in in addition to the active pack selection
+        bool shadowCaster = true; // Scene excludes sky/view-space overlays/special effect sources explicitly
     };
     void SetScene(AssetStore& assets, const std::vector<SceneItem>& items);
+    void SetTemporalFrame(const TemporalFrameInfo& frame) { temporalFrame_ = frame; }
+    void SetTemporalScene(const TemporalSceneStamp& scene) { temporalScene_ = scene; }
+    void SetCinematicEffectsAllowed(bool allowed) { cinematicEffectsAllowed_ = allowed; }
 
     void Draw(int width, int height, const Camera& cam);
 
@@ -70,8 +79,8 @@ public:
     void DrawWithMatrix(int width, int height, const float viewProj[16], bool unlit);
 
     // Game materials: per-mesh blend/depth/filter/address/alpha state from the PVR words, opaque pass then
-    // translucent pass sorted back to front (like 0x004A7A10 / 0x004A88E0). Lighting is still not reproduced
-    // (texture colour x material alpha only).
+    // translucent pass sorted back to front (like 0x004A7A10 / 0x004A88E0). Native fixed-function lighting
+    // is retained by default; optional per-pixel lighting affects opaque lit surfaces only.
     // D3D7 fixed-function lighting inputs (directional light 0 + AMBIENT render state). dirToLight: world-space unit
     // vector from surfaces toward the light (= -D3DLIGHT7.dvDirection in world space).
     struct Lighting {
@@ -107,6 +116,8 @@ public:
         uint32_t key = 0x8000000F;  // pass-1 list key (record key | list priority)
         float depth = 1;            // pass-1 sort depth (record depth)
         uint32_t textureId = 0;     // global texture id (diagnostics)
+        bool linear = false;        // explicit port UI atlas opt-in; original sprites retain authored state
+        bool hud = true;             // false for scene-space effects; only consumed by opted-in processing
     };
     void DrawSprites(int width, int height, const std::vector<SpriteDraw>& sprites);
 
@@ -139,6 +150,7 @@ private:
     struct Mesh {
         uint32_t first = 0, count = 0;
         GpuTexture tex = 0;         // 0 = untextured (or missing)
+        GpuTexture normalRoughness = 0; // optional manifest material map; opaque models only
         bool textured = false;
         float diffuse[4] = { 1, 1, 1, 1 };
         float ambientScale = 1;     // material word 10: D3DMATERIAL7 ambient = scale * diffuse
@@ -157,6 +169,9 @@ private:
         bool firstRun = true;       // first run of its material mesh (statistics count material meshes)
         bool layeredCards = false;  // an alpha billboard whose overlapping cards need back-to-front drawing
         float cardZ = 0;            // common local Z of this card; ignore its vertical offset when sorting planes
+        uint64_t topology = 0;      // source strip structure, independent of skin deformation and UV animation
+        uint32_t ordinal = 0;       // stable run within model, independent of cache vertex offsets
+        float shadowBounds[6] = {}; // actual deformed mesh AABB; source material spheres can be absent/loose
     };
     struct ModelGpu {
         std::vector<Mesh> meshes;
@@ -170,19 +185,22 @@ private:
         int item = -1;              // index of the scene item
         bool noMeshCull = false;    // SceneItem::noMeshCull
     };
-    const ModelGpu& CachedModel(AssetStore& assets, const game::Model* model, const std::string& polName);
+    const ModelGpu& CachedModel(AssetStore& assets, const game::Model* model, const std::string& polName,int refinement=0);
     void ComputeBounds();
     void BuildMeshes(AssetStore& assets, const game::Model* model, const std::string& polName, ModelGpu& g,
-                     std::vector<game::ModelVertex>& verts, bool dynamic);
+                     std::vector<game::ModelVertex>& verts, bool dynamic,int refinement=0);
     void UploadDynamic();
     // Appends one draw (state + constants) to the list.
     static void AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelConstants& fc, const GpuState& st);
     void AddSpriteDraw(GpuDrawList& list, int width, int height, const SpriteDraw& s, size_t index);
     static GpuState StateOf(bool blend, int src, int dst, int zfunc, bool zwrite, bool linear, int addrU, int addrV);
     GpuTexture TextureView(const RgbaImage* img, bool alphaWeighted = false);
+    bool BeginTemporal(int width, int height, const float* view, const float* projection);
+    void AddMotionDraw(GpuDrawList& list, const Batch& batch, const GpuDraw& draw);
+    void SubmitGame(GpuDrawList& list);
 
     GpuDevice* device_ = nullptr;
-    std::map<std::pair<const game::Model*, std::string>, ModelGpu> models_;  // geometry uploaded once per model
+    std::map<std::tuple<const game::Model*, std::string,int>, ModelGpu> models_;  // geometry uploaded once per model
     std::vector<game::ModelVertex> cacheVerts_;
     bool cacheDirty_ = false, boundsValid_ = false;
     bool haveStatic_ = false, haveDynamic_ = false;  // the device holds a static / (at some point) a dynamic stream
@@ -199,6 +217,9 @@ private:
     std::vector<uint8_t> itemSortBackToFront_;
     std::vector<uint8_t> itemCullFlip_;
     std::vector<int> itemLight_;
+    std::vector<MotionIdentity> itemMotionIdentity_;
+    std::vector<uint8_t> itemMotionTracked_, itemMotionReactive_;
+    std::vector<uint8_t> itemShadowCaster_;
     std::map<std::pair<const RgbaImage*, bool>, GpuTexture> textures_;
 
 public:
@@ -211,6 +232,20 @@ private:
     std::vector<Batch> batches_;
     float center_[3] = {}, radius_ = 1;
     Stats stats_;
+    struct MotionSnapshot {
+        uint64_t topology = 0;
+        std::array<float,16> modelView = {}, projection = {};
+        std::vector<std::array<float,3>> positions;
+    };
+    using MotionKey = std::pair<MotionIdentity,uint32_t>;
+    std::map<MotionKey,MotionSnapshot> previousMotion_, currentMotion_;
+    TemporalFrameInfo temporalFrame_, previousTemporalFrame_;
+    TemporalCameraInfo temporalCamera_;
+    bool cinematicEffectsAllowed_ = false;
+    TemporalSceneStamp temporalScene_, previousTemporalScene_;
+    std::array<float,16> previousTemporalView_ = {}, previousTemporalProjection_ = {};
+    int previousTemporalWidth_ = 0, previousTemporalHeight_ = 0;
+    bool haveTemporalHistory_ = false, temporalActive_ = false, temporalReset_ = false;
 };
 
 }  // namespace port

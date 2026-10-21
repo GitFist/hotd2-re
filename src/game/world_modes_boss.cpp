@@ -2,12 +2,14 @@
 // scene 0x10 variant 0), the game setup after the choice (0x00425E90), the boss records (0x00425F40) and the boss-mode
 // stage end (0x004603B0). notes/agents/modes.md section 6; verified against build\scene_capture_modes_boss0.txt.
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
 #include "game/mstack.h"
 #include "game/world_modes.h"
 #include "game/world_menu_pointer.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -353,6 +355,7 @@ void TaskBossSelect(Task& tk) {
 
 // 0x00425E90: the game after a boss choice (pause allowed again, records cleared, rank from the chosen difficulty)
 void BossGameSetup(World::Impl& w) {
+    PortLeaderboardBegin(w);
     ModesState& m = *w.modes;
     w.flags5900 = (w.flags5900 & ~0x38u) | 2;
     w.bossActive = 0;  // 0x009CA0EA

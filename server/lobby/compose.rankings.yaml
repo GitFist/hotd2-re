@@ -1,0 +1,10 @@
+# Explicit opt-in overlay; creates a writable persistent database volume only.
+# docker compose -f compose.yaml -f compose.rankings.yaml up -d --build
+services:
+  lobby:
+    environment:
+      RANKINGS_DB: /rankings/leaderboards.sqlite3
+    volumes:
+      - rankings-data:/rankings
+volumes:
+  rankings-data:

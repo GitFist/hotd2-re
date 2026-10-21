@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "game/world_modes.h"
+#include "game/world_nightshift.h"
 #include "game/world_st6.h"
 
 namespace game {
@@ -379,6 +380,8 @@ static void ModeNext(World::Impl& w) {
 static void EndingCheck(World::Impl& w) {
     auto it = w.runner->globals.find(0x009C71C0);
     if (it != w.runner->globals.end() && it->second != 0) {
+        if(w.runner->cfg.gameType<2)
+            PortLeaderboardComplete(w,w.runner->cfg.gameType,0,6);
         if (RankingSlot(w, 0) == -1 && RankingSlot(w, 1) == -1) {
             w.cfg.freePlay = false;  // 0x00406FD0: credits 0x009C8E60.. and free play 0x009C8E70 cleared
             w.cfg.credits = 0;
@@ -739,10 +742,11 @@ static void NameEntryFrame(World::Impl& w) {
     EndingState& e = ES(w);
     SetCurrentWorld(&w);
     for (int p = 0; p < 2; ++p)
-        if (w.input[p].deviceMode == 6) {  // 0x00416940: the crosshair at the device position
+        if (w.input[p].deviceMode == 6 || w.input[p].deviceMode==kPortWideGunMode) {  // 0x00416940: the crosshair at the device position
             SpriteDef d;
             d.id = w.exe.S16(0x00579F58 + static_cast<uint32_t>(p * 4) * 2);
             d.x = static_cast<float>(w.devicePos[p][0]);
+            if(w.input[p].deviceMode==kPortWideGunMode)d.x+=320-kPortWideGunBias;
             d.y = static_cast<float>(w.devicePos[p][1]);
             d.alpha = 1.0f;
             d.flags = 0xA;

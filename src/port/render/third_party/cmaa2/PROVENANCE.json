@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/GameTechDev/CMAA2",
+  "commit": "071c6b0857559f4e36f614362e6d2aab1b61938a",
+  "source": "Projects/CMAA2/CMAA2/CMAA2.hlsl",
+  "files": {
+    "CMAA2.hlsl": "ca88dd447c1055436d2e35e0d9bb4d9bdb29dd2487da6c01d4a913b292294c8c",
+    "license.txt": "be3cb07dcb1bb6b191d4fa72910d9ccfcdd7d035d2be92c97a7e84a476406c54",
+    "MICROSOFT-LICENSE.txt": "cf248820bf1178370bb4f1670a59f8748d46bc96d0f64080cd631511c6046409"
+  },
+  "embedded_adaptations": [
+    "Structured arrays translated to identical byte-address loads/stores for SDL raw UAV descriptors",
+    "UNORM source LoadColor manually decoded to sRGB-linear, output stores use official sRGB conversion",
+    "Registers remapped to SDL resource spaces only in SDL shader copy",
+    "Additional reset entry clears control counters; original algorithm and upstream distributed file unchanged"
+  ]
+}

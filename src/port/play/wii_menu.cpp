@@ -1,11 +1,13 @@
 #include "wii_menu.h"
 #include "game/menu_text.h"
+#include "play/device_menu_hud.h"
+#include <algorithm>
 #include <cmath>
 
 namespace play {
 namespace {
 const char* mainLabels[]{"Wii Remote support","Connect remotes","Automatic reconnect","Player 1 setup","Player 2 setup","Swap players","Back"};
-const char* playerLabels[]{"Calibrate aim","Fire","Reload","Confirm","Pause","Aim smoothing","Disconnect remote","Reset settings","Back"};
+const char* playerLabels[]{"Calibrate aim","Fire","Reload","Confirm","Pause","Aim smoothing","Disconnect remote","Reset Player Setup","Back"};
 const input::wii::Point targets[4]{{.15,.15},{.85,.15},{.85,.85},{.15,.85}};
 void Text(const game::ExeImage& exe,float x,float y,const std::string& s,std::vector<game::SpriteDef>& out,bool selected=false,float scale=.8f){
     game::MenuTextScaled(exe,x,y,s,selected?0x110:0,scale,out);
@@ -16,6 +18,24 @@ void Cross(const game::ExeImage& exe,int player,float x,float y,std::vector<game
 std::string Status(const input::wii::Remote& r){
     if(!r.connected)return r.reserved?"Disconnected - waiting":"Not connected";
     return (r.battery>=0?std::to_string(r.battery)+" percent  ":"")+(r.tracking?std::string("Aim detected"):std::string("Point at sensor bar"));
+}
+void ModernText(game::WorldHud& hud, float x, float y, const std::string& value, float scale = .55f, uint32_t color = 0xFFECE7DC) {
+    device_ui::Text(hud, x, y, value, scale, color);
+}
+void ModernLines(game::WorldHud& hud, float x, float y, const std::string& value, size_t columns = 76, int rows = 2) {
+    size_t at = 0;
+    for (int row = 0; row < rows && at < value.size(); ++row) {
+        size_t end = std::min(value.size(), at + columns);
+        if (end < value.size()) {
+            const auto space = value.rfind(' ', end);
+            if (space != std::string::npos && space > at) end = space;
+        }
+        std::string line = value.substr(at, end - at);
+        if (row == rows - 1 && end < value.size() && line.size() > 3) line.replace(line.size() - 3, 3, "...");
+        ModernText(hud, x, y + 15.f * row, line, .42f, 0xFFC1BAAC);
+        at = end;
+        while (at < value.size() && value[at] == ' ') ++at;
+    }
 }
 }
 bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes){
@@ -119,4 +139,84 @@ void WiiMenu::Sprites(const game::ExeImage& exe,const input::WiiRemotes& remotes
     // Aim preview uses each remote's calibrated game coordinates, never the Windows cursor.
     for(int p=0;p<2;++p)if(status.player[p].connected){auto s=remotes.Player(p);if(s.onScreen)Cross(exe,p,s.x*640,s.y*480,out);}
 }
-} // namespace play
+
+void WiiMenu::ModernHud(const input::WiiRemotes& remotes, game::WorldHud& hud) const {
+    if (!open_) return;
+    const auto& status = remotes.Status();
+    if (calibration_ >= 0) {
+        device_ui::Begin(hud, 10, "", "", false);
+        // Keep every target corner free of the page chrome. These coordinates
+        // are the exact destinations used by Calibration::Fit, not a preview.
+        const auto target = targets[calibration_];
+        const float x = float(target.x * 640), y = float(target.y * 480);
+        hud.menuPanels = {{148, 166, 492, 332, 0xF4090D10}, {164, 197, 476, 199, 0xFF92272D}};
+        device_ui::Target(hud, x, y, player_);
+        ModernText(hud, 164, 176, "WII REMOTE CALIBRATION", .65f);
+        ModernText(hud, 164, 210, "PLAYER " + std::to_string(player_ + 1) + " / TARGET " + std::to_string(calibration_ + 1) + " OF 4", .5f);
+        ModernText(hud, 164, 237, "Aim at the cross. Press B.", .55f);
+        ModernText(hud, 164, 259, "Release B between targets. Keep your position.", .4f, 0xFFC1BAAC);
+        ModernLines(hud, 164, 278, notice_.empty() ? Status(status.player[player_]) : notice_, 48, 2);
+        ModernText(hud, 164, 313, "ESC / BACK: CANCEL", .42f, 0xFFC1BAAC);
+        ModernText(hud, x + 18, y - 10, std::to_string(calibration_ + 1), .5f);
+        return;
+    }
+    device_ui::Begin(hud, 10, player_ < 0 ? "WII REMOTES" : "WII REMOTE / PLAYER " + std::to_string(player_ + 1),
+                     player_ < 0 ? "NATIVE BLUETOOTH / DOLPHINBAR" : "CALIBRATION / BUTTONS / AIM");
+    hud.nightShiftRow = cursor_;
+    const int rows = player_ < 0 ? 7 : 9;
+    for (int row = 0; row < rows; ++row) {
+        const float y = RowY(row) + 10;
+        std::string value;
+        bool adjustable = false;
+        if (player_ < 0) {
+            if (row == 0 || row == 2) {
+                value = (row == 0 ? remotes.settings.enabled : remotes.settings.continuous) ? "ON" : "OFF";
+                adjustable = true;
+            }
+        } else {
+            const auto& profile = remotes.settings.player[player_];
+            if (row == 0) value = profile.calibration.calibrated ? "SET" : "DEFAULT";
+            if (row >= 1 && row <= 4) {
+                value = input::wii::ButtonName(profile.buttons[row - 1]);
+                adjustable = true;
+            }
+            if (row == 5) {
+                value = profile.smoothing == 0 ? "OFF" : profile.smoothing == 1 ? "LIGHT" : "STRONG";
+                adjustable = true;
+            }
+        }
+        device_ui::Row(hud, row, cursor_, player_ < 0 ? mainLabels[row] : playerLabels[row], value);
+        if (row == cursor_ && adjustable) {
+            ModernText(hud, 426, y, "<");
+            ModernText(hud, 598, y, ">");
+        }
+    }
+    if (player_ < 0) {
+        ModernText(hud, 34, 300, "P1 / " + Status(status.player[0]), .48f, 0xFFC1BAAC);
+        ModernText(hud, 34, 323, "P2 / " + Status(status.player[1]), .48f, 0xFFC1BAAC);
+        const std::string message = status.scanning ? "SCANNING / " + status.message : status.message;
+        ModernLines(hud, 34, 348, message);
+        ModernText(hud, 34, 388, "Bluetooth: red SYNC or 1 and 2", .46f, 0xFFC1BAAC);
+        ModernText(hud, 34, 408, "DolphinBar: Mode 4, then SYNC on bar and remote", .42f, 0xFFC1BAAC);
+    } else {
+        const auto& remote = status.player[player_];
+        ModernText(hud, 34, 347, Status(remote), .48f, 0xFFC1BAAC);
+        std::string held;
+        for (auto button : input::wii::Bindable)
+            if (remote.buttons & button) {
+                if (!held.empty()) held += " ";
+                held += input::wii::ButtonName(button);
+            }
+        ModernLines(hud, 34, 369, "Buttons: " + (held.empty() ? "none" : held));
+        ModernLines(hud, 34, 401, notice_.empty() ? "Point to test aim. Left / right changes a binding." : notice_);
+    }
+    device_ui::Footer(hud, "SELECT / SHOOT: OPEN OR CHANGE   LEFT / RIGHT: ADJUST   ESC: BACK");
+    // Keep the existing calibrated aim preview visible independently of the
+    // gameplay-crosshair preference. Device setup is where users test their aim.
+    for (int player = 0; player < 2; ++player)
+        if (status.player[player].connected) {
+            const auto aim = remotes.Player(player);
+            if (aim.onScreen) device_ui::Target(hud, aim.x * 640, aim.y * 480, player);
+        }
+}
+}  // namespace play

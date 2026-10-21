@@ -26,7 +26,168 @@ static std::array<uint8_t,22> Report(uint16_t buttons,int x=500,int y=380,bool t
     return r;
 }
 static void MenuKey(play::WiiMenu& menu,input::WiiRemotes& source,uint32_t key){play::MenuInput mi;mi.pressed=key;menu.Update(mi,source);}
+static bool HudText(const game::WorldHud& hud, const std::string& part) {
+    for (const auto& text : hud.menuText)
+        if (text.text.find(part) != std::string::npos) return true;
+    return false;
+}
+static bool HudTarget(const game::WorldHud& hud, float x, float y) {
+    for (const auto& panel : hud.menuPanels)
+        if (std::abs((panel.left + panel.right) * .5f - x) < .001f && std::abs((panel.top + panel.bottom) * .5f - y) < .001f &&
+            panel.right - panel.left >= 12 && panel.bottom - panel.top <= 8)
+            return true;
+    return false;
+}
+static void ModernMenuPresentation() {
+    auto fake = std::make_unique<Fake>();
+    auto* backend = fake.get();
+    input::WiiRemotes source(nullptr, std::move(fake));
+    source.settings.enabled = true;
+    auto& remote = backend->snapshot.player[0];
+    remote.connected = remote.reserved = remote.tracking = true;
+    remote.battery = 72;
+    remote.raw = {.3, .4};
+    backend->snapshot.player[1].reserved = true;
+    backend->snapshot.scanning = true;
+    backend->snapshot.message = "Searching for a remote";
+    source.Update();
+    play::WiiMenu menu;
+    game::WorldHud hud;
+    hud.menuText.push_back({1, 2, "sentinel", 1, 0xFFFFFFFF});
+    menu.ModernHud(source, hud);
+    Check(hud.menuText.size() == 1 && HudText(hud, "sentinel"), "closed Wii page leaves the caller HUD alone");
+    menu.Open();
+    menu.ModernHud(source, hud);
+    Check(hud.nightShiftPage == 10 && hud.nightShiftRow == 0 && HudText(hud, "WII REMOTES") && !HudText(hud, "sentinel"),
+          "modern overview replaces prior HUD content");
+    Check(HudText(hud, "Wii Remote support") && HudText(hud, "ON") && HudText(hud, "Automatic reconnect") && HudText(hud, "OFF"),
+          "overview shows actual support and reconnect values");
+    Check(HudText(hud, "72 percent") && HudText(hud, "Aim detected") && HudText(hud, "Disconnected - waiting"),
+          "overview includes per-player battery, tracking and reserved-slot status");
+    Check(HudText(hud, "SCANNING") && HudText(hud, "Searching for a remote") && HudText(hud, "DolphinBar") && HudText(hud, "SYNC"),
+          "scan and pairing guidance remain visible");
+    Check(HudText(hud, "ESC") && HudText(hud, "Back"), "overview retains keyboard and pointer Back controls");
+    Check(HudTarget(hud, 192, 192), "overview draws the connected remote's calibrated aim preview");
+    for (int row = 0; row < 7; ++row) {
+        play::MenuInput point;
+        point.pointer = true;
+        point.px = 40;
+        point.py = play::WiiMenu::RowY(row) + 18;
+        menu.Update(point, source);
+        menu.ModernHud(source, hud);
+        bool selected = false;
+        for (const auto& panel : hud.menuPanels)
+            if (panel.color == 0xCC8F2026 && panel.left == 24 && panel.right == 616 && panel.top == play::WiiMenu::RowY(row) + 8 &&
+                panel.bottom == play::WiiMenu::RowY(row) + 35)
+                selected = true;
+        Check(menu.Cursor() == row && hud.nightShiftRow == row && selected,
+              "modern selection band matches the unchanged pointer hit rectangle");
+    }
+    menu.Open();
+    for (int i = 0; i < 3; ++i) MenuKey(menu, source, 0x20);
+    MenuKey(menu, source, 8);
+    menu.ModernHud(source, hud);
+    Check(menu.SelectedPlayer() == 0 && HudText(hud, "PLAYER 1") && HudText(hud, "Calibrate aim") && HudText(hud, "DEFAULT"),
+          "player page shows calibration state");
+    Check(HudText(hud, "Fire") && HudText(hud, "Reload") && HudText(hud, "Confirm") && HudText(hud, "Pause") && HudText(hud, "LIGHT"),
+          "player page retains all existing control bindings and aim smoothing");
+    Check(HudTarget(hud, 192, 192), "player setup keeps the calibrated aim preview visible");
+    const auto savedButtons = source.settings.player[0].buttons;
+    const auto savedCalibration = source.settings.player[0].calibration.h;
+    const int cursor = menu.Cursor();
+    const auto sourcePress = source.Status().player[0].pressed;
+    menu.ModernHud(source, hud);
+    menu.ModernHud(source, hud);
+    Check(menu.Cursor() == cursor && source.settings.player[0].buttons == savedButtons &&
+              source.settings.player[0].calibration.h == savedCalibration && source.Status().player[0].pressed == sourcePress,
+          "rendering setup never changes navigation, bindings, aim or button history");
+
+    MenuKey(menu, source, 8);
+    menu.ModernHud(source, hud);
+    Check(menu.CalibrationStep() == 0 && HudText(hud, "WII REMOTE CALIBRATION") && HudText(hud, "Press B") && HudText(hud, "CANCEL"),
+          "calibration shows native B capture and usable cancel instructions");
+    Check(HudTarget(hud, 96, 72), "first calibration marker uses the true top-left target coordinate");
+    source.BeginFrame();
+    remote.buttons = remote.pressed = 0;
+    source.Update();
+    menu.Update({}, source);
+    remote.tracking = false;
+    remote.buttons = remote.pressed = B;
+    source.Update();
+    menu.Update({}, source);
+    menu.ModernHud(source, hud);
+    Check(menu.CalibrationStep() == 0 && HudText(hud, "Both sensor lights must be visible"),
+          "missing sensor lights keep the target and show the capture error");
+    const std::array<Point, 4> samples{{{.25, .20}, {.75, .24}, {.78, .77}, {.22, .73}}};
+    const Point targets[4]{{.15, .15}, {.85, .15}, {.85, .85}, {.15, .85}};
+    for (int target = 0; target < 4; ++target) {
+        source.BeginFrame();
+        remote.tracking = true;
+        remote.buttons = remote.pressed = 0;
+        source.Update();
+        menu.Update({}, source);
+        menu.ModernHud(source, hud);
+        Check(HudTarget(hud, float(targets[target].x * 640), float(targets[target].y * 480)) &&
+                  HudText(hud, "TARGET " + std::to_string(target + 1) + " OF 4"),
+              "each displayed target matches the calibration solver destination");
+        for (const auto& panel : hud.menuPanels)
+            if (panel.right - panel.left > 100)
+                Check(!(panel.left < float(targets[target].x * 640) && panel.right > float(targets[target].x * 640) &&
+                        panel.top < float(targets[target].y * 480) && panel.bottom > float(targets[target].y * 480)),
+                      "calibration page chrome does not cover the target");
+        remote.raw = samples[target];
+        remote.buttons = remote.pressed = B;
+        source.Update();
+        menu.Update({}, source);
+    }
+    menu.ModernHud(source, hud);
+    Check(menu.CalibrationStep() == -1 && source.settings.player[0].calibration.calibrated && HudText(hud, "SET") &&
+              HudText(hud, "Calibration saved - test your aim"),
+          "successful calibration returns to the modern player page with saved status");
+    MenuKey(menu, source, 8);
+    play::MenuInput cancel;
+    cancel.start = true;
+    cancel.pressed = 2;
+    menu.Update(cancel, source);
+    menu.ModernHud(source, hud);
+    Check(menu.CalibrationStep() == -1 && HudText(hud, "Calibration cancelled"),
+          "calibration cancellation notice is retained in modern presentation");
+    MenuKey(menu, source, 8);
+    remote.connected = false;
+    source.BeginFrame();
+    source.Update();
+    menu.Update({}, source);
+    menu.ModernHud(source, hud);
+    Check(menu.CalibrationStep() == -1 && HudText(hud, "Remote disconnected - connect and retry"),
+          "disconnect cancels calibration and displays the reason");
+    menu.Update(cancel, source);
+    backend->snapshot.scanning = false;
+    backend->snapshot.message = "No Bluetooth adapter was found";
+    source.Update();
+    menu.ModernHud(source, hud);
+    Check(HudText(hud, "No Bluetooth adapter was found") && HudText(hud, "P1 / Disconnected - waiting"),
+          "connection errors remain readable on the overview");
+    menu.Open();
+    for (int i = 0; i < 4; ++i) MenuKey(menu, source, 0x20);
+    MenuKey(menu, source, 8);
+    MenuKey(menu, source, 8);
+    menu.ModernHud(source, hud);
+    Check(menu.SelectedPlayer() == 1 && HudText(hud, "PLAYER 2") && HudText(hud, "Connect this remote first"),
+          "unconnected P2 setup shows its own header and calibration guidance");
+    auto& second = backend->snapshot.player[1];
+    second.connected = second.tracking = true;
+    second.raw = {.5, .5};
+    source.Update();
+    MenuKey(menu, source, 8);
+    menu.ModernHud(source, hud);
+    bool cyan = false;
+    for (const auto& panel : hud.menuPanels)
+        if (panel.color == 0xFF54BCCF && panel.left == 94 && panel.top == 70) cyan = true;
+    Check(menu.CalibrationStep() == 0 && HudText(hud, "PLAYER 2 / TARGET 1 OF 4") && cyan,
+          "P2 calibration has the same exact target with its distinct center color");
+}
 int main(){
+    ModernMenuPresentation();
     Remote r;
     auto report=Report(B|Up|Plus);Check(DecodeReport(report.data(),report.size(),r),"valid extended IR report");
     Check(r.buttons==(B|Up|Plus) && r.pressed==(B|Up|Plus) && r.tracking && r.dots==2,"buttons, edges and two IR lights");

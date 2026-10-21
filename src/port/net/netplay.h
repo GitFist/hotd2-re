@@ -80,7 +80,8 @@ struct LobbyRoom {
     uint32_t build = 0;
 };
 constexpr uint8_t kRoomPrivate = 1, kRoomUnlimited = 2, kRoomUnlisted = 4, kRoomRelay = 8, kRoomRejoin = 16;
-enum class JoinResult { Pending = -1, Ok = 0, NoRoom = 1, WrongCode = 2, Full = 3, OtherVersion = 4 };
+// Values 0..4 are the existing wire results; timeouts are local client states.
+enum class JoinResult { Pending = -1, Ok = 0, NoRoom = 1, WrongCode = 2, Full = 3, OtherVersion = 4, TimedOut = 5, NoAnswer = 6 };
 
 class Session {
 public:
@@ -127,6 +128,11 @@ public:
     uint32_t LobbyCode() const { return lobbyCode_; }
     void LobbyRefresh();                                               // host: every loop iteration (keeps the room alive)
     void LobbyLeave();                                                 // host: the room is closed
+    // Complete cancellation even when Back preceded CREATED. Retired sockets
+    // only receive credentials and repeat LEAVE; they never refresh a room.
+    void PollLobbyCleanup();
+    bool LobbyCancellationPending() const;  // waiting for a cancelled CREATE's credentials
+    bool IsCancelledLobbyRoom(uint32_t room) const;
     void LobbyList();                                                  // joiner: asks for the room list
     const std::vector<LobbyRoom>& LobbyRooms() const { return lobbyRooms_; }
     bool LobbyRoomsKnown() const { return lobbyRoomsKnown_; }
@@ -254,9 +260,18 @@ private:
     bool delayAuto_ = true;
     uint32_t lobbyRoom_ = 0, lobbyCode_ = 0, lobbyJoinRoom_ = 0, lobbyJoinCode_ = 0;
     bool lobbyCreating_ = false, lobbyJoining_ = false;
+    bool lobbyLeavePending_ = false;
+    uint32_t lobbyLeaveRoom_ = 0, lobbyLeaveCode_ = 0;
+    struct LobbyCancellation {
+        uintptr_t socket = kNoSocket;
+        std::array<uint8_t, 16> server{};
+        uint32_t room = 0, code = 0;
+        Clock::time_point started{}, lastSend{};
+    };
+    std::vector<LobbyCancellation> lobbyCancellations_;
     JoinResult lobbyJoinResult_ = JoinResult::Pending;
     std::vector<LobbyRoom> lobbyRooms_;
-    Clock::time_point lobbyLastSend_, lobbyLastAnswer_;
+    Clock::time_point lobbyLastSend_, lobbyLastAnswer_, lobbyJoinStarted_;
     uint32_t build_ = 0, remoteBuild_ = 0;
     SessionConfig config_;
     std::map<uint32_t, FrameInput> local_, remote_;

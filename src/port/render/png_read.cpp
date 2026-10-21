@@ -115,16 +115,22 @@ const uint16_t kDistBase[30] = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97
 const uint8_t kDistExtra[30] = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
 
 // out is sized ahead; o is the number of bytes written so far.
-void Ensure(std::vector<uint8_t>& out, size_t o, size_t more) {
-    if (o + more > out.size()) out.resize(std::max(out.size() * 2, o + more + 4096));
+bool Ensure(std::vector<uint8_t>& out, size_t o, size_t more, size_t limit) {
+    if (limit && (o > limit || more > limit - o)) return false;
+    if (o + more > out.size()) {
+        size_t capacity = std::max(out.size() * 2, o + more + 4096);
+        if (limit) capacity = std::min(capacity, limit);
+        out.resize(capacity);
+    }
+    return true;
 }
 
-bool Codes(BitReader& br, const Huffman& lit, const Huffman& dist, std::vector<uint8_t>& out, size_t& o) {
+bool Codes(BitReader& br, const Huffman& lit, const Huffman& dist, std::vector<uint8_t>& out, size_t& o, size_t limit) {
     for (;;) {
         int sym = Decode(br, lit);
         if (sym < 0) return false;
         if (sym < 256) {
-            Ensure(out, o, 1);
+            if (!Ensure(out, o, 1, limit)) return false;
             out[o++] = static_cast<uint8_t>(sym);
         } else if (sym == 256) {
             return true;
@@ -136,7 +142,7 @@ bool Codes(BitReader& br, const Huffman& lit, const Huffman& dist, std::vector<u
             if (ds < 0 || ds >= 30) return false;
             const size_t d = kDistBase[ds] + br.Bits(kDistExtra[ds]);
             if (br.err || d > o) return false;
-            Ensure(out, o, len);
+            if (!Ensure(out, o, len, limit)) return false;
             uint8_t* dst = out.data() + o;
             const uint8_t* src = dst - d;
             if (d >= len) memcpy(dst, src, len);
@@ -147,10 +153,11 @@ bool Codes(BitReader& br, const Huffman& lit, const Huffman& dist, std::vector<u
     }
 }
 
-bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t sizeHint) {
+bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t sizeHint, size_t limit = 0) {
     BitReader br{ data, size };
     size_t o = 0;
-    out.resize(std::max<size_t>(sizeHint, 4096));
+    if (limit && sizeHint > limit) return false;
+    out.resize(limit ? std::min(limit, std::max<size_t>(sizeHint, 4096)) : std::max<size_t>(sizeHint, 4096));
     uint32_t last;
     do {
         last = br.Bits(1);
@@ -163,7 +170,7 @@ bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t
             const uint32_t nlen = br.p[br.pos + 2] | (br.p[br.pos + 3] << 8);
             br.pos += 4;
             if ((len ^ 0xFFFF) != nlen || br.pos + len > br.n) return false;
-            Ensure(out, o, len);
+            if (!Ensure(out, o, len, limit)) return false;
             memcpy(out.data() + o, br.p + br.pos, len);
             o += len;
             br.pos += len;
@@ -182,7 +189,7 @@ bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t
                 Build(dist, lengths, 30);
                 built = true;
             }
-            if (!Codes(br, lit, dist, out, o)) return false;
+            if (!Codes(br, lit, dist, out, o, limit)) return false;
         } else if (type == 2) {
             const int nlen = static_cast<int>(br.Bits(5)) + 257, ndist = static_cast<int>(br.Bits(5)) + 1, ncode = static_cast<int>(br.Bits(4)) + 4;
             if (br.err || nlen > 286 || ndist > 30) return false;
@@ -217,7 +224,7 @@ bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t
             Huffman lit, dist;
             Build(lit, lengths, nlen);
             Build(dist, lengths + nlen, ndist);
-            if (!Codes(br, lit, dist, out, o)) return false;
+            if (!Codes(br, lit, dist, out, o, limit)) return false;
         } else {
             return false;
         }
@@ -245,7 +252,7 @@ bool ZlibInflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, si
     return Inflate(data + 2, size - 2, out, sizeHint);
 }
 
-bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error) {
+static bool ReadPngImpl(const uint8_t* data, size_t size, PngImage& out, std::string* error, size_t maxRgbaBytes) {
     static const uint8_t sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
     if (size < 8 || memcmp(data, sig, 8) != 0) return Fail(error, "not a PNG");
     size_t pos = 8;
@@ -257,7 +264,7 @@ bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error
         const uint32_t len = BE32(data + pos);
         const char* type = reinterpret_cast<const char*>(data + pos + 4);
         pos += 8;
-        if (pos + len + 4 > size) return Fail(error, "truncated chunk");
+        if (size - pos < 4 || len > size - pos - 4) return Fail(error, "truncated chunk");
         const uint8_t* d = data + pos;
         if (memcmp(type, "IHDR", 4) == 0) {
             if (len != 13) return Fail(error, "bad IHDR");
@@ -279,6 +286,7 @@ bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error
         pos += len + 4;  // data + crc
     }
     if (!ihdr || w == 0 || h == 0 || w > 16384 || h > 16384) return Fail(error, "bad dimensions");
+    if (maxRgbaBytes && uint64_t(w) * h * 4 > maxRgbaBytes) return Fail(error, "image exceeds preview decode budget");
     if (interlace) return Fail(error, "interlaced PNGs are not supported");
     int channels;
     switch (ctype) {
@@ -295,7 +303,11 @@ bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error
     const size_t stride = (w * bitsPerPixel + 7) / 8;
     const size_t bpp = bitsPerPixel < 8 ? 1 : bitsPerPixel / 8;
     std::vector<uint8_t> raw;
-    if (!ZlibInflate(idat.data(), idat.size(), raw, (stride + 1) * h)) return Fail(error, "bad IDAT stream");
+    const size_t rasterBytes = (stride + 1) * h;
+    if (maxRgbaBytes) {
+        if (idat.size() < 2 || (idat[0] & 0x0f) != 8 || ((idat[0] << 8) | idat[1]) % 31 || (idat[1] & 0x20) ||
+            !Inflate(idat.data() + 2, idat.size() - 2, raw, rasterBytes, rasterBytes)) return Fail(error, "bad or excessive IDAT stream");
+    } else if (!ZlibInflate(idat.data(), idat.size(), raw, rasterBytes)) return Fail(error, "bad IDAT stream");
     if (raw.size() < (stride + 1) * h) return Fail(error, "short image data");
     // Unfilter in place (each row is preceded by its filter byte); the previous row is already unfiltered.
     const std::vector<uint8_t> zero(stride, 0);
@@ -380,6 +392,15 @@ bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error
         }
     }
     return true;
+}
+
+bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error) {
+    return ReadPngImpl(data, size, out, error, 0);
+}
+
+bool ReadPngLimited(const uint8_t* data, size_t size, size_t maxRgbaBytes, PngImage& out, std::string* error) {
+    if (!maxRgbaBytes) return Fail(error, "preview decode budget is zero");
+    return ReadPngImpl(data, size, out, error, maxRgbaBytes);
 }
 
 bool ReadPngFile(const std::string& path, PngImage& out, std::string* error) {

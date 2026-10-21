@@ -61,6 +61,13 @@ public:
     // The menu's sprites: background, the original's 1P / 2P PAUSE sprite as the title, the rows (or the confirmation,
     // or the display page).
     void Sprites(const game::ExeImage& exe, int pausePlayer, const Settings& s, std::vector<game::SpriteDef>& out) const;
+    // Theme is fixed by the caller at launch, so a pending preference cannot change pointer targets mid-session.
+    void SetModern(bool modern) {
+        modern_ = modern;
+        display_.SetNightShiftActive(modern);
+    }
+    bool IsModern() const { return modern_; }
+    void ModernHud(int pausePlayer, const Settings& s, game::WorldHud& hud) const;
 
     int Cursor() const { return cursor_; }
     bool Confirming() const { return confirm_; }
@@ -68,6 +75,7 @@ public:
     bool DisplayOpen() const { return display_.IsOpen(); }
     void SetNetworkRoom(bool on) { networkRoom_ = on; }
     const DisplayMenu& Display() const { return display_; }
+    DisplayMenu& Display() { return display_; }
     // The main rows (volume values are drawn by the caller with game::MenuNum) are shown: not the confirmation / page.
     bool MainRows() const { return open_ && !confirm_ && !display_.IsOpen(); }
 
@@ -75,11 +83,16 @@ public:
     static float RowY(int row);
     static int RowAt(float px, float py);
     static int ConfirmAt(float px, float py);  // 1 Yes, 0 No
+    // Night Shift uses logical-pixel panels instead of Classic's sprite-font cells.
+    static float ModernRowTop(int row);
+    static int ModernRowAt(float px, float py);
+    static int ModernConfirmAt(float px, float py);  // 1 Return, 0 Cancel
 
 private:
     static int* Volume(Settings& s, int row);  // the row's value, nullptr for the other rows
 
     bool open_ = false;
+    bool modern_ = false;
     bool networkRoom_ = false;
     int cursor_ = kResume;
     bool confirm_ = false, confirmYes_ = false;

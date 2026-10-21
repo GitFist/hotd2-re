@@ -1,92 +1,62 @@
-// Exercise menu selection against the submitted label positions, including the bottom of visible capitals.
-// The original font textures have ink at rows 12..32; using their texture origins as hitbox origins was wrong.
-#include <cmath>
+// Native Night Shift routing, mixed mouse/keyboard input and preserved Classic menu.
 #include <cstdio>
 #include <cstdlib>
-#include <vector>
-
+#include <string>
 #include "game/world.h"
-
-static void Require(bool ok, const char* why) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); }
+static void Require(bool ok,const char* why) {if(!ok){fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}}
+static void Step(game::World& w,int x=630,int y=465,uint32_t pressed=0,bool shot=false) {
+ game::WorldInput in;in.kind=1;in.x=x;in.y=y;in.held=in.pressed=pressed;in.fired=shot;
+ w.SetInput(0,in);w.SetInput(1,{});w.Step();
 }
-static void Step(game::World& w, int x, int y, uint32_t pressed = 0, bool click = false) {
-    game::WorldInput in;
-    in.kind = 1; in.x = x; in.y = y;
-    in.pressed = in.held = pressed;
-    in.fired = click;
-    w.SetInput(0, in);
-    w.SetInput(1, {});
-    w.Step();
+static void Menu(game::World& w,bool modern=true) {
+ game::WorldConfig c;c.portFeatures=true;c.portModernMenu=modern;w.Boot(c);
+ w.ForceMode(4,0x10000,0,0);Step(w);Step(w);Step(w);
+ Require(w.GameMode()==4,"enter mode select");
 }
-static void Menu(game::World& w, bool modern = true) {
-    game::WorldConfig cfg;
-    cfg.portFeatures = cfg.portModernMenu = modern;
-    w.Boot(cfg);
-    while (w.Frame() < 650) Step(w, 600, 200);
-    Step(w, 600, 200, 8);
-    for (int i = 0; i < 4; ++i) Step(w, 600, 200);
-    Require(w.GameMode() == 4, "boot and enter main menu");
-}
-static std::vector<game::SpriteDef> Labels(const game::World& w) {
-    std::vector<game::SpriteDef> out;
-    // The first capital of each left-aligned label. Positions come from the actual frame's draw submissions.
-    for (const auto& d : w.Hud().sprites)
-        if (d.x == 24 && d.sx == 1.25f && d.tinted) out.push_back(d);
-    Require(out.size() == 11, "all eleven labels rendered");
-    return out;
-}
-int main(int argc, char** argv) {
-    if (argc != 2) return 2;
-    game::World w;
-    std::string error;
-    Require(w.Load(argv[1], 0, &error), error.c_str());
-    Menu(w);
-    const auto labels = Labels(w);
-    auto x = [&](int row) { return int(std::lround(labels[row].x + 7 * labels[row].sx)); };
-    auto y = [&](int row, int texel = 22) { return int(std::lround(labels[row].y + texel * labels[row].sy)); };
-    for (int direction : {1, -1}) {
-        for (int n = 0; n < 11; ++n) {
-            const int row = direction == 1 ? n : 10 - n;
-            for (int inkRow : {13, 22, 30}) {
-                Step(w, x(row), y(row, inkRow));
-                Require(w.Hud().menuCursor == row, "hover top/centre/bottom of rendered capital selects its label");
-                const auto drawn = Labels(w);
-                for (int i = 0; i < 11; ++i)
-                    Require(drawn[i].tint[0] == (i == row ? 1.0f : 0.6f), "visible highlight agrees with hover");
-            }
-        }
-    }
-    // The final option was especially hard to hit: its bottom used to fall outside every row.
-    Step(w, x(10), y(10, 30));
-    Require(w.Hud().menuCursor == 10 && !w.QuitRequested(), "hover Exit's visible bottom without activating it");
-    for (const auto& p : {std::pair<int, int>{600, 200}, {40, 145}, {40, 479}}) {
-        Step(w, p.first, p.second, 4, true);
-        Require(w.GameMode() == 4 && !w.QuitRequested(), "click outside labels cannot activate the selected option");
-    }
-    Step(w, x(5), y(5));
-    Step(w, x(5), y(5), 0x20);
-    Step(w, x(5), y(5));
-    Require(w.Hud().menuCursor == 6, "stationary pointer preserves keyboard selection");
-    Step(w, x(5) + 1, y(5));
-    Require(w.Hud().menuCursor == 5, "moving within the same row restores pointer selection");
-    Step(w, x(5) + 1, y(5), 0x20);
-    Step(w, x(5) + 1, y(5), 8);
-    Step(w, x(5) + 1, y(5));
-    Require(w.GameMode() == 15, "Enter confirms keyboard-selected Network, despite pointer resting over Options");
-    Menu(w);
-    Step(w, x(5), y(5));
-    Step(w, x(5), y(5), 0x20);
-    Step(w, x(5), y(5), 4, true);
-    Step(w, x(5), y(5));
-    Require(w.GameMode() == 12, "click confirms pointed-at Options, despite keyboard-selected Network");
-    Menu(w);
-    Step(w, 600, 200, 0x10);
-    Require(w.Hud().menuCursor == 10, "Up wraps to Exit");
-    Step(w, 600, 200, 0x20);
-    Require(w.Hud().menuCursor == 0, "Down wraps to Arcade");
-    Menu(w, false);
-    Step(w, x(6), y(6));
-    Require(w.Hud().menuCursor == 0, "original menu remains keyboard-driven");
-    puts("PASS: 66 label positions, matching highlights, blank-space clicks, mixed mouse/keyboard, wrapping and original menu");
+static void Click(game::World& w,int x,int y) {Step(w,x,y,4,true);Step(w,x,y);}
+int main(int argc,char** argv) {
+ if(argc!=2)return 2;game::World w;std::string error;
+ Require(w.Load(argv[1],0,&error),error.c_str());Menu(w);
+ Require(w.Hud().nightShiftPage==0&&!w.Hud().menuPanels.empty(),"Night Shift home and native panels");
+ Require(w.Hud().screens.empty(),"no static menu tiles over attract background");
+ Step(w,100,165);Require(w.Hud().nightShiftRow==0,"full row hover selects Play");
+ Step(w,100,165,0x20);Step(w,100,165);
+ Require(w.Hud().nightShiftRow==1,"stationary aim preserves keyboard movement");
+ Step(w,101,165);Require(w.Hud().nightShiftRow==0,"moving aim reselects row");
+ Click(w,100,180);Require(w.Hud().nightShiftPage==1&&w.GameMode()==4,"Play is a category");
+ Click(w,100,245);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==3,"Boss time attack starts from Play");
+ Menu(w);Click(w,100,218);Require(w.Hud().nightShiftPage==2,"Practice category");
+ Click(w,100,160);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==2,"Training starts from Practice");
+ Menu(w);Click(w,100,264);Require(w.Hud().nightShiftPage==3,"Leaderboard category");
+ Click(w,80,150);Require(w.Hud().portLeaderboardShared&&w.Hud().portLeaderboardRequests==1,"online source requests shared records");
+ Click(w,80,320);Require(w.Hud().portLeaderboardTable==3,"per-boss leaderboard");
+ Click(w,589,100);Require(w.Hud().portLeaderboardTable==4,"next boss changes requested table");
+ Click(w,80,350);Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==0,"cannot publish without a new qualifying run");
+ w.SetPortLeaderboardPublishable(true,"NEW RUN AVAILABLE");
+ Click(w,80,350);Require(w.Hud().nightShiftPage==4&&w.Hud().portLeaderboardPublishRequests==0,"publish opens explicit initials confirmation");
+ Click(w,320,400);Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==0,"cancel never publishes");
+ Click(w,80,350);Click(w,320,355);
+ Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==1&&w.Hud().portLeaderboardInitials=="AMS","only final Publish submits initials and fresh-run request");
+ Step(w,630,465,2);Step(w);Require(w.Hud().nightShiftPage==0,"Back returns Home");
+ for(int action=1;action<=3;++action) {
+  Menu(w);Click(w,450,298+(action-1)*40);Step(w);
+  Require(w.GameMode()==15&&w.Hud().portLobbyAction==action,"Home rail routes existing Host/Browse/Peer page");
+ }
+ Menu(w);w.SetPortHomeRooms({{1042,false,true,0},{1047,true,false,0}},"WAITING ROOMS");Step(w);
+ Click(w,450,185);Step(w);
+ Require(w.GameMode()==15&&w.Hud().portLobbyAction==4&&w.Hud().portLobbyRoom==1042,"real Home waiting room opens its existing join flow");
+ Menu(w);Step(w,630,420,4,true);Step(w);
+ Require(!w.QuitRequested()&&w.GameMode()==4,"blank-space shot does not activate current row");
+ Menu(w);Click(w,100,345);Step(w);Require(w.GameMode()==4&&w.Hud().nightShiftPage==5,"native Options landing page");
+ for(int page=0;page<5;++page) {
+  const int prior=w.Hud().portDisplayRequests;Click(w,100,148+page*40);
+  Require(w.GameMode()==4&&w.Hud().nightShiftPage==5&&w.Hud().portDisplayPage==page&&w.Hud().portDisplayRequests==prior+1,"native category opens existing local display page without leaving Options");
+ }
+ Click(w,100,350);Step(w);Require(w.GameMode()==12,"existing Game Options remains available");
+ w.ForceMode(4,0x10000,0,0);Step(w);Step(w);
+ Require(w.Hud().nightShiftPage==5,"legacy Game Options returns to native Options landing page");
+ Menu(w,false);Step(w,120,264);Require(w.Hud().menuCursor==0&&w.Hud().nightShiftPage<0,"Classic menu remains keyboard-driven");
+ w.SetPortModernMenu(true);Step(w);Require(w.Hud().nightShiftPage==0&&w.Hud().screens.empty(),"Classic to Night Shift switch");
+ w.SetPortModernMenu(false);Step(w);Require(w.Hud().nightShiftPage<0&&!w.Hud().screens.empty(),"Night Shift to Classic restores tiles");
+ puts("PASS: Night Shift routes, Boss time attack, Training, shared/boss leaderboard, existing network navigation, mixed input and Classic switching");
 }

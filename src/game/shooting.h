@@ -93,5 +93,9 @@ int GunCalibrate(int raw, const int16_t cal[4], const int16_t out[3], int wrap =
 // {-264, 0, 264} (table 0x004D1CF0), y from {50, 240, 430, 0} to {192, 0, -192} (0x004D1CF8); valid when
 // x in [-320, 319] and y in [-240, 239].
 void GunCalibrateMode6(int rawX, int rawY, int16_t* x, int16_t* y, bool* valid);
+// Port-only direct wide aim. Bias avoids a valid x=-1 colliding with the original
+// and network off-screen sentinel 0xFFFF. No viewport setting enters simulation.
+constexpr int kPortWideGunMode = 7, kPortWideGunBias = 16384;
+void GunCalibrateWide(int rawX,int rawY,int16_t* x,int16_t* y,bool* valid);
 
 }  // namespace game

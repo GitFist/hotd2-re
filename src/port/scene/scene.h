@@ -15,6 +15,7 @@
 #include "game/model.h"
 #include "render/asset_store.h"
 #include "render/model_renderer.h"
+#include "render/render_pose.h"
 
 namespace port {
 
@@ -75,6 +76,15 @@ public:
     // Call before texture prefetch, between GPU frames. Chapters and menu transitions retire all old caches
     // together so the 32-bit client does not retain every chapter's high-resolution textures indefinitely.
     bool PrepareWorld(ModelRenderer& renderer, const game::World& world);
+    // Optional Hor+ projection and centered native HUD. Pass actual target aspect;
+    // 4:3 restores exact native projection, overlay dimensions and sprite positions.
+    void SetViewportAspect(float aspect);
+    // Optional render-only interpolation between consecutive completed 60 Hz
+    // poses. Alpha is the fixed-clock phase [0,1]; visual delay is up to one
+    // simulation tick. Aiming/HUD stay current. Disable during pauses/stalls.
+    void SetRenderInterpolation(bool enabled, float alpha) { renderPose_.Set(enabled, alpha); }
+    void ResetRenderInterpolation() { renderPose_.Reset(); }
+    bool RenderInterpolationReady() const { return renderPose_.Ready(); }
     // Sprite definitions -> pass-1 sprite draws (records, quads, textures, ISP/TSP, keys).
     // zNear: the camera near plane (0x004194C0) the sprites' z is mapped with (far 8000): 0.8 in play, 0.001 while paused.
     // texFiles: the world's texture-file states (WorldHud::texFiles; empty = all loaded): Spr_Draw 0x0041C630 draws a
@@ -109,6 +119,7 @@ private:
         std::string polName;
     };
     AssetStore* assets_ = nullptr;
+    float viewportAspect_ = 4.f/3.f;
     SceneDef def_;
     std::vector<Item> statics_;
     std::vector<Item> skies_;
@@ -137,6 +148,7 @@ private:
     std::vector<game::World::SoundEvent> pendingSounds_;
     std::map<int, uint32_t> skinDefs_;                  // skinned attachment definitions by model id
     std::vector<std::unique_ptr<game::Model>> skinned_;  // this frame's deformed attachment copies
+    RenderPoseHistory renderPose_;
 public:
     long long skinnedDraws_ = 0, altDraws_ = 0;  // diagnostics: world draws not fully applied by the renderer
 private:

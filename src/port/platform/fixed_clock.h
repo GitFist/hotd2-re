@@ -21,6 +21,8 @@ public:
         accumulator_ -= steps / hz_;
         return steps;
     }
+    // Render-only phase between the last completed 60Hz tick and the next one.
+    double Alpha() const { return accumulator_ * hz_; }
 
 private:
     double hz_;

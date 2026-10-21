@@ -166,7 +166,10 @@ Session::Session() {
     lastHello_ = lastFromRemote_ = lastSend_ = Clock::now();
 }
 
-Session::~Session() { Close(); }
+Session::~Session() {
+    Close();
+    for (const auto& cancellation : lobbyCancellations_) CloseSock(cancellation.socket);
+}
 
 bool Session::Open(uint16_t port, std::string* error) {
     const uintptr_t s = static_cast<uintptr_t>(socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
@@ -434,6 +437,7 @@ void Session::LobbyCreate(uint8_t flags) {
     lobbyFlags_ = flags;
     lobbyHosting_ = true;
     lobbyCreating_ = true;
+    lobbyLeavePending_ = false;
     lobbyRoom_ = lobbyCode_ = 0;
     std::vector<uint8_t> p = LobbyHeader(1);
     Put32(p, build_);
@@ -461,14 +465,76 @@ void Session::LobbyRefresh() {
 }
 
 void Session::LobbyLeave() {
+    if (lobbyHosting_) {
+        lobbyLeavePending_ = true;
+        lobbyLeaveRoom_ = lobbyRoom_;
+        lobbyLeaveCode_ = lobbyCode_;
+    }
     if (lobbyHosting_ && lobbyRoom_) {
         std::vector<uint8_t> p = LobbyHeader(5);
         Put32(p, lobbyRoom_);
         Put32(p, lobbyCode_);
-        SendToLobby(p);
+        for (int attempt = 0; attempt < 3; ++attempt) SendToLobby(p);
     }
     lobbyHosting_ = lobbyCreating_ = false;
     lobbyRoom_ = lobbyCode_ = 0;
+}
+
+bool Session::LobbyCancellationPending() const {
+    return std::any_of(lobbyCancellations_.begin(), lobbyCancellations_.end(),
+                       [](const auto& c) { return c.room == 0; });
+}
+
+bool Session::IsCancelledLobbyRoom(uint32_t room) const {
+    return room && std::any_of(lobbyCancellations_.begin(), lobbyCancellations_.end(),
+                              [room](const auto& c) { return c.room == room; });
+}
+
+void Session::PollLobbyCleanup() {
+    const auto now = Clock::now();
+    for (auto it = lobbyCancellations_.begin(); it != lobbyCancellations_.end();) {
+        if (std::chrono::duration<double>(now - it->started).count() >= 10.0) {
+            CloseSock(it->socket);
+            it = lobbyCancellations_.erase(it);
+            continue;
+        }
+        // Keep the original endpoint alive just long enough to receive a late
+        // CREATED. A new attempt uses another socket, so old replies cannot
+        // attach their room to the new attempt or restart its keepalives.
+        for (int packets = 0; packets < 64; ++packets) {
+            uint8_t data[2048];
+            sockaddr_storage from{};
+            socklen_t length = sizeof(from);
+            const int size = recvfrom(static_cast<SOCKET>(it->socket), reinterpret_cast<char*>(data), sizeof(data), 0,
+                                      reinterpret_cast<sockaddr*>(&from), &length);
+            if (size < 0) {
+#ifdef _WIN32
+                if (WSAGetLastError() == WSAECONNRESET) continue;
+#endif
+                break;
+            }
+            if (size >= 14 && length >= sizeof(sockaddr_in) &&
+                memcmp(&from, it->server.data(), sizeof(sockaddr_in)) == 0 &&
+                memcmp(data, "H2LB\1", 5) == 0 && data[5] == 101) {
+                const uint32_t room = Get32(data + 6), code = Get32(data + 10);
+                if (room && (!it->room || it->room == room)) {
+                    it->room = room;
+                    it->code = code;
+                    it->lastSend = Clock::time_point{};
+                }
+            }
+        }
+        if (it->room && (it->lastSend == Clock::time_point{} ||
+                        std::chrono::duration<double>(now - it->lastSend).count() >= .5)) {
+            auto packet = LobbyHeader(5);
+            Put32(packet, it->room);
+            Put32(packet, it->code);
+            sendto(static_cast<SOCKET>(it->socket), reinterpret_cast<const char*>(packet.data()), static_cast<int>(packet.size()), 0,
+                   reinterpret_cast<const sockaddr*>(it->server.data()), sizeof(sockaddr_in));
+            it->lastSend = now;
+        }
+        ++it;
+    }
 }
 
 void Session::LobbyList() {
@@ -478,6 +544,7 @@ void Session::LobbyList() {
 }
 
 void Session::LobbyJoin(uint32_t room, uint32_t code) {
+    if (!lobbyJoining_) lobbyJoinStarted_ = Clock::now();
     lobbyJoining_ = true;
     lobbyJoinRoom_ = room;
     lobbyJoinCode_ = code;
@@ -562,6 +629,8 @@ void Session::OnLobbyPacket(const uint8_t* d, size_t n) {
     case 103: {  // JOINED
         if (n < 5 + 12 || !lobbyJoining_) break;
         const uint8_t result = d[4];
+        if (result > static_cast<uint8_t>(JoinResult::OtherVersion) ||
+            (lobbyJoinRoom_ && Get32(d) != lobbyJoinRoom_ && result != static_cast<uint8_t>(JoinResult::NoRoom))) break;
         lobbyJoinResult_ = static_cast<JoinResult>(result);
         lobbyJoining_ = false;
         if (result == 0 && !peerKnown_) {
@@ -655,6 +724,7 @@ void Session::SendWelcome() {
 }
 
 void Session::Poll() {
+    PollLobbyCleanup();
     if (sock_ == kNoSocket) return;
     for (;;) {
         uint8_t buf[65536];
@@ -701,6 +771,18 @@ void Session::Poll() {
             if (LogOn()) fprintf(stderr, "net %.1f: %s silent for %.0f s, probing both paths\n", LogSeconds(), PathName(), kPathSilence);
         }
     }
+    // A stale directory entry may be accepted by the service while its host is
+    // already gone. Bound both the unanswered request and the peer handshake
+    // using real time, independently of rendering or the menu's frame count.
+    if ((lobbyJoining_ || (lobbyJoinResult_ == JoinResult::Ok && !connected_)) &&
+        std::chrono::duration<double>(Clock::now() - lobbyJoinStarted_).count() > (lobbyJoining_ ? 6.0 : 12.0)) {
+        lobbyJoinResult_ = lobbyJoining_ ? JoinResult::NoAnswer : JoinResult::TimedOut;
+        lobbyJoining_ = false;
+        peerKnown_ = false;
+        candidates_.clear();
+        relayRoom_ = 0;
+        relayToken_.fill(0);
+    }
     // a lobby join without an answer yet is repeated every second
     if (lobbyJoining_ && std::chrono::duration<double>(Clock::now() - lobbyLastSend_).count() > 1.0) LobbyJoin(lobbyJoinRoom_, lobbyJoinCode_);
     PollRecovery();
@@ -711,6 +793,7 @@ void Session::OnPacket(const uint8_t* d, size_t n, const void* from, int fromLen
         if (lobbyKnown_ && fromLen >= static_cast<int>(sizeof(sockaddr_in)) && memcmp(from, lobbyAddr_, sizeof(sockaddr_in)) == 0) OnLobbyPacket(d, n);
         return;
     }
+    if (lobbyJoinResult_ == JoinResult::TimedOut || lobbyJoinResult_ == JoinResult::NoAnswer) return;
     // A waiting room's host socket takes no direct game data until the lobby named the other player (an unsolicited
     // hello cannot claim it); a joiner's socket none before the join was answered.
     if ((lobbyHosting_ || lobbyJoining_ || lobbyJoinResult_ == JoinResult::Ok) && candidates_.empty()) return;
@@ -1004,6 +1087,25 @@ void Session::Close() {
         for (int k = 0; k < 3; ++k) SendRaw(bye);
     }
     if (!CanRejoin() || !historyStarted_) LobbyLeave();
+    if (lobbyLeavePending_ && lobbyKnown_) {
+        PollLobbyCleanup();
+        constexpr size_t kMaxCancelledSockets = 16;
+        if (lobbyCancellations_.size() == kMaxCancelledSockets) {
+            CloseSock(lobbyCancellations_.front().socket);
+            lobbyCancellations_.erase(lobbyCancellations_.begin());
+        }
+        LobbyCancellation cancellation;
+        cancellation.socket = sock_;
+        memcpy(cancellation.server.data(), lobbyAddr_, sizeof(lobbyAddr_));
+        cancellation.room = lobbyLeaveRoom_;
+        cancellation.code = lobbyLeaveCode_;
+        cancellation.started = Clock::now();
+        lobbyCancellations_.push_back(cancellation);
+        sock_ = kNoSocket;
+        lobbyLeavePending_ = false;
+        PollLobbyCleanup();
+        return;
+    }
     CloseSock(sock_);
     sock_ = kNoSocket;
 }
@@ -1028,10 +1130,13 @@ void Session::Reset() {
     pongs_ = 0;
     helloStart_ = lastDirectIn_ = lastRelayIn_ = lastKeepalive_ = firstHelloIn_ = Clock::now();
     lobbyHosting_ = lobbyCreating_ = lobbyJoining_ = lobbyRoomsKnown_ = false;
+    lobbyLeavePending_ = false;
+    lobbyLeaveRoom_ = lobbyLeaveCode_ = 0;
     lobbyRoom_ = lobbyCode_ = lobbyJoinRoom_ = lobbyJoinCode_ = 0;
     lobbyJoinResult_ = JoinResult::Pending;
     lobbyRooms_.clear();
     lobbyLastAnswer_ = Clock::now();
+    lobbyJoinStarted_ = Clock::time_point{};
     config_ = SessionConfig();
     local_.clear();
     remote_.clear();

@@ -45,6 +45,12 @@ bool ApplyAspect(float nx, float ny, float displayW, float displayH, Aspect aspe
     return x >= 0.0f && x <= 1.0f && y >= 0.0f && y <= 1.0f;
 }
 
+ImageRect FitIntegerImage(int windowW, int windowH) {
+    const int scale = std::min(windowW / 640, windowH / 480);
+    if (scale < 1) return FitImage(windowW, windowH, Aspect::Pillarbox43);
+    return {(windowW - 640 * scale) / 2, (windowH - 480 * scale) / 2, 640 * scale, 480 * scale};
+}
+
 void NormalizedToGame(float gx, float gy, int gameW, int gameH, int* x, int* y) {
     *x = std::clamp(static_cast<int>(std::floor(Clamp01(gx) * gameW)), 0, gameW - 1);
     *y = std::clamp(static_cast<int>(std::floor(Clamp01(gy) * gameH)), 0, gameH - 1);
@@ -65,6 +71,16 @@ ImageRect FitImage(int windowW, int windowH, Aspect aspect) {
     r.h = std::max(r.h, 1);
     r.x = (std::max(windowW, 1) - r.w) / 2;
     r.y = (std::max(windowH, 1) - r.h) / 2;
+    return r;
+}
+
+ImageRect FitImageAspect(int windowW, int windowH, float aspect) {
+    const int ww = std::max(windowW, 1), wh = std::max(windowH, 1);
+    if (!std::isfinite(aspect) || aspect <= 0) return FitImage(ww, wh, Aspect::Pillarbox43);
+    ImageRect r{0, 0, ww, wh};
+    if (static_cast<double>(ww) / wh > aspect) r.w = std::clamp(static_cast<int>(wh * aspect), 1, ww);
+    else r.h = std::clamp(static_cast<int>(ww / aspect), 1, wh);
+    r.x = (ww - r.w) / 2; r.y = (wh - r.h) / 2;
     return r;
 }
 

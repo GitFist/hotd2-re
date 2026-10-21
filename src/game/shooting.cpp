@@ -131,4 +131,11 @@ void GunCalibrateMode6(int rawX, int rawY, int16_t* x, int16_t* y, bool* valid) 
     *valid = okX && okY;
 }
 
+void GunCalibrateWide(int rawX,int rawY,int16_t* x,int16_t* y,bool* valid) {
+    const int cx=rawX-kPortWideGunBias;
+    *valid=cx>=-4096&&cx<=4096&&rawY>=0&&rawY<480;
+    *x=static_cast<int16_t>(*valid?cx:0);
+    *y=static_cast<int16_t>(*valid?240-rawY:0);
+}
+
 }  // namespace game

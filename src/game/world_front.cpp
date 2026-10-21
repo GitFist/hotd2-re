@@ -21,6 +21,7 @@
 #include "game/world_internal.h"
 #include "game/world_modes.h"
 #include "game/world_prototype.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -149,6 +150,21 @@ void World::Impl::FrontStep() {
     hud.demoIndex = front.demoIndex;
     hud.menuCursor = front.menuCursor;
     hud.gameType = front.gameType;
+    hud.nightShiftPage = cfg.portFeatures && cfg.portModernMenu
+                            ? (gameMode == 4 ? front.nightShiftPage : gameMode == 12 ? 7 : -1)
+                            : -1;
+    hud.nightShiftRow = gameMode == 12 && modes ? modes->optCursor : front.nightShiftRow;
+    hud.portLobbyRequests = front.portLobbyRequests;
+    hud.portLobbyAction = front.portLobbyAction;
+    hud.portLobbyRoom = front.portLobbyRoom;
+    hud.portLeaderboardRequests = front.portLeaderboardRequests;
+    hud.portLeaderboardTable = front.nightShiftTable;
+    hud.portLeaderboardShared = front.nightShiftShared;
+    hud.portLeaderboardPublishRequests = front.portLeaderboardPublishRequests;
+    hud.portLeaderboardInitials = front.leaderboardInitials;
+    hud.portDisplayRequests += front.nightShiftDisplayRequests;
+    hud.portDisplayPage = gameMode==4&&front.nightShiftPage==5?front.nightShiftDisplayPage:-1;
+    if (hud.nightShiftPage < 0) {hud.menuPanels.clear();hud.menuText.clear();}
 }
 
 // Game_UpdateInput's button part (0x0040D590 -> 0x0040D6C0 / 0x0040D850): held 0x009C9034 / pressed 0x009C9028
@@ -224,6 +240,8 @@ void World::Impl::FrontApplyMode() {
         front.menuCursor = 0;
         front.modeFrames = 0;
         FrontScreensFree();
+        front.nightShiftPage = front.nightShiftRow = 0;
+        front.nightShiftAimX = front.nightShiftAimY = -1;
         if (modes) modes->netState = 0;
     }
 }
@@ -502,6 +520,9 @@ void World::Impl::MenuFrame() {
         CreatePlayerTasks();
         NewTask<WTask>(WorldTramp<&Impl::TaskScreens>, 0x00496840);
         FrontScreensFree();
+        front.nightShiftPage = front.nightShiftReturnPage;
+        front.nightShiftReturnPage = front.nightShiftRow = 0;
+        front.nightShiftAimX = front.nightShiftAimY = -1;
         // background "tex\hod2title00..11" (z 0.5), then the 8 labels (3 tiles of 64 each, z 0): arcade, original,
         // training, boss, ranking, option, network, exit
         static const int kTile[6][4] = { { 0, 0, 0x100, 0x100 }, { 0x100, 0, 0x100, 0x100 }, { 0, 0x100, 0x100, 0x100 },
@@ -509,7 +530,7 @@ void World::Impl::MenuFrame() {
         for (int i = 0; i < 6; ++i)
             FrontScreenAdd(0x00597B60 - 0x14 * static_cast<uint32_t>(i), kTile[i][0], kTile[i][1], kTile[i][2], kTile[i][3], 0.5f,
                            i < 4 ? 1.0f : 0.5f, 1.0f, 1.0f);
-        for (auto& s : front.screens) s.visible = true;
+        for (auto& s : front.screens) s.visible = !(cfg.portFeatures && cfg.portModernMenu);
         static const uint32_t kLabel[8] = { 0x00597AE8, 0x00597AAC, 0x00597A70, 0x00597A38, 0x00597A04, 0x005979C8, 0x0059798C, 0x00597954 };
         static const uint32_t kStride[8] = { 0x14, 0x14, 0x14, 0x10, 0x14, 0x14, 0x14, 0x10 };
         static const int kY[8] = { 0x20, 0x50, 0x90, 0xB0, 0xF0, 0x120, 0x150, 0x180 };
@@ -544,6 +565,11 @@ void World::Impl::MenuFrame() {
 // 0x00496960: cursor up / down (0x005978C8 / 0x005978D0 per player 0x009A3790; the keyboard masks with 0x009A37A8 are
 // not driven), the selected entry's label visible, the logo strip, confirm (0x005978D8: trigger or start)
 void World::Impl::TaskMenu(Task& t) {
+    if (cfg.portFeatures && cfg.portModernMenu) {
+        for (auto& s : front.screens) s.visible = false;
+        NightShiftMenuFrame(*this);
+        return;
+    }
     MenuTask& m = t.As<MenuTask>();
     const uint32_t p = static_cast<uint32_t>(front.startPlayer) * 4;
     // Port only (WorldConfig::portFeatures): a ninth entry "Scene Select" between Network and Exit (entry 7; Exit
@@ -723,6 +749,12 @@ void World::Impl::TaskDemoTimer(Task&) {
 // =====================================================================================================================
 
 void World::Impl::GameStartFrame() {
+    PortLeaderboardBegin(*this);
+    // SceneSelectStart clears sceneSelect; sceneStart still identifies that origin
+    // here, before this function consumes it. Keep the decision across chapter loads.
+    portRunOriginEligible = !front.sceneSelect && front.sceneStart<0 &&
+        !front.hordeStart && !front.randomizerStart &&
+        (front.gameType==0 || front.gameType==1 || front.gameType==3);
     // game type 0: event mode 0, scene 0 (types 2 / 3 are refused by the mode select); 0x0048A0D0, rank init, 0x00463680,
     // route record cleared, per-game counters: the mode-6 branch of StartStage
     WorldConfig c = cfg;

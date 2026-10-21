@@ -15,6 +15,7 @@
 #include "game/menu_text.h"
 #include "game/menu_pointer.h"
 #include "game/world_modes.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -107,6 +108,15 @@ bool OptSkipped(const ModesState& m, const Allow& a, int i) {
     return (i == 3 && m.optHidden == 0) || (i == 8 && !a.controller) || (i == 5 && !a.calibrate);
 }
 
+bool ModernOptions(const World::Impl& w) { return w.cfg.portFeatures && w.cfg.portModernMenu; }
+std::vector<int> ModernOptionIds(const World::Impl& w,const Allow& a) {
+    int rows[11+kPortRows];
+    const int count=OptRows(*w.modes,rows);
+    std::vector<int> visible;
+    for(int k=0;k<count;++k)if(!OptSkipped(*w.modes,a,rows[k]))visible.push_back(rows[k]);
+    return visible;
+}
+
 float OptRowY(const World::Impl& w, const Allow& a, int i) {
     const ModesState& m = *w.modes;
     if (i >= 11) return static_cast<float>(ItemY(w.exe, 8) + m.optScroll + i - 11);
@@ -115,6 +125,15 @@ float OptRowY(const World::Impl& w, const Allow& a, int i) {
 }
 
 int OptRowAt(const World::Impl& w, const Allow& a, int x, int y) {
+    if(ModernOptions(w)) {
+        if(x<26||x>=614)return -1;
+        const auto rows=ModernOptionIds(w,a);
+        for(size_t i=0;i<rows.size();++i) {
+            const float top=kNightShiftOptionsTop+float(i)*NightShiftOptionsPitch(rows.size());
+            if(y>=top-1&&y<top+NightShiftOptionsHeight(rows.size()))return rows[i];
+        }
+        return -1;
+    }
     const float exitY = ItemY(w.exe, 10) * 24.0f - F32(w.exe, 0x004C4CA0);
     if (x >= 256 && x < 384 && y >= exitY - 32 && y < exitY + 32) return 10;
     int rows[11 + kPortRows];
@@ -127,7 +146,7 @@ int OptRowAt(const World::Impl& w, const Allow& a, int x, int y) {
 }
 
 bool OptValue(int i) { return i <= 3 || (i >= 11 && i <= 13); }
-float OptPreviousX(int i) { return i == 6 || i == 7 ? 484.0f : 440.0f; }
+float OptPreviousX(const World::Impl& w,int i) { return ModernOptions(w)?360.f:i == 6 || i == 7 ? 484.0f : 440.0f; }
 
 // Translate pointer actions to the same input edges as the original handlers. Consume the gun's trigger/start
 // pair first: clicks outside rows must not confirm a stale selection or also activate a different action.
@@ -154,11 +173,11 @@ void OptPointer(World::Impl& w, OptTask& task, const Allow& a) {
     task.pointerPlayer = p;
     if (row < 0 || (!in.fired && !reload)) return;
     if (OptValue(row) || row == 4 || row == 6 || row == 7) {
-        if ((row == 6 || row == 7) && in.fired && in.x < OptPreviousX(row) - 16) {
+        if ((row == 6 || row == 7) && in.fired && in.x < OptPreviousX(w,row) - 16) {
             w.pressed |= 4;  // shoot the sound-test label to play its selected recording
             return;
         }
-        const int delta = reload ? -1 : row == 4 ? 1 : MenuPointerStep(float(in.x), OptPreviousX(row));
+        const int delta = reload ? -1 : row == 4 ? 1 : MenuPointerStep(float(in.x), OptPreviousX(w,row));
         const int player = row == 4 ? (in.x >= 540 ? 1 : 0) : p;
         w.pressed |= (delta > 0 ? 0x80u : 0x40u) << (player * 16);
     } else if (in.fired) {
@@ -403,12 +422,81 @@ void Handler(World::Impl& w, int i) {
     }
 }
 
+void ModernOptionsList(World::Impl& w,const Allow& a) {
+    const auto& m=*w.modes;
+    std::vector<NightShiftOptionRow> rows;
+    for(int id:ModernOptionIds(w,a)) {
+        NightShiftOptionRow row;
+        row.id=id;
+        row.adjustable=OptValue(id)||id==6||id==7;
+        switch(id) {
+        case 0: row.label="Difficulty";row.value=w.exe.CStr(0x00569758+uint32_t(m.optDifficulty)*10);break;
+        case 1: row.label="Starting Life";row.value=std::to_string(m.optLives+1);break;
+        case 2: row.label="Continues";row.value=m.optCredits?std::to_string(m.optCredits):"Free Play";break;
+        case 3: row.label="Blood Color";row.value=m.optSound?"Green":"Red";break;
+        case 4: {
+            const bool p1=(w.player[0].inputKind==0&&w.player[0].deviceKind!=-1)||w.input[0].deviceMode==6;
+            const bool p2=(w.player[1].inputKind==0&&w.player[1].deviceKind!=-1)||w.input[1].deviceMode==6;
+            row.label="Crosshair Style";row.value=p1?"P1 "+std::to_string(m.optCross[0]+1):"P1 --";
+            row.secondValue=p2?"P2 "+std::to_string(m.optCross[1]+1):"P2 --";row.secondEnabled=p2;break;
+        }
+        case 5: row.label="Wii Remotes";row.value="Open";break;
+        case 6: row.label="Sound Preview";row.value=std::to_string(m.optBgm);break;
+        case 7: row.label="Dialogue Preview";row.value=std::to_string(m.optVoice);break;
+        case 8: row.label="Light Guns";row.value="Open";break;
+        case 9: row.label="Reset Game Settings";row.value="Reset";break;
+        case 10: row.label="SAVE + BACK";break;
+        case 11: row.label="Music Volume";row.value=std::to_string(m.optVolume[0])+" / 10";break;
+        case 12: row.label="Gun Shots Volume";row.value=std::to_string(m.optVolume[1])+" / 10";break;
+        case 13: row.label="Effects + Dialogue";row.value=std::to_string(m.optVolume[2])+" / 10";break;
+        case 14: row.label="Graphics Options";row.value="Open";break;
+        }
+        rows.push_back(std::move(row));
+    }
+    const char* help="Select a setting. Changes are saved when you choose Save + Back or press Escape.";
+    switch(m.optCursor) {
+    case 0:help="Original difficulty rules, from Very Easy to Very Hard.";break;
+    case 1:help="Starting life segments for each agent. Continue rules are set separately.";break;
+    case 2:help="Continues for a new Arcade run. Free Play appears after the original unlock.";break;
+    case 4:help="Shoot either player's value to cycle its sight. Each player's left/right controls keep their own style.";break;
+    case 5:help="Open the existing Wii Remote assignment, calibration and button setup.";break;
+    case 6:case 7:help="Left/right chooses a recording. Space or shooting its name plays it; arrows choose without playback.";break;
+    case 8:help="Open the existing light-gun assignment, calibration and button setup.";break;
+    case 9:help="Resets game rules, original crosshair/controller settings and all three volumes. Graphics settings stay separate.";break;
+    case 10:help="Save the existing game settings and return to the previous menu.";break;
+    case 11:help="Music playback volume, from 0 to 10.";break;
+    case 12:help="Gunshot sample volume, from 0 to 10.";break;
+    case 13:help="Effects and recorded dialogue share this existing volume, from 0 to 10.";break;
+    case 14:help="Open display, image clarity, lighting and the other graphics categories.";break;
+    }
+    NightShiftGameOptionsFrame(w,rows,m.optCursor,help);
+    // Keep the original sight art visible beside the modern per-player labels.
+    const auto ids=ModernOptionIds(w,a);
+    const auto cross=std::find(ids.begin(),ids.end(),4);
+    if(cross!=ids.end())for(int p=0;p<2;++p) {
+        const int id=w.exe.S16(0x00579F58+p*8+uint32_t(m.optCross[p])*2);
+        const uint32_t file=w.exe.U32(0x0057A5BC+uint32_t(id)*4),texture=w.exe.U32(0x0057D448+uint32_t(id)*4);
+        float scale=.5f;
+        const auto descriptors=w.exe.U32(0x0055B9B8+file*4);
+        const int count=w.exe.S16(0x0055C0A8+file*2);
+        for(int i=0;i<count&&i<4096;++i)if(w.exe.U32(descriptors+i*16+12)==texture) {
+            const int size=std::max(w.exe.S16(descriptors+i*16),w.exe.S16(descriptors+i*16+2));
+            if(size>0)scale=std::min(1.f,16.f/size);break;
+        }
+        const bool enabled=(w.player[p].inputKind==0&&w.player[p].deviceKind!=-1)||w.input[p].deviceMode==6;
+        const float y=kNightShiftOptionsTop+float(cross-ids.begin())*NightShiftOptionsPitch(ids.size())+10;
+        Spr(w,id,p?598.f:492.f,y,.009f,scale,scale,0,enabled?1.f:.5f,0x70A,Tint{});
+        if(file<w.texFiles.size()&&w.texFiles[file]!=4)w.ProcessRequest({0x54,file});
+    }
+}
+
 // 0x00486DA0: the list
 void TaskOptList(Task&) {
     World::Impl& w = *CurrentWorld();
     ModesState& m = *w.modes;
     const ExeImage& exe = w.exe;
     const Allow a = Permissions(w);
+    const size_t spriteStart=w.hudSprites.size();
     // 0x00413CC0 (dimming: counted by the mode function), 0x00488090(0): tiles 0x7A..0x8D at depth 200
     MenuBackground(w.hudSprites);
     {
@@ -422,12 +510,19 @@ void TaskOptList(Task&) {
     const float sc = static_cast<float>(m.optScroll);
     // port: the volume / display rows take the controller line's slot; the controller / default lines move down four cells
     const float shift = m.optPortRows ? static_cast<float>(kPortRows) : 0.0f;
-    static const char* const kPortLabels[kPortRows] = { "Music Volume", "Gun Shots Volume", "Sound Effects Volume", "Display Settings" };
+    static const char* const kPortLabels[kPortRows] = { "Music Volume", "Gun Shots Volume", "Effects + Dialogue", "Graphics Options" };
     for (int i = 0; i < 11; ++i) {
         if (i < 10) {
             const float x = static_cast<float>(ItemX(exe, i));
             const float y = static_cast<float>(ItemY(exe, i)) + (i < 3 ? 0.0f : sc) + (i == 8 || i == 9 ? shift : 0.0f);
-            const std::string label = i == 5 && w.cfg.portFeatures ? "Wii Remotes" : i == 8 && w.cfg.portFeatures ? "Light Guns" : ItemText(exe, i);
+            std::string label = ItemText(exe, i);
+            if (w.cfg.portFeatures) {
+                if (i == 5) label = "Wii Remotes";
+                else if (i == 6) label = "Sound Preview";
+                else if (i == 7) label = "Dialogue Preview";
+                else if (i == 8) label = "Light Guns";
+                else if (i == 9) label = "Reset Game Settings";
+            }
             if (m.optCursor == i) {
                 if (i == 3) {
                     if (m.optHidden != 0) Text(w, x, static_cast<float>(ItemY(exe, 3)), label, 0x111);
@@ -472,10 +567,16 @@ void TaskOptList(Task&) {
     }
     if (w.cfg.portFeatures) {
         if (OptValue(m.optCursor) || m.optCursor == 6 || m.optCursor == 7)
-            MenuAdjustArrows(OptPreviousX(m.optCursor), 620, OptRowY(w, a, m.optCursor) * 24 + 22, w.hudSprites);
+            MenuAdjustArrows(OptPreviousX(w,m.optCursor), 620, OptRowY(w, a, m.optCursor) * 24 + 22, w.hudSprites);
         const char* hint = m.optCursor == 6 || m.optCursor == 7 ? "Shoot arrows to choose   Name to play" :
                            m.optCursor == 4 ? "Shoot a player sight to change it" : "Click or shoot   Reload to reverse";
         MenuTextScaled(exe, 32, 380, hint, 0, 0.8f, w.hudSprites);
+    }
+    if(ModernOptions(w)) {
+        // Retain the exact original handler order, sounds and save writes above;
+        // replace only the completed list's presentation for the Night Shift theme.
+        w.hudSprites.resize(spriteStart);
+        ModernOptionsList(w,a);
     }
 }
 

@@ -11,6 +11,7 @@
 #include "game/mstack.h"
 #include "game/world_internal.h"
 #include "game/world_modes.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -134,7 +135,9 @@ void World::Impl::InputFrame() {
                 g.valid = 0;
             } else {
                 bool valid = false;
-                if (in[p].deviceMode == 6) {
+                if (in[p].deviceMode == kPortWideGunMode && cfg.portFeatures) {
+                    GunCalibrateWide(s.x,s.y,&g.x,&g.y,&valid);
+                } else if (in[p].deviceMode == 6) {
                     GunCalibrateMode6(s.x, s.y, &g.x, &g.y, &valid);
                 } else {
                     // 0x0040CCA4: the player's calibration (gun record +0x16 x / +0x1E y, WorldConfig::gunCal) to the
@@ -458,6 +461,7 @@ void World::Impl::PlayerInit(Task& t, int row) {
     P.cb7C = exe.U32(r + 0xC);
     P.cb80 = exe.U32(r + 0x10);
     if (flags & 0x10) ++players;  // 0x009C8E80
+    PortLeaderboardPlayerJoined(*this,p);
     if (flags & 0x20) ++route;    // 0x009C8E84
     P.overlay.active = 0;
     P.overlay.timer = 0;
@@ -964,12 +968,13 @@ void World::Impl::PlayerCrosshair(Task& t) {
     const int p = t.As<PlayerTask>().index;
     Player& P = player[p];
     const int mode = input[p].kind == 1 ? input[p].deviceMode : 0;
-    const bool gunMode = mode == 5 || mode == 6;
+    const bool gunMode = mode == 5 || mode == 6 || (mode==kPortWideGunMode&&cfg.portFeatures);
     P.crosshairOn = false;
     if (gameMode == 6 && ((P.inputKind != 1 && P.gun.valid != 0) || gunMode) && P.lives > 0 && canShoot != 0) {
         P.crosshairOn = true;
         if (gunMode) {  // Input_GetGunPos 0x0041E280: the latched device position
             P.crosshair[0] = static_cast<float>(devicePos[p][0]);
+            if(mode==kPortWideGunMode)P.crosshair[0]+=320-kPortWideGunBias;
             P.crosshair[1] = static_cast<float>(devicePos[p][1]);
         } else {
             P.crosshair[0] = P.aim[0] + 320.0f;

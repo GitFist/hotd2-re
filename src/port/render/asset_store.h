@@ -32,6 +32,29 @@ struct RgbaImage {
     int LogicalHeight() const { return logicalHeight ? logicalHeight : height; }
 };
 
+// Read-only installed visual-pack catalogue. Discovery never selects a pack or mutates its
+// files. A legacy tex/<bank>/<index>.png or bmp/<file>.png pack needs no manifest; an optional
+// pack.ini can describe it with format=1, name=, author= and version=. Missing overrides use
+// original assets. hasAudio warns that the existing asset override directory also contains
+// sound replacements, so choosing it is not necessarily a graphics-only change.
+struct TexturePackInfo {
+    std::filesystem::path path;
+    std::string name, author, version, error;
+    size_t textures = 0, frontScreens = 0;
+    size_t materialMaps = 0;
+    bool valid = false, hasAudio = false, hasManifest = false, fullyValidated = false;
+    bool normalRoughness = false; // materials=normal-roughness-v1 in pack.ini
+    bool pnTriangles = false; // meshes=pn-triangles-v1, explicit bounded refine_models list
+    size_t refinedModels = 0;
+};
+// Default checks layout, PNG headers and supported image sizes without decoding an entire
+// high-resolution pack at menu startup. decodeAll additionally checks every PNG with the
+// actual game decoder; it can be slow and is intended for an explicit validation operation.
+TexturePackInfo InspectTexturePack(const std::filesystem::path& path, bool decodeAll = false);
+// Each root may be a pack or a directory of installed packs. Only immediate children are
+// examined, paths are deduplicated, and results are sorted by display name.
+std::vector<TexturePackInfo> DiscoverTexturePacks(const std::vector<std::filesystem::path>& roots);
+
 class AssetStore {
 public:
     AssetStore() = default;
@@ -40,6 +63,9 @@ public:
     AssetStore& operator=(const AssetStore&) = delete;
 
     bool Open(const std::filesystem::path& gameDir, std::string* error);
+    // Inspect the pack used by asset lookups, including HOTD2_ASSET_DIR. This is
+    // independent of a menu's saved next-launch selection; call outside the frame loop.
+    TexturePackInfo ActivePackInfo() const;
     // Stop old prefetch jobs and free decoded assets between scenes. Invalidates returned image/file pointers;
     // the renderer must discard its cached models and texture handles before this call.
     void ClearCache();
@@ -82,6 +108,14 @@ public:
     // (pol\X.bin -> tex\X.bin, verified at runtime; pol\pol_X.bin -> tex\X.bin, inferred).
     // Returns nullptr for 0xFFFFFFFF or unresolved references.
     const RgbaImage* Texture(const std::string& polName, uint32_t ref);
+    // Optional authored material map, enabled only by pack.ini materials=normal-roughness-v1:
+    // materials/tex/<bank>/<index>_nr.png. RGBA8 tangent normal XYZ, perceptual roughness A.
+    // No generated/invented maps, color-image substitution or model-specific exceptions.
+    const RgbaImage* NormalRoughness(const std::string& polName, uint32_t ref);
+    // Explicit visual-model selection from the active pack's manifest. No mesh
+    // assets are imported; this permits bounded render-only refinement of the
+    // named original model IDs after all native CPU deformation.
+    bool RefineModel(uint32_t modelId);
 
     // Texture with global id id (descriptor textureId) in texture file ileIndex (index into 0x004D1410), e.g.
     // for sprites (game::SpriteTables). Null if missing.
@@ -120,6 +154,10 @@ private:
     std::map<std::string, std::vector<TexRef>> byFile_;  // texture file name -> descriptors in index order
     std::map<std::string, std::vector<uint8_t>> files_;
     std::map<TexKey, std::unique_ptr<RgbaImage>> textures_;
+    std::map<TexKey, std::unique_ptr<RgbaImage>> normalRoughness_;
+    int normalRoughnessMode_ = -1;
+    bool refinementSelectionRead_ = false;
+    std::set<uint32_t> refinementModels_;
 
     // prefetch (asset pack): queue_ -> workers -> ready_ (nullptr = no override for that texture)
     std::mutex mu_;

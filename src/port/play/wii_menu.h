@@ -11,6 +11,7 @@ public:
     void Close(){open_=false;calibration_=-1;}
     bool Update(const MenuInput& in,input::WiiRemotes& remotes);
     void Sprites(const game::ExeImage& exe,const input::WiiRemotes& remotes,std::vector<game::SpriteDef>& out)const;
+    void ModernHud(const input::WiiRemotes& remotes,game::WorldHud& hud)const;
     int Cursor()const{return cursor_;}
     int SelectedPlayer()const{return player_;}
     int CalibrationStep()const{return calibration_;}

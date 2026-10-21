@@ -1,5 +1,6 @@
 #include "lightgun_menu.h"
 #include "game/menu_text.h"
+#include "play/device_menu_hud.h"
 
 namespace play {
 namespace {
@@ -144,4 +145,92 @@ void LightgunMenu::Sprites(const game::ExeImage& exe,const input::Lightguns& gun
     Text(exe,32,442,"ENTER selects   ESC goes back",out,false,.7f);
     if(gunMode)for(int p=0;p<2;++p){auto s=guns.Player(p);if(s.connected&&s.onScreen)Cross(exe,p,s.x*640,s.y*480,out);}
 }
+void LightgunMenu::ModernHud(const input::Lightguns& guns, bool gunMode, game::WorldHud& hud) const {
+    if (!open_) return;
+    const std::string player = "PLAYER " + std::to_string(player_ + 1);
+    if (testing_) {
+        device_ui::Begin(hud, 9, "LIGHT GUN TEST", "LIVE AIM / BOTH PLAYERS", false);
+        hud.menuPanels = {{0, 0, 640, 78, 0xE6090D10}, {26, 65, 614, 67, 0xFF92272D}};
+        device_ui::Text(hud, 26, 20, "LIGHT GUN TEST", 1.05f);
+        for (int p = 0; p < 2; ++p) {
+            const auto s = guns.Player(p);
+            const float top = 92.f + 50.f * p;
+            device_ui::Text(hud, 34, top, "PLAYER " + std::to_string(p + 1) + " / SHOTS: " + std::to_string(shots_[p]), .55f);
+            device_ui::Text(hud, 34, top + 22, Status(guns, p) + (s.connected ? (s.onScreen ? " / ON SCREEN" : " / OFF SCREEN") : ""),
+                            .42f);
+            if (s.connected && s.onScreen) device_ui::Target(hud, s.x * 640, s.y * 480, p);
+        }
+        device_ui::Text(hud, 34, 390, "Pull each trigger to check its shot counter.", .5f);
+        device_ui::Footer(hud, "ESC / BACK: RETURN TO SETUP");
+        return;
+    }
+    if (calibration_ >= 0) {
+        device_ui::Begin(hud, 9, "CALIBRATE " + player, "", false);
+        // The corner targets lie at y=72/408. Keep header chrome and subtitle
+        // out of their hit area, and never dim or cover those corners.
+        hud.menuPanels.push_back({156, 158, 484, 284, 0xEA090D10});
+        device_ui::Text(hud, 176, 171, "CALIBRATE / " + player, .55f);
+        device_ui::Text(hud, 176, 202, "AIM AT THE CROSS", .65f);
+        device_ui::Text(hud, 176, 230, "Pull the trigger / target " + std::to_string(calibration_ + 1) + " of 4", .5f);
+        device_ui::Text(hud, 176, 258, "Keep the same position for every target.", .4f);
+        const auto target = targets[calibration_];
+        device_ui::Target(hud, float(target.x * 640), float(target.y * 480), player_);
+        if (!notice_.empty()) device_ui::Text(hud, 34, 350, notice_, .45f);
+        device_ui::Footer(hud, "ESC / BACK: CANCEL / KEEP PREVIOUS CALIBRATION");
+        return;
+    }
+    if (guns.Assigning() >= 0) {
+        device_ui::Begin(hud, 9, "ASSIGN PLAYER " + std::to_string(guns.Assigning() + 1), "LIGHT GUNS");
+        device_ui::Text(hud, 60, 151, "PULL THE TRIGGER", .85f);
+        device_ui::Text(hud, 60, 194, "Use only the gun you want to assign to this player.", .55f);
+        device_ui::Text(hud, 60, 227, "Each player keeps a separate device slot.", .5f);
+        device_ui::Footer(hud, "ESC / BACK: CANCEL ASSIGNMENT");
+        return;
+    }
+    if (binding_ >= 0) {
+        device_ui::Begin(hud, 9, "BIND " + player, Status(guns, player_));
+        device_ui::Text(hud, 60, 151, "PRESS THE GUN BUTTON FOR", .65f);
+        device_ui::Text(hud, 60, 188, playerLabels[binding_ + 1], .9f);
+        device_ui::Text(hud, 60, 239, "Only this player's gun can change the binding.", .5f);
+        device_ui::Text(hud, 60, 266, "Mouse buttons 1 to 5 are supported.", .5f);
+        device_ui::Footer(hud, "ESC / BACK: CANCEL / KEEP PREVIOUS BUTTON");
+        return;
+    }
+    device_ui::Begin(hud, 9, player_ < 0 ? "LIGHT GUNS" : "LIGHT GUN / " + player,
+                     player_ < 0 ? "INPUT / ASSIGNMENTS" : Status(guns, player_));
+    hud.nightShiftRow = cursor_;
+    for (int row = 0; row < (player_ < 0 ? 8 : 9); ++row) {
+        std::string value;
+        if (player_ < 0 && row == 0) value = gunMode ? "Light Guns" : "Mouse";
+        if (player_ >= 0) {
+            const auto& profile = guns.settings.player[player_];
+            if (row == 0) value = profile.calibration.calibrated ? "Set" : "Default";
+            if (row >= 1 && row <= 4) value = input::GunButtonName(profile.buttons[row - 1]);
+        }
+        device_ui::Row(hud, row, cursor_, player_ < 0 ? mainLabels[row] : playerLabels[row], value);
+    }
+    if (player_ < 0) {
+        device_ui::Text(hud, 34, 320, "P1 / " + Status(guns, 0), .44f);
+        device_ui::Text(hud, 34, 343, "P2 / " + Status(guns, 1), .44f);
+        device_ui::Text(hud, 34, 379, notice_.empty() ? "Choose Light Guns, then assign each player." : notice_, .45f);
+        device_ui::Text(hud, 34, 406, "Sinden users: keep the Sinden border enabled.", .42f);
+    } else {
+        const auto reading = guns.Reading(player_);
+        std::string buttons;
+        for (auto button : input::kGunButtons)
+            if (reading.held & button) {
+                if (!buttons.empty()) buttons += " / ";
+                buttons += input::GunButtonName(button);
+            }
+        device_ui::Text(hud, 34, 346, "Buttons: " + (buttons.empty() ? "none" : buttons), .42f);
+        device_ui::Text(hud, 34, 369, notice_.empty() ? "Choose Test both guns to check aim and fire." : notice_, .44f);
+        device_ui::Text(hud, 34, 398, "SELECT A BUTTON: REMAP", .42f);
+    }
+    device_ui::Footer(hud, "SELECT / SHOOT: OPEN   ESC / RELOAD: BACK");
+    if (gunMode)
+        for (int p = 0; p < 2; ++p) {
+            const auto s = guns.Player(p);
+            if (s.connected && s.onScreen) device_ui::Target(hud, s.x * 640, s.y * 480, p);
+        }
 }
+}  // namespace play

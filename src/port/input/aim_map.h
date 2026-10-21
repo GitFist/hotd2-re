@@ -38,6 +38,8 @@ struct ImageRect {
     int x = 0, y = 0, w = 0, h = 0;
 };
 ImageRect FitImage(int windowW, int windowH, Aspect aspect);
+ImageRect FitIntegerImage(int windowW, int windowH);
+ImageRect FitImageAspect(int windowW, int windowH, float imageAspect);
 
 // Window pixel position -> normalized position over the image rectangle (false = outside: off screen; the result is
 // then clamped). The inverse of the present pass's mapping, so the aim hits what is under the pointer.

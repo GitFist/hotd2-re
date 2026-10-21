@@ -1,4 +1,5 @@
 #include "game/hud.h"
+#include "game/shooting.h"
 
 #include <cstring>
 
@@ -117,7 +118,7 @@ void CoinLineSprites(const HudState& s, int32_t coins, int textId, float x, floa
 
 std::vector<SpriteDef> HudCrosshair(const HudState& s, int p) {
     const HudPlayer& pl = s.player[p];
-    const bool gunDevice = pl.deviceMode == 6 || pl.deviceMode == 5;
+    const bool gunDevice = pl.deviceMode == 6 || pl.deviceMode == 5 || pl.deviceMode == kPortWideGunMode;
     std::vector<SpriteDef> out;
     if (s.gameMode != 6) return out;
     if (!((pl.inputKind != 1 && pl.gunValid != 0) || gunDevice)) return out;
@@ -127,6 +128,7 @@ std::vector<SpriteDef> HudCrosshair(const HudState& s, int p) {
     SpriteDef d = Simple(kCrosshairId[p * 4 + (pl.crosshairStyle & 3)], 0, 0, 1.0f, 1.0f, 1.0f, 0xA);
     if (gunDevice) {
         d.x = static_cast<float>(pl.gunPosX);
+        if(pl.deviceMode==kPortWideGunMode)d.x+=320-kPortWideGunBias;
         d.y = static_cast<float>(pl.gunPosY);
     } else {
         d.x = pl.aimX + 320.0f;  // 0x004C49CC

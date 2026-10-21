@@ -1,6 +1,8 @@
 #include "asset_store.h"
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +14,205 @@
 #include "render/png_read.h"
 
 namespace port {
+
+namespace {
+std::string TrimPackValue(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    value = value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
+    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) { return c < 32 || c == 127; }), value.end());
+    if (value.size() > 120) value.resize(120);
+    return value;
+}
+std::string LowerPackName(std::string value) {
+    for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+bool ReadMeshSelection(const std::filesystem::path& path,bool* enabled,std::set<uint32_t>* models,std::string* error) {
+    *enabled=false;models->clear();std::error_code ec;
+    if(!std::filesystem::exists(path,ec))return true;
+    if(std::filesystem::file_size(path,ec)>16384||ec){if(error)*error="Mesh manifest is unreadable or exceeds 16 KiB";return false;}
+    std::ifstream file(path);bool supported=false;std::string selection;
+    auto trim=[](std::string s){const auto first=s.find_first_not_of(" \t\r\n");if(first==std::string::npos)return std::string{};return s.substr(first,s.find_last_not_of(" \t\r\n")-first+1);};
+    for(std::string line;std::getline(file,line);){if(line.rfind("\xEF\xBB\xBF",0)==0)line.erase(0,3);line=trim(line);
+        if(line.empty()||line[0]=='#'||line[0]==';'||line[0]=='[')continue;const auto equals=line.find('=');if(equals==std::string::npos)continue;
+        const auto key=LowerPackName(trim(line.substr(0,equals))),value=trim(line.substr(equals+1));
+        if(key=="format")supported=value=="1";
+        if(key=="meshes"){*enabled=value=="pn-triangles-v1";if(!value.empty()&&value!="none"&&!*enabled){if(error)*error="Unsupported mesh refinement convention";return false;}}
+        if(key=="refine_models")selection=value;
+    }
+    if(!file.eof()){if(error)*error="Cannot read mesh manifest";return false;}
+    if(!*enabled&&selection.empty())return true;
+    if(!supported||!*enabled){if(error)*error="Mesh selection requires format=1 and meshes=pn-triangles-v1";return false;}
+    if(selection.size()>8192){if(error)*error="Mesh selection exceeds 8 KiB";return false;}
+    size_t cursor=0;
+    while(cursor<selection.size()){const size_t end=selection.find(',',cursor);auto token=trim(selection.substr(cursor,end==std::string::npos?end:end-cursor));
+        if(token.rfind("0x",0)==0||token.rfind("0X",0)==0)token.erase(0,2);uint32_t id=0;
+        const auto result=std::from_chars(token.data(),token.data()+token.size(),id,16);
+        if(token.empty()||result.ec!=std::errc{}||result.ptr!=token.data()+token.size()||id>0xffffu){if(error)*error="refine_models must contain model IDs in hexadecimal (0..FFFF)";return false;}
+        models->insert(id);if(models->size()>512){if(error)*error="Mesh selection exceeds 512 model IDs";return false;}
+        if(end==std::string::npos)break;cursor=end+1;if(cursor==selection.size()){if(error)*error="Empty model ID in mesh selection";return false;}
+    }
+    return true;
+}
+bool PackPngHeader(const std::filesystem::path& path, bool decodeAll, std::string* error, bool normalRoughness = false) {
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) > (64u << 20) || ec) {
+        *error = "PNG is unreadable or exceeds 64 MiB";
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    unsigned char h[33] = {};
+    file.read(reinterpret_cast<char*>(h), sizeof(h));
+    const unsigned char signature[8] = {137,80,78,71,13,10,26,10};
+    if (file.gcount() != sizeof(h) || std::memcmp(h, signature, 8) ||
+        h[8] || h[9] || h[10] || h[11] != 13 || std::memcmp(h + 12, "IHDR", 4)) {
+        *error = "invalid PNG header";
+        return false;
+    }
+    auto be32 = [](const unsigned char* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; };
+    const uint32_t width = be32(h + 16), height = be32(h + 20);
+    if (!width || !height || width > 8192 || height > 8192 || uint64_t(width) * height > (16u << 20)) {
+        *error = "PNG exceeds the 8192-pixel or 64-MiB decoded-image limit";
+        return false;
+    }
+    const unsigned depth = h[24], color = h[25];
+    const bool supported = ((color == 0 && (depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16)) ||
+                            ((color == 2 || color == 4 || color == 6) && (depth == 8 || depth == 16)) ||
+                            (color == 3 && (depth == 1 || depth == 2 || depth == 4 || depth == 8)));
+    if (!supported || h[26] || h[27] || h[28]) {
+        *error = "PNG format is unsupported (non-interlaced PNG required)";
+        return false;
+    }
+    if (normalRoughness && (depth != 8 || color != 6)) {
+        *error = "normal/roughness maps require RGBA8 PNG";
+        return false;
+    }
+    if (decodeAll) {
+        PngImage image;
+        if (!ReadPngFile(path.string(), image, error)) return false;
+    }
+    return true;
+}
+} // namespace
+
+TexturePackInfo InspectTexturePack(const std::filesystem::path& path, bool decodeAll) {
+    TexturePackInfo info;
+    std::error_code ec;
+    info.path = std::filesystem::weakly_canonical(path, ec);
+    if (ec) info.path = path.lexically_normal();
+    info.name = info.path.filename().string();
+    if (path.empty() || !std::filesystem::is_directory(info.path, ec)) {
+        info.error = "Pack directory is missing or unreadable";
+        return info;
+    }
+    const auto manifestPath = info.path / "pack.ini";
+    info.hasManifest = std::filesystem::is_regular_file(manifestPath, ec);
+    if (info.hasManifest) {
+        if (std::filesystem::file_size(manifestPath, ec) > 16384 || ec) {
+            info.error = "pack.ini is unreadable or exceeds 16 KiB";
+            return info;
+        }
+        std::ifstream manifest(manifestPath);
+        for (std::string line; std::getline(manifest, line);) {
+            if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);
+            line = TrimPackValue(line);
+            if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') continue;
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const auto key = LowerPackName(TrimPackValue(line.substr(0, eq)));
+            const auto value = TrimPackValue(line.substr(eq + 1));
+            if (key == "name" && !value.empty()) info.name = value;
+            else if (key == "author") info.author = value;
+            else if (key == "version") info.version = value;
+            else if (key == "format" && value != "1") info.error = "Unsupported pack.ini format (expected 1)";
+            else if (key == "materials") {
+                info.normalRoughness = value == "normal-roughness-v1";
+                if (!value.empty() && value != "none" && !info.normalRoughness) info.error = "Unsupported material-map format";
+            }
+        }
+        if (!manifest.eof()) info.error = "Cannot read pack.ini";
+        std::set<uint32_t> models;std::string reason;
+        if(!ReadMeshSelection(manifestPath,&info.pnTriangles,&models,&reason)&&info.error.empty())info.error=reason;
+        info.refinedModels=models.size();
+    }
+    auto inspect = [&](const std::filesystem::path& png, size_t& count) {
+        ++count;
+        if (info.error.empty()) {
+            std::string reason;
+            if (!PackPngHeader(png, decodeAll, &reason))
+                info.error = png.lexically_relative(info.path).generic_string() + ": " + reason;
+        }
+    };
+    const auto options = std::filesystem::directory_options::skip_permission_denied;
+    const auto tex = info.path / "tex";
+    if (std::filesystem::is_directory(tex, ec)) {
+        for (std::filesystem::directory_iterator banks(tex, options, ec), end; banks != end && !ec; banks.increment(ec)) {
+            if (!banks->is_directory(ec)) continue;
+            for (std::filesystem::directory_iterator images(banks->path(), options, ec); images != end && !ec; images.increment(ec)) {
+                if (!images->is_regular_file(ec) || images->path().extension() != ".png") continue;
+                const std::string index = images->path().stem().string();
+                if (index.empty() || !std::all_of(index.begin(), index.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) continue;
+                inspect(images->path(), info.textures);
+            }
+        }
+    }
+    const auto bmp = info.path / "bmp";
+    if (std::filesystem::is_directory(bmp, ec)) {
+        for (std::filesystem::directory_iterator images(bmp, options, ec), end; images != end && !ec; images.increment(ec))
+            if (images->is_regular_file(ec) && images->path().extension() == ".png") inspect(images->path(), info.frontScreens);
+    }
+    const auto materials = info.path / "materials" / "tex";
+    if (info.normalRoughness && std::filesystem::is_directory(materials, ec)) {
+        for (std::filesystem::directory_iterator banks(materials, options, ec), end; banks != end && !ec; banks.increment(ec)) {
+            if (!banks->is_directory(ec)) continue;
+            for (std::filesystem::directory_iterator images(banks->path(), options, ec); images != end && !ec; images.increment(ec)) {
+                if (!images->is_regular_file(ec) || images->path().extension() != ".png") continue;
+                const std::string stem = images->path().stem().string();
+                if (stem.size() <= 3 || stem.compare(stem.size()-3,3,"_nr")) continue;
+                const std::string index = stem.substr(0,stem.size()-3);
+                if (!std::all_of(index.begin(), index.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) continue;
+                ++info.materialMaps;
+                if (info.error.empty()) {
+                    std::string reason;
+                    if (!PackPngHeader(images->path(), decodeAll, &reason, true))
+                        info.error = images->path().lexically_relative(info.path).generic_string() + ": " + reason;
+                }
+            }
+        }
+    }
+    info.hasAudio = std::filesystem::is_directory(info.path / "Sound", ec) || std::filesystem::is_directory(info.path / "sound", ec);
+    if (!info.textures && !info.frontScreens && !info.materialMaps && !info.refinedModels && info.error.empty()) info.error = "No supported images or opted-in visual materials/meshes";
+    info.valid = info.error.empty();
+    info.fullyValidated = info.valid && decodeAll;
+    return info;
+}
+
+std::vector<TexturePackInfo> DiscoverTexturePacks(const std::vector<std::filesystem::path>& roots) {
+    std::vector<TexturePackInfo> found;
+    std::set<std::string> seen;
+    auto consider = [&](const std::filesystem::path& path) {
+        auto info = InspectTexturePack(path);
+        std::string identity = info.path.generic_string();
+#ifdef _WIN32
+        identity = LowerPackName(identity); // Windows pack paths are case-insensitive
+#endif
+        if ((!info.textures && !info.frontScreens && !info.materialMaps && !info.hasManifest) || !seen.insert(identity).second) return;
+        found.push_back(std::move(info));
+    };
+    for (const auto& root : roots) {
+        consider(root);
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             it != end && !ec; it.increment(ec))
+            if (it->is_directory(ec)) consider(it->path());
+    }
+    std::sort(found.begin(), found.end(), [](const TexturePackInfo& a, const TexturePackInfo& b) {
+        const auto an = LowerPackName(a.name), bn = LowerPackName(b.name);
+        return an == bn ? a.path < b.path : an < bn;
+    });
+    return found;
+}
 
 bool AssetStore::Open(const std::filesystem::path& gameDir, std::string* error) {
     dir_ = gameDir;
@@ -29,6 +230,14 @@ bool AssetStore::Open(const std::filesystem::path& gameDir, std::string* error) 
     if (auto it = byFile_.find("scr_blood_red.bin"); it != byFile_.end())
         for (const auto& r : it->second) redBloodTextures_.emplace(r.desc.id, r);
     return true;
+}
+
+TexturePackInfo AssetStore::ActivePackInfo() const {
+    if (!AssetDir().empty()) return InspectTexturePack(AssetDir());
+    TexturePackInfo original;
+    original.name = "Original";
+    original.valid = true;
+    return original;
 }
 
 const std::vector<uint8_t>& AssetStore::File(const std::string& relPath) {
@@ -103,6 +312,74 @@ const RgbaImage* AssetStore::Texture(const std::string& polName, uint32_t ref) {
     const auto file = byFile_.find(texName);
     if (file == byFile_.end() || ref >= file->second.size()) return nullptr;
     return ResolvedTexture(file->second[ref]);
+}
+
+bool AssetStore::RefineModel(uint32_t modelId) {
+    if(!AssetDirSet())return false;
+    if(!refinementSelectionRead_){refinementSelectionRead_=true;bool enabled=false;std::string ignored;
+        if(!ReadMeshSelection(std::filesystem::path(AssetDir())/"pack.ini",&enabled,&refinementModels_,&ignored)||!enabled)refinementModels_.clear();}
+    return refinementModels_.find(modelId)!=refinementModels_.end();
+}
+
+const RgbaImage* AssetStore::NormalRoughness(const std::string& polName, uint32_t ref) {
+    if (AssetDir().empty() || ref == 0xFFFFFFFF) return nullptr;
+    if (normalRoughnessMode_ < 0) {
+        // Read only the small manifest; discovery/whole-pack validation belongs to
+        // the selector, not to an actor's first draw.
+        normalRoughnessMode_ = 0;
+        const auto manifestPath = std::filesystem::path(AssetDir()) / "pack.ini";
+        std::error_code manifestError;
+        const auto manifestSize = std::filesystem::file_size(manifestPath,manifestError);
+        if (manifestError || manifestSize > 16384) return nullptr;
+        std::ifstream manifest(manifestPath);
+        bool supported = true;
+        for (std::string line; std::getline(manifest,line);) {
+            if (line.rfind("\xEF\xBB\xBF",0) == 0) line.erase(0,3);
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const auto key = LowerPackName(TrimPackValue(line.substr(0,eq)));
+            const auto value = TrimPackValue(line.substr(eq+1));
+            if (key == "materials") normalRoughnessMode_ = value == "normal-roughness-v1" ? 1 : 0;
+            if (key == "format" && value != "1") supported = false;
+        }
+        if (!supported || !manifest.eof()) normalRoughnessMode_ = 0;
+    }
+    if (!normalRoughnessMode_) return nullptr;
+    const std::string texName = TextureFileFor(polName);
+    const auto file = byFile_.find(texName);
+    if (file == byFile_.end() || ref >= file->second.size()) return nullptr;
+    const TexRef* r = &file->second[ref];
+    if (redBlood_) {
+        const auto blood = redBloodTextures_.find(r->desc.id);
+        if (blood != redBloodTextures_.end()) r = &blood->second;
+    }
+    const TexKey key(r->fileName, static_cast<uint32_t>(r->texIndex));
+    if (auto found = normalRoughness_.find(key); found != normalRoughness_.end()) return found->second.get();
+    auto& slot = normalRoughness_[key]; // cache missing/bad material maps too
+    std::string stem = r->fileName;
+    if (stem.size() > 4 && stem.compare(stem.size()-4,4,".bin") == 0) stem.resize(stem.size()-4);
+    char names[3][24];
+    std::snprintf(names[0],sizeof(names[0]),"%d_nr.png",r->texIndex);
+    std::snprintf(names[1],sizeof(names[1]),"%03d_nr.png",r->texIndex);
+    std::snprintf(names[2],sizeof(names[2]),"%04d_nr.png",r->texIndex);
+    for (const char* name : names) {
+        const auto path = AssetOverride("materials/tex/" + stem + "/" + name);
+        if (path.empty()) continue;
+        PngImage image; std::string error;
+        if (!PackPngHeader(path,false,&error,true) || !ReadPngFile(path,image,&error)) {
+            std::fprintf(stderr,"material map: %s: %s; using original material\n",path.c_str(),error.c_str());
+            break;
+        }
+        slot = std::make_unique<RgbaImage>();
+        slot->width=image.width;slot->height=image.height;
+        slot->logicalWidth=r->desc.width;slot->logicalHeight=r->desc.height;
+        slot->pixels.resize(image.rgba.size());
+        const size_t row=static_cast<size_t>(image.width)*4;
+        for (int y=0;y<image.height;++y)
+            std::memcpy(slot->pixels.data()+static_cast<size_t>(y)*row,image.rgba.data()+static_cast<size_t>(image.height-1-y)*row,row);
+        break;
+    }
+    return slot.get();
 }
 
 const RgbaImage* AssetStore::TextureById(int fileIndex, uint32_t id) {
@@ -187,7 +464,8 @@ void AssetStore::ClearCache() {
     for (auto& worker : workers_) worker.join();
     workers_.clear();
     queued_.clear(); inFlight_.clear(); ready_.clear();
-    textures_.clear(); files_.clear();
+    textures_.clear(); normalRoughness_.clear(); normalRoughnessMode_=-1; files_.clear();
+    refinementSelectionRead_=false;refinementModels_.clear();
     stop_ = false;
 }
 

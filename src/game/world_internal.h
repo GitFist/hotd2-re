@@ -1075,6 +1075,22 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         // starts the Horde game (stage 1's street)
         bool hordeStart = false;
         bool randomizerStart = false;  // Original mode with a randomized campaign
+        int nightShiftPage = 0, nightShiftRow = 0, nightShiftTable = 0;
+        int nightShiftAimX = -1, nightShiftAimY = -1;
+        int portLobbyRequests = 0, portLobbyAction = 0;
+        uint32_t portLobbyRoom = 0;
+        std::vector<PortHomeRoom> homeRooms;
+        std::string homeRoomsStatus = "ROOMS UNAVAILABLE";
+        std::vector<HordeLeaderboardEntry> hordeLeaderboard;
+        bool nightShiftShared = false;
+        int portLeaderboardRequests = 0, sharedTable = -1;
+        std::vector<SharedLeaderboardEntry> sharedLeaderboard;
+        std::string sharedLeaderboardStatus;
+        int portLeaderboardPublishRequests = 0, publishCursor = 0;
+        bool leaderboardPublishable = false;
+        std::string leaderboardPublishStatus;
+        std::string leaderboardInitials = "AMS";
+        int nightShiftDisplayRequests = 0, nightShiftDisplayPage = 0, nightShiftReturnPage = 0;
         // how-to-play (mode 9, 0x004996C0)
         int tutEnd = 0;                // 0x007DD164 (camera tick > 0xE6: end the mode)
         int tutClock = 0;              // 0x007DD15C (script task 0x00499FE0)
@@ -1137,6 +1153,12 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
 
     // ---------------------------------------------------------------- game types / menu modes (world_modes*.cpp)
     std::shared_ptr<ModesState> modes;  // persistent data, mode 8 / 12 / 15 state, select screens (world_modes.h)
+    // Presentation-only completion snapshot. Never serialized into lockstep / save data.
+    bool portLeaderboardRecording = false, portRunRecorded = false;
+    bool portRunOriginEligible = false;
+    bool portRunJoined[2] = {}; // this run's participation survives a player's continue/out state
+    int portRunParticipants = 0;
+    LeaderboardRunSnapshot portLeaderboardRun;
 };
 
 // 0x00425F40: boss-mode (game type 3) grade / record update when a boss is down (world_modes_boss.cpp; no-op otherwise)

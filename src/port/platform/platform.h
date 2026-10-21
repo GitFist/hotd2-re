@@ -21,7 +21,7 @@
 
 namespace platform {
 
-enum class Renderer { D3D11, SdlGpu };
+enum class Renderer { D3D11, SdlGpu, D3D12 };
 enum class Input { Auto, RawInput, Mouse, Touch };  // Auto: raw input on Windows, else mouse (desktop) / touch (mobile)
 enum class Audio { Sdl, XAudio2 };
 
@@ -40,7 +40,7 @@ struct CommonOptions {
 bool ParseCommonArg(int argc, char** argv, int& i, CommonOptions* o);
 const char* CommonUsage();
 
-enum class Key : uint8_t { Unknown, Escape, Enter, Space, Left, Right, Up, Down, PageUp, PageDown, A, P, Backspace, F8, G };
+enum class Key : uint8_t { Unknown, Escape, Enter, Space, Left, Right, Up, Down, PageUp, PageDown, A, P, Backspace, F8, G, H };
 
 struct Event {
     // Focus: the application was activated / deactivated (active). Windows: WM_ACTIVATEAPP, the message Hod2.exe's
@@ -88,13 +88,21 @@ public:
     bool SetInput(Input mode, std::string* error);
     input::Lightguns& Lightguns();
 
+    // Main thread: the system pointer is separate from the game's HUD sights. Headless/uninitialized instances
+    // cannot change SDL's process-wide cursor; their visibility query returns the default visible state.
+    bool SetCursorVisible(bool visible);
+    bool CursorVisible() const;
+
     // Display settings of play.exe (notes/agents/display.md). Fullscreen = SDL's borderless desktop fullscreen;
     // SetWindowSize sets the windowed client size; UsableDisplaySize = the usable bounds of the window's display (the
     // "fit" window scale). SetGameImage: the rectangle of the client area (pixels) the frame is presented in (the GPU
     // device's PresentParams); Guns()' aim is normalized over it from then on (the bars are off screen), as the touch
     // source's bar taps are.
-    bool SetFullscreen(bool on);
+    bool SetFullscreen(bool on, bool exclusive = false);
     bool IsFullscreen() const;
+    struct DisplayInfo { std::string name; int width = 0, height = 0; float refresh = 0; };
+    std::vector<DisplayInfo> Displays() const;
+    bool MoveToDisplay(int index);
     bool SetWindowSize(int w, int h);
     bool UsableDisplaySize(int* w, int* h) const;
     void SetGameImage(const input::ImageRect& image);

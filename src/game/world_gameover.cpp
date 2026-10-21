@@ -19,6 +19,7 @@
 
 #include "game/mstack.h"
 #include "game/world_internal.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -502,6 +503,8 @@ void World::Impl::TaskFootprint(Task& t) {
 void World::Impl::GameOverFrame() {
     switch (subState) {
     case 0: {
+        if(runner&&runner->cfg.gameType<2)
+            PortLeaderboardComplete(*this,runner->cfg.gameType,0,std::min(cfg.eventMode,6));
         ts.Reset();  // Mem_Init 0x004A7310 (0x0041D510 / 0x0041D540: models freed, request ring cleared)
         resQueue.clear();
         if (residency) {

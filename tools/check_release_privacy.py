@@ -8,6 +8,7 @@ This is a release safeguard, not a guarantee that arbitrary personal data is abs
 """
 import argparse
 import getpass
+import hashlib
 import json
 import re
 import zipfile
@@ -33,28 +34,75 @@ PRIVATE_NAME = re.compile(
     re.IGNORECASE,
 )
 
+# Byte-exact official redistributables only. This DLL was compared with the
+# configured NVIDIA DLSS SDK release binary and its NVIDIA Corporation
+# Authenticode signature was valid. It embeds a vendor model-training .pth path,
+# not an application developer's path. A version update requires a new review;
+# renaming or changing even one byte restores every ordinary privacy gate.
+VENDOR_BUILD_PATH_BINARIES = {
+    ("nvngx_dlss.dll", "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e"):
+        "NVIDIA DLSS 310.9.16.0 release DLL; vendor training-checkpoint path; valid NVIDIA Authenticode signature verified",
+}
 
-def check_bytes(data, forbidden):
+
+def vendor_build_path_exception(name, data):
+    filename = Path(name.replace("\\", "/")).name
+    if not any(key[0] == filename for key in VENDOR_BUILD_PATH_BINARIES):
+        return None
+    identity = (filename, hashlib.sha256(data).hexdigest())
+    provenance = VENDOR_BUILD_PATH_BINARIES.get(identity)
+    if provenance is None:
+        return None
+    return dict(file=name, sha256=identity[1], provenance=provenance,
+                scope="Vendor home path and identifier collisions inside >1024-byte opaque Base64 runs only; credentials, plaintext/path identifiers and member names remain checked")
+
+
+def forbidden_identifier(data, forbidden, *, vendor_encoded_payload=False):
+    lowered = data.lower()
+    # These ranges are considered only for a byte-exact reviewed vendor DLL.
+    # A path component or standalone word is never an encoded-payload collision.
+    runs = [(match.start(), match.end()) for match in re.finditer(rb"[A-Za-z0-9+/=]{1025,}", data)] if vendor_encoded_payload else []
+    alphanumeric = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    for value in forbidden:
+        for encoding in ("utf-8", "utf-16le"):
+            needle = value.lower().encode(encoding)
+            start = 0
+            while True:
+                at = lowered.find(needle, start)
+                if at < 0:
+                    break
+                end = at + len(needle)
+                encoded = (encoding == "utf-8" and needle and at > 0 and end < len(data) and
+                           data[at - 1] in alphanumeric and data[end] in alphanumeric and
+                           any(left < at and end < right for left, right in runs))
+                if not encoded:
+                    return True
+                start = at + 1
+    return False
+
+
+def check_bytes(data, forbidden, *, vendor_home_path=False, vendor_encoded_payload=False):
     reasons = []
-    if HOME_PATH.search(data) or UTF16_HOME.search(data):
+    if not vendor_home_path and (HOME_PATH.search(data) or UTF16_HOME.search(data)):
         reasons.append("personal home-directory path")
     if SECRETS.search(data):
         reasons.append("credential pattern")
-    lowered = data.lower()
-    for value in forbidden:
-        if any(value.lower().encode(encoding) in lowered for encoding in ("utf-8", "utf-16le")):
-            reasons.append("forbidden identifier")
-            break
+    if forbidden_identifier(data, forbidden, vendor_encoded_payload=vendor_encoded_payload):
+        reasons.append("forbidden identifier")
     return reasons
 
 
 def check_path(path, forbidden):
-    findings, count = [], 0
+    findings, count, vendor_exceptions = [], 0, []
 
     def check(name, data):
         nonlocal count
         count += 1
-        reasons = check_bytes(data, forbidden) + check_bytes(name.encode("utf-8"), forbidden)
+        exception = vendor_build_path_exception(name, data)
+        if exception:
+            vendor_exceptions.append(exception)
+        reasons = check_bytes(data, forbidden, vendor_home_path=exception is not None,
+                              vendor_encoded_payload=exception is not None) + check_bytes(name.encode("utf-8"), forbidden)
         if PRIVATE_NAME.search(name.replace("\\", "/")):
             reasons.append("private or debug file")
         if reasons:
@@ -74,7 +122,8 @@ def check_path(path, forbidden):
                 check(member.relative_to(path).as_posix(), member.read_bytes())
     else:
         check(path.name, path.read_bytes())
-    return {"input": path.name, "files_checked": count, "passed": not findings, "findings": findings}
+    return {"input": path.name, "files_checked": count, "passed": not findings, "findings": findings,
+            "vendor_build_path_exceptions": vendor_exceptions}
 
 
 def main():

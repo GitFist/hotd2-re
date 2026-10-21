@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "render/viewport.h"
 #include "prototype_model.h"
 
 #include "game/crt_qsort.h"
@@ -187,6 +188,7 @@ bool SceneDef::Load(const std::string& path, std::string* error) {
 }
 
 bool Scene::Init(AssetStore& assets, const SceneDef& def, std::string* error) {
+    renderPose_.Reset();
     assets_ = &assets;
     def_ = def;
     auto load = [&](int id, std::vector<Item>& out) {
@@ -305,6 +307,7 @@ bool Scene::PrepareWorld(ModelRenderer& renderer, const game::World& world) {
     const bool changed = mode != cacheMode_ || chapter != cacheChapter_ || world.Frame() < cacheFrame_;
     cacheMode_ = mode; cacheChapter_ = chapter; cacheFrame_ = world.Frame();
     if (!changed) return false;
+    renderPose_.Reset();
     renderer.ClearCache();
     worldModels_.clear(); uvScroll_.clear(); skinned_.clear(); missingModels_.clear();
     assets_->ClearCache();
@@ -377,6 +380,14 @@ ModelRenderer::Lighting Scene::MakeLighting(const game::WorldLight& l, const gam
 
 game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& world, const std::vector<game::WorldDraw>* drawsOverride) {
     const game::WorldCamera& cam = world.Camera();
+    const auto& events = world.Events();
+    TemporalSceneStamp temporal;
+    temporal.world=reinterpret_cast<uintptr_t>(&world);
+    temporal.simulationFrame=world.Frame();
+    temporal.camera={world.GameMode(),events.mode,events.scene,events.variant,
+                     events.camera.camId,events.camera.activeCtx,events.camera.modeCur,events.camera.subCur};
+    renderer.SetTemporalScene(temporal);
+    renderer.SetCinematicEffectsAllowed(world.GameMode()==6&&world.Hud().skippable&&!world.Hud().canShoot&&!world.Hud().paused);
     view = cam.view;
     for (int k = 0; k < 3; ++k) pos[k] = cam.pos[k];
     pitch = cam.pitch;
@@ -418,6 +429,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     skinned_.clear();
     if (skinDefs_.empty()) skinDefs_ = game::SkinDefsByModel(assets_->Exe());
     std::map<int, game::Model*> waved;  // models 0x1731..0x1734 with this frame's vertex wave
+    std::map<MotionIdentity,uint32_t> motionOccurrences;
     for (const game::WorldDraw& d : drawsOverride ? *drawsOverride : world.Draws()) {
         auto it = worldModels_.find(d.model);
         if (it == worldModels_.end()) {
@@ -431,10 +443,23 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         }
         if (it->second.model.meshes.empty()) continue;
         ModelRenderer::SceneItem si;
+        // Task serial + model/node/role identify actual submissions; an unrelated
+        // blinking sprite or a removed enemy never shifts another actor's history.
+        si.motionTracked=true;
+        si.motionIdentity.task=d.task; si.motionIdentity.model=static_cast<uint32_t>(d.model);
+        si.motionIdentity.node=static_cast<uint32_t>(d.node);
+        si.motionIdentity.role=(d.viewSpace?1u:0u)|(d.alt?2u:0u)|(d.cullFlip?4u:0u)|(static_cast<uint32_t>(d.drawMode)<<8);
+        si.motionIdentity.occurrence=motionOccurrences[si.motionIdentity]++;
+        si.motionReactive=d.envMap || d.uvScroll>=0;
+        // Sky_Task 0x004132D0, camera overlays, authored special shadows and
+        // effect-priority models must not become solid environmental occluders.
+        si.shadowCaster=!d.viewSpace && d.fn!=0x004132D0 && !d.cullFlip && d.drawMode<=8;
         si.model = &it->second.model;
         si.polName = it->second.polName;
         // viewSpace draws hand over the model-view matrix: world = model-view * camera matrix (inverse view).
         game::Mat4 mv = d.world;
+        if(d.viewSpace&&d.model==0x93E&&ViewportXScale(viewportAspect_)!=1.f)
+            for(int row=0;row<4;++row)mv.m[row*4]/=ViewportXScale(viewportAspect_);
         if (d.viewSpace && d.model == 0x93E && d.alpha >= 0 && mv.m[14] < 0 && mv.m[14] > -0.8f) {
             // nearer than the port's fixed near plane (0.8): the original moves its own near plane for such draws (the
             // pause overlay: 1e-5 by 0x004194C0). Scaling about the eye keeps the projected image: z to -1.
@@ -573,6 +598,10 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         items.push_back(si);
         itemIds_.push_back(d.model);
     }
+    // Simulation matrices, input rays, source models and materials remain
+    // current. Only the optional render copies/camera use the completed pair.
+    if (drawsOverride || world.Hud().paused) renderPose_.Reset();
+    else renderPose_.Apply(items, temporal, cam.inverse, &view, pos);
     renderer.SetScene(*assets_, items);
     // Proj_Setup 0x004184C0: the projection translated by the centre 0x009C7300 / 0x009C7304 (post-projection, row
     // vectors: x_clip += dx * w)
@@ -582,6 +611,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     shift.m[12] = cx * 0.0031250000465661287f - 1.0f;  // 0x004ED1DC
     shift.m[13] = 1.0f - cy * 0.004166666883975267f;   // 0x004ED1D8
     projection = game::DeviceView() * game::DeviceProjection() * shift;
+    projection = HorPlusProjection(projection,viewportAspect_);
     return view * projection;
 }
 
@@ -687,6 +717,8 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
         const float zA = zNear == 0.8f ? 1.0001f : 8000.8f / (8000.8f - zNear);
         const float zB = zNear == 0.8f ? -0.80008f : -zNear * zA;
         game::SpriteQuad(it.rec, s.texture->LogicalWidth(), s.texture->LogicalHeight(), zA, zB, s.v);  // the game's size (asset packs resize)
+        if(ViewportXScale(viewportAspect_)!=1.f)
+            for(auto& v:s.v)v.x=CenteredViewportX(v.x,viewportAspect_);
         s.isp = game::SpriteIsp(it.rec);
         s.key = it.rec.key | 0xF;  // list priority 0x007E78B8 (0xF in every captured list)
         s.depth = it.rec.depth;
@@ -696,5 +728,7 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
     }
     return out;
 }
+
+void Scene::SetViewportAspect(float aspect) {viewportAspect_=ViewportAspect(aspect);}
 
 }  // namespace port

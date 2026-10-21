@@ -15,6 +15,7 @@
 #include "audio/xaudio_backend.h"
 #include "input/raw_input_guns.h"
 #include "render/d3d11_device.h"
+#include "render/d3d12_device.h"
 #endif
 #ifdef HOTD2_HAVE_SDL_GPU
 #include "render/sdl_gpu_device.h"
@@ -32,6 +33,7 @@ Renderer DefaultRenderer() {
 
 bool ParseRenderer(const std::string& s, Renderer* out) {
     if (s == "d3d11") *out = Renderer::D3D11;
+    else if (s == "d3d12") *out = Renderer::D3D12;
     else if (s == "sdlgpu" || s == "sdl_gpu" || s == "gpu") *out = Renderer::SdlGpu;
     else return false;
     return true;
@@ -53,7 +55,7 @@ bool ParseAudio(const std::string& s, Audio* out) {
     return true;
 }
 
-const char* Name(Renderer r) { return r == Renderer::D3D11 ? "d3d11" : "sdlgpu"; }
+const char* Name(Renderer r) { return r == Renderer::D3D11 ? "d3d11" : r == Renderer::D3D12 ? "d3d12" : "sdlgpu"; }
 
 bool ParseCommonArg(int argc, char** argv, int& i, CommonOptions* o) {
     const std::string a = argv[i];
@@ -69,7 +71,7 @@ bool ParseCommonArg(int argc, char** argv, int& i, CommonOptions* o) {
     return true;
 }
 
-const char* CommonUsage() { return "[--renderer d3d11|sdlgpu] [--input auto|raw|mouse|touch] [--audio-backend sdl|xaudio2]"; }
+const char* CommonUsage() { return "[--renderer d3d11|d3d12|sdlgpu] [--input auto|raw|mouse|touch] [--audio-backend sdl|xaudio2]"; }
 
 namespace {
 
@@ -89,6 +91,7 @@ Key MapKey(SDL_Keycode k) {
     case SDLK_P: return Key::P;
     case SDLK_F8: return Key::F8;
     case SDLK_G: return Key::G;
+    case SDLK_H: return Key::H;
     default: return Key::Unknown;
     }
 }
@@ -193,6 +196,7 @@ Platform::Impl* Platform::Impl::activeImpl = nullptr;
 Platform::Platform() : impl_(std::make_unique<Impl>()) {}
 
 Platform::~Platform() {
+    SetCursorVisible(true);
 #ifdef _WIN32
     if (impl_->sdlVideo) SDL_SetWindowsMessageHook(nullptr, nullptr);
     if (impl_->sdlProc && impl_->hwnd) SetWindowLongPtrW(impl_->hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(impl_->sdlProc));
@@ -370,6 +374,14 @@ input::GunSource* Platform::Guns() {
 }
 input::Lightguns& Platform::Lightguns() { return impl_->lightguns; }
 Input Platform::CurrentInput() const { return impl_->input; }
+bool Platform::SetCursorVisible(bool visible) {
+    if (!impl_->sdlVideo || !impl_->window) return false;
+    if (SDL_CursorVisible() == visible) return true;
+    return visible ? SDL_ShowCursor() : SDL_HideCursor();
+}
+bool Platform::CursorVisible() const {
+    return !impl_->sdlVideo || !impl_->window || SDL_CursorVisible();
+}
 bool Platform::SetInput(Input mode, std::string* error) {
     auto& m=*impl_;
     if(mode!=Input::Mouse && mode!=Input::RawInput){if(error)*error="Choose mouse or light guns";return false;}
@@ -397,12 +409,48 @@ void Platform::ClientSize(int* w, int* h) const {
     if (impl_->window) SDL_GetWindowSize(impl_->window, w, h);
 }
 
-bool Platform::SetFullscreen(bool on) {
+bool Platform::SetFullscreen(bool on, bool exclusive) {
     Impl& m = *impl_;
     if (!m.window) return false;
-    if (!SDL_SetWindowFullscreen(m.window, on)) return false;  // no fullscreen mode set: borderless desktop fullscreen
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(m.window);
+    const SDL_DisplayMode* mode = on && exclusive ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    if (on && exclusive && !mode) return false;
+    if (!SDL_SetWindowFullscreenMode(m.window, mode)) return false;
+    if (!SDL_SetWindowFullscreen(m.window, on)) return false;
     SDL_SyncWindow(m.window);
     return true;
+}
+
+std::vector<Platform::DisplayInfo> Platform::Displays() const {
+    std::vector<DisplayInfo> result;
+    if (!impl_->window) return result;
+    int count = 0;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    if (!ids) return result;
+    for (int i = 0; i < count; ++i) {
+        DisplayInfo info;
+        const char* name = SDL_GetDisplayName(ids[i]);
+        info.name = name ? name : "Display";
+        if (const auto* mode = SDL_GetCurrentDisplayMode(ids[i])) {
+            info.width = mode->w; info.height = mode->h; info.refresh = mode->refresh_rate;
+        }
+        result.push_back(info);
+    }
+    SDL_free(ids);
+    return result;
+}
+
+bool Platform::MoveToDisplay(int index) {
+    if (!impl_->window || index < 0) return false;
+    int count = 0;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    if (!ids) return false;
+    const bool valid = index < count;
+    const bool result = valid && SDL_SetWindowPosition(impl_->window,
+        SDL_WINDOWPOS_CENTERED_DISPLAY(ids[index]), SDL_WINDOWPOS_CENTERED_DISPLAY(ids[index]));
+    SDL_free(ids);
+    if (result) SDL_SyncWindow(impl_->window);
+    return result;
 }
 
 bool Platform::IsFullscreen() const {
@@ -483,6 +531,15 @@ std::unique_ptr<port::GpuDevice> Platform::CreateGpu(Renderer r, int width, int 
         return port::CreateD3D11Device(d, error);
 #else
         if (error) *error = "the D3D11 renderer is only available on Windows";
+        return nullptr;
+#endif
+    }
+    if (r == Renderer::D3D12) {
+#ifdef _WIN32
+        d.nativeWindow = m.hwnd;
+        return port::CreateD3D12Device(d, error);
+#else
+        if (error) *error = "the D3D12 renderer is only available on Windows";
         return nullptr;
 #endif
     }

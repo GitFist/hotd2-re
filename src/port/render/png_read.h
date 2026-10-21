@@ -18,6 +18,10 @@ struct PngImage {
 
 bool ReadPng(const uint8_t* data, size_t size, PngImage& out, std::string* error = nullptr);
 bool ReadPngFile(const std::string& path, PngImage& out, std::string* error = nullptr);
+// Menu previews decode unselected third-party art without allowing the compressed
+// stream to expand past its declared raster. The RGBA output must also fit this
+// explicit byte budget. The ordinary asset loader keeps its existing behavior.
+bool ReadPngLimited(const uint8_t* data, size_t size, size_t maxRgbaBytes, PngImage& out, std::string* error = nullptr);
 
 // zlib stream (2-byte header, deflate data, adler32 ignored) -> bytes. Returns false on malformed input. sizeHint:
 // the expected output size (the buffer is sized to it ahead; 0 = unknown).

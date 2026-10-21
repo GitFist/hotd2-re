@@ -3,6 +3,7 @@
 // build\scene_capture_modes_boss0.txt (stage end 2804, name entry 2805..6523, the select again from 6524).
 
 #include "game/world_modes.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -18,6 +19,10 @@ bool ModesStageEnd(World::Impl& w) {
         return true;
     }
     ModesState& m = *w.modes;
+    // The original fight timer has stopped and bossIndex still identifies the fight
+    // just won. A rush records only after Emperor, using its accumulated timer.
+    if(m.a2bbc==0||(m.a2bbc==1&&m.bossIndex==8))
+        PortLeaderboardComplete(w,m.a2bbc==1?12:3+m.bossIndex,m.bossTime,m.bossDiff);
     if (m.a2bbc == 0 || (m.a2bbc == 1 && m.bossIndex == 8)) {
         if (BossRankCheck(w, 0) != -1 || BossRankCheck(w, 1) != -1) {
             if (m.a2bbc == 1) ++m.bossIndex;

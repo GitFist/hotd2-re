@@ -1629,7 +1629,14 @@ void World::SetPortVolumes(const int v[3]) {
         if (impl_->modes && impl_->modes->optPortRows) impl_->modes->optVolume[k] = v[k];
     }
 }
-void World::SetPortModernMenu(bool on) { impl_->cfg.portModernMenu = on; }
+void World::SetPortModernMenu(bool on) {
+    auto& w=*impl_;
+    w.cfg.portModernMenu=on;
+    if(w.gameMode==4) {
+        for(size_t i=0;i<std::min<size_t>(6,w.front.screens.size());++i)w.front.screens[i].visible=!on;
+        w.front.nightShiftPage=w.front.nightShiftRow=0;
+    }
+}
 void World::RequestTitle() {
     Impl& w = *impl_;
     w.paused = false;  // 0x009A1A00 (the original never leaves a game while paused)

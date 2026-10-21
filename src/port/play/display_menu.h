@@ -6,9 +6,8 @@
 // (WorldHud::portDisplayRequests). Pure state machine (tests/pause_menu_test.cpp); the caller applies the settings
 // (notes/agents/display.md): window / fullscreen through the platform layer, the present mapping and the internal
 // resolution through the GPU device.
-//   Rows: Fullscreen (On / Off), Window Scale (1x / 2x / 3x of 640x480, Fit = the usable desktop; windowed only),
-//   Aspect (4:3 pillarboxed / Stretch), CRT Filter (Off, Scanlines 1..3), Render Scale (1x..4x: the 3D's internal
-//   resolution; the 2D stays in 640x480 space), Back.
+//   Settings are grouped once by effect: Display, Image, Lighting, Performance, Packs, Color, Resolution, CRT and
+//   Advanced. Display Mode combines Windowed / Borderless / exclusive Fullscreen; saved settings retain their keys.
 //   Keyboard: Up / Down move, Left / Right change a value, Enter / Space on a value = next value, on Back = close,
 //   Backspace = close. Pointer: aiming at a row highlights it; trigger = next value / Back, reload = previous value /
 //   close. The start button is left to the caller (the pause menu resumes with it).
@@ -18,22 +17,41 @@
 #include <vector>
 
 #include "game/exe_image.h"
-#include "game/sprite.h"
 #include "game/menu_pointer.h"
+#include "game/sprite.h"
+#include "game/world.h"
+#include "port/render/graphics_options.h"
 
 namespace play {
 
 struct DisplaySettings {
     bool fullscreen = false;
-    int windowScale = 2;   // 1..3: that multiple of 640x480 as the windowed client size; 0: fit the usable desktop
-    bool stretch = false;  // false: the 4:3 image centred with bars; true: stretched to the window
-    bool redBlood = false; // local cosmetic choice: false = green, true = red
-    int crt = 0;           // 0 off, 1..3 scanline strength
-    int renderScale = 2;   // internal resolution of the frame: 1..4 x 640x480 (1 = the original; default 2 = the 2x window's
-                           // own pixels, at least as sharp as the earlier 960x720 default)
-    bool operator==(const DisplaySettings& o) const {
-        return fullscreen == o.fullscreen && windowScale == o.windowScale && stretch == o.stretch && crt == o.crt && renderScale == o.renderScale && redBlood == o.redBlood;
-    }
+    bool exclusiveFullscreen = false;
+    int windowScale = 2;    // 1..3: that multiple of 640x480 as the windowed client size; 0: fit the usable desktop
+    bool stretch = false;   // false: the 4:3 image centred with bars; true: stretched to the window
+    int viewport = 0;       // 0 original, 1 16:9, 2 21:9, 3 32:9, 4 current window. Wider framing is experimental.
+    bool redBlood = false;  // local cosmetic choice: false = green, true = red
+    int crt = 0;            // 0 off, 1..3 scanline strength
+    int renderScale = 2;    // internal resolution of the frame: 1..4 x 640x480 (1 = the original; default 2 = the 2x window's
+                            // own pixels, at least as sharp as the earlier 960x720 default)
+    port::GraphicsOptions graphics;
+    bool integerScale = false;
+    int frameCap = 60;  // presentation only: 0,30,60,120,144,165,240. Simulation remains 60 Hz.
+    int monitor = 0;    // 0 current display, otherwise one-based enumerated monitor; missing displays fall back safely
+    bool statistics = false;
+    bool nightShift = true;
+    int menuOpacity = 65;  // 25..100 percent strength of menu backgrounds; text remains fully readable
+    bool showCrosshairs = true;  // local gameplay sights for both players; menu/calibration pointers stay visible
+    int resolutionMode = 0;  // authored scale, match output, SSAA150%, SSAA200%
+    bool dynamicResolution = false;
+    int gpuBudgetFps = 60;
+    int renderer = 0;                  // D3D11, SDL GPU, native D3D12; restart required
+    int temporalUpscaler = 0;          // Off, DLSS, FSR2, FSR3, XeSS; restart required
+    int temporalQuality = 0;           // Quality, Balanced, Performance, native AA
+    int frameGeneration = 0;           // optional DLSS FG, native D3D12; restart required
+    bool renderInterpolation = false;  // render-only intermediate poses, up to one simulation tick of visual delay
+    bool rayShadows = false;
+    bool operator==(const DisplaySettings&) const = default;
     bool operator!=(const DisplaySettings& o) const { return !(*this == o); }
 };
 
@@ -46,15 +64,97 @@ struct MenuInput {
     bool trigger = false;  // the device's trigger went down this frame
     bool reload = false;   // the reload button went down
     bool start = false;    // the start button went down (the original's resume)
+    bool preview = false;  // local H shortcut: hide/show the graphics UI without resuming the game
 };
 
 class DisplayMenu {
-public:
-    enum Row { kFullscreen = 0, kScale, kAspect, kCrt, kRender, kBlood, kBack, kRowCount };
+   public:
+    enum Page { kDisplay = 0, kClarity, kLighting, kPerformance, kPacks, kColor, kResolution, kRetro, kTemporal, kPageCount };
+    enum Row {
+        kFullscreen = 0,
+        kScale,
+        kAspect,
+        kCrt,
+        kRender,
+        kBlood,
+        kBack,
+        kInteger,
+        kPreset,
+        kMsaa,
+        kPostAA,
+        kAniso,
+        kFiltering,
+        kDownsample,
+        kSharpen,
+        kCoverage,
+        kPerPixel,
+        kBloom,
+        kBrightness,
+        kGamma,
+        kContrast,
+        kSaturation,
+        kColorGrade,
+        kVsync,
+        kFrameCap,
+        kMonitor,
+        kStatistics,
+        kMenuStyle,
+        kPack,
+        kTearing,
+        kLowLatency,
+        kUpscaler,
+        kViewport,
+        kSoftParticles,
+        kMaterialMaps,
+        kAmbientOcclusion,
+        kHdrOutput,
+        kPaperWhite,
+        kTemporalAA,
+        kShadowMaps,
+        kFog,
+        kReflections,
+        kCinematicFocus,
+        kResolutionMode,
+        kDynamicResolution,
+        kGpuBudget,
+        kCrtMask,
+        kCrtCurvature,
+        kCrtGlow,
+        kCalibration,
+        kRenderer,
+        kTemporalUpscaler,
+        kTemporalQuality,
+        kFrameGeneration,
+        kMeshRefinement,
+        kRenderInterpolation,
+        kIndependentUi,
+        kRayShadows,
+        kMenuOpacity,
+        kResetGraphics,
+        kCrosshairs,
+        kRowCount
+    };
+
+    struct PackChoice {
+        std::string name, path, detail;
+        bool valid = true;
+    };
 
     void Open();
-    void Close() { open_ = false; }
+    void Close() {
+        open_ = false;
+        uiHidden_ = false;
+        resetConfirm_ = false;
+    }
     bool IsOpen() const { return open_; }
+    bool UiHidden() const { return uiHidden_; }
+    bool ResetConfirming() const { return resetConfirm_; }
+    bool ResetSelected() const { return resetYes_; }
+    bool TakeGraphicsReset() {
+        const bool reset = graphicsReset_;
+        graphicsReset_ = false;
+        return reset;
+    }
 
     // One frame of the open page: edits d in place; sounds: SE ids to play (0xA9 cursor, 0x121A9 confirm). Returns true
     // when the page was closed (Back / back button).
@@ -63,21 +163,81 @@ public:
     // overScene: over the paused game instead of the tiled background (play.exe: the settings show live): no background
     // tiles, and the sprites sit at depth 0.0002 with depth func "always", in front of the pause overlay 0x93E (0.0005).
     void Sprites(const game::ExeImage& exe, const DisplaySettings& d, std::vector<game::SpriteDef>& out, bool overScene = false) const;
+    void ModernHud(const DisplaySettings& d, game::WorldHud& hud) const;
 
     int Cursor() const { return cursor_; }
+    Page CurrentPage() const { return page_; }
+    void SetPage(Page page);
+    void SetMonitors(std::vector<std::string> names) { monitors_ = std::move(names); }
+    void SetPresentationCapabilities(bool tearing, bool lowLatency, bool hdr = false, bool taa = false, bool cmaa = false) {
+        caps_.tearing = tearing;
+        caps_.lowLatency = lowLatency;
+        caps_.hdrOutput = hdr;
+        caps_.temporalAA = taa;
+        caps_.cmaa2 = cmaa;
+    }
+    void SetGraphicsCapabilities(const port::GraphicsCapabilities& caps) { caps_ = caps; }
+    void SetNightShiftActive(bool active) { nightShiftActive_ = active; }
+    void SetCurvatureAvailable(bool available) { curvatureAvailable_ = available; }
+    void SetTemporalInputActive(bool active) { temporalInputActive_ = active; }
+    void SetRaytracingAvailable(bool available) { raytracingAvailable_ = available; }
+    void SetFrameGenerationActive(bool active) { frameGenerationActive_ = active; }
+    void SetActivePackFeatures(size_t materialMaps, size_t refinedModels) {
+        activeMaterialMaps_ = materialMaps;
+        activeRefinedModels_ = refinedModels;
+    }
+    void SetActivePackName(std::string name) { activePackName_ = std::move(name); }
+    std::string RowHelp(const DisplaySettings& d, int row) const;
+    void SetRenderDimensions(int width, int height) {
+        renderWidth_ = width;
+        renderHeight_ = height;
+    }
+    int CalibrationPattern() const { return calibration_; }
+    void SetPacks(std::vector<PackChoice> packs, const std::string& currentPath);
+    bool TakePackChange(std::string* path);
+    std::string SelectedPackPath() const { return packs_.empty() ? std::string{} : packs_[pack_].path; }
+    void SetStatus(const std::string& status) { status_ = status; }
 
     // Layout in cells (16 x 24 px); RowAt: the row under a pointer at game pixel (px, py), -1 = none.
-    static float RowY(int row);
-    static int RowAt(float px, float py);
+    static float RowY(int row, Page page = kDisplay);
+    static int RowAt(float px, float py, Page page = kDisplay);
+    static const std::vector<int>& Rows(Page page);
+    static int TabAt(float px, float py);
+    static float TabLeft(int page);
+    static float TabWidth(int page);
+    static bool PreviewButtonAt(float x, float y) { return x >= 478 && x < 614 && y >= 427 && y < 464; }
+    // Confirmation choices: 1 resets, 0 cancels, -1 is outside either button.
+    static int ResetChoiceAt(float x, float y);
     static const char* Label(int row);
     static std::string ValueText(const DisplaySettings& d, int row);
     // Cycles the value of a row by d steps (wrapping): 1x / 2x / 3x / Fit, Off / On, ...; no-op for Back.
     static void Step(DisplaySettings& d, int row, int delta);
+    static void ApplyPreset(DisplaySettings& d, int preset, const port::GraphicsCapabilities* caps = nullptr);
+    static std::string PresetName(const DisplaySettings& d, const port::GraphicsCapabilities* caps = nullptr);
 
-private:
+   private:
     bool open_ = false;
+    bool uiHidden_ = false;
+    bool resetConfirm_ = false, resetYes_ = false, graphicsReset_ = false;
+    bool nightShiftActive_ = true;
     int cursor_ = kFullscreen;
+    Page page_ = kDisplay;
     game::MenuPointerFocus pointer_;
+    std::vector<std::string> monitors_;
+    std::vector<PackChoice> packs_;
+    int pack_ = 0;
+    bool packChanged_ = false;
+    std::string status_;
+    bool Disabled(int row, const DisplaySettings&) const;
+    std::string ShownValue(const DisplaySettings&, int row) const;
+    port::GraphicsCapabilities caps_;
+    bool curvatureAvailable_ = true;
+    bool temporalInputActive_ = false;
+    bool raytracingAvailable_ = false;
+    bool frameGenerationActive_ = false;
+    size_t activeMaterialMaps_ = 0, activeRefinedModels_ = 0;
+    std::string activePackName_ = "Original";
+    int renderWidth_ = 0, renderHeight_ = 0, calibration_ = -1;
 };
 
 }  // namespace play

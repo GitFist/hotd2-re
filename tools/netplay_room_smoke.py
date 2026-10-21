@@ -47,7 +47,21 @@ def verify_output(output, rejoin=False):
     return hashes[0]
 
 
-def run(exe, relay=False, endpoint=None, rejoin=False):
+def night_shift_script(host):
+    """Use actual Home Host/Browse actions, then aim at the explicit lobby rows."""
+    x,y=(450/640,298/480) if host else (450/640,338/480)
+    events=[(700,.5,.25,4),(712,.5,.25,0),(800,x,y,0),(900,x,y,1),(904,x,y,0)]
+    if host:
+        events += [(1000,.5,200/480,0),(1080,.5,200/480,1),(1084,.5,200/480,0)]
+    else:
+        events += [(1100,.5,104/480,0),(1200,.5,104/480,1),(1204,.5,104/480,0)]
+    events += [(1400,.5,.25,0)]
+    for frame in range(2600,3000,24):
+        events += [(frame,.5,.25,2 if frame%120==20 else 1),(frame+4,.5,.25,0)]
+    return ''.join(f'{frame} {player} {x} {y} {buttons}\n' for frame,x,y,buttons in events for player in (0,1))
+
+
+def run(exe, relay=False, endpoint=None, rejoin=False, night_shift=False):
     output = Path(tempfile.mkdtemp(prefix='hotd2_room_'))
     print(f'Room lifecycle test: {output}', flush=True)
     server = lobby.Server('127.0.0.1', 0)
@@ -71,12 +85,19 @@ def run(exe, relay=False, endpoint=None, rejoin=False):
              (3300, 4096), (3420, 32), (3440, 32), (3470, 8), (3980, 4096),
              (4040, 32), (4060, 32), (4080, 32), (4100, 8), (4600, 4096), (4700, 8)]
     guest = [(1000, 32), (1020, 8), (2280, 4096), (2400, 4096)]
+    if night_shift:
+        host[0]=(1500,8)
+        # Return is after both existing device-setup rows in the current pause
+        # page. Keep this fixture's navigation aligned with the actual menu.
+        host += [(2440,32),(2450,32)]
+        host.sort()
+        guest=guest[2:]
     try:
         for role, events in (('host', host), ('join', guest)):
             folder = output / role
             folder.mkdir()
             inputs = folder / 'input.txt'
-            inputs.write_text(script('public', role == 'host'))
+            inputs.write_text(night_shift_script(role=='host') if night_shift else script('public', role == 'host'))
             keys = folder / 'keys.txt'
             keys.write_text(''.join(f'{frame} {bits}\n{frame + 2} 0\n' for frame, bits in events))
             env = {k: v for k, v in os.environ.items() if not k.startswith('HOTD2_')}
@@ -132,5 +153,6 @@ if __name__ == '__main__':
     ap.add_argument('--relay', action='store_true')
     ap.add_argument('--lobby')
     ap.add_argument('--rejoin', action='store_true', help='crash P2 after returning to the room, then rejoin during a later mode')
+    ap.add_argument('--night-shift', action='store_true', help='use the current Home Host/Browse buttons instead of the legacy menu script')
     args = ap.parse_args()
-    run(args.exe.resolve(), args.relay, args.lobby, args.rejoin)
+    run(args.exe.resolve(), args.relay, args.lobby, args.rejoin, args.night_shift)

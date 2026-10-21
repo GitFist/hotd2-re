@@ -1199,6 +1199,18 @@ void TaskHorde(Task&) {
 
 bool HordeActive(World::Impl& w) { return w.horde != nullptr; }
 
+HordeRunSnapshot World::PortHordeRun() const {
+    auto& w=*impl_;
+    const HordeState* h=Ptr(w);
+    HordeRunSnapshot r;
+    if(!h||w.gameMode!=6)return r;
+    r.active=h->phase>0; r.debug=h->debug;
+    r.rounds=std::max(0,h->round-(h->phase==2?0:1));
+    r.score=int(std::min<int64_t>(2000000000,int64_t(std::max(0,w.player[0].score))+std::max(0,w.player[1].score)));
+    r.players=std::max(w.players,w.portRunParticipants); r.difficulty=w.cfg.difficulty;
+    return r;
+}
+
 bool HordeSpecialWeapon(World::Impl& w, int p) {
     HordeState* h = Ptr(w);
     return h && p >= 0 && p < 2 && h->weapon[p] != 0;

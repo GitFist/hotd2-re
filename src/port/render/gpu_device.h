@@ -15,6 +15,13 @@
 
 #include "game/model.h"
 #include "game/sprite.h"
+#include "graphics_options.h"
+#include "graphics_warmup.h"
+#include "temporal_frame.h"
+#include "gpu_timing.h"
+#include "temporal_camera.h"
+#include "shadow_map.h"
+#include "scene_effects.h"
 
 namespace port {
 
@@ -65,6 +72,12 @@ struct ModelConstants {
     // per local light, 5 float4: pos.xyz range | dir.xyz falloff | diffuse.rgb type (1 point, 2 spot) |
     // att0 att1 att2 - | cos(theta / 2) cos(phi / 2) - -
     float local[kMaxLocalLights * 5][4];
+    // Optional modern lighting, deliberately zero for native captures and alpha effects.
+    float lightingOptions[4]; // x: per-pixel normalized lighting on opaque models
+    float sampling[4];        // x: retain authored point magnification with AF; yz: U/V address modes
+    float depthEffects[4];    // x: soft fade world distance; yz: 1/target size; w: backend opaque-depth ready
+    float depthProjection[4]; // reversed projection A/B/C/D: m11-m10, m15-m14, m11, m15
+    float materialParams[4];  // x: opted-in authored tangent normal/roughness map
 };
 
 // Constant buffer of the sprite pipeline (cbuffer Sprite).
@@ -79,8 +92,17 @@ struct GpuDraw {
     Stream stream = Stream::Static;
     uint32_t first = 0, count = 0;        // vertices
     GpuTexture texture = 0;
+    GpuTexture normalRoughnessTexture = 0; // optional RGBA8 tangent normal RGB / perceptual roughness A
     GpuState state;
     uint32_t constants = 0;               // index into GpuDrawList::model / ::sprite
+    bool reactive = false;               // scene alpha/animated texture; never a claim of opaque correspondence
+    bool hud = false;                    // explicit screen UI, deferred only by opted-in scene processing
+};
+
+struct GpuMotionDraw {
+    uint32_t first = 0, count = 0, constants = 0;
+    GpuTexture texture = 0;
+    GpuState state;
 };
 
 // One batch of draws into the current frame's target, executed in order with viewport (0, 0, width, height).
@@ -89,6 +111,15 @@ struct GpuDrawList {
     std::vector<GpuDraw> draws;
     std::vector<ModelConstants> model;
     std::vector<SpriteConstants> sprite;
+    uint32_t opaqueDrawCount = 0; // initial pass-0 models; depth prepass excludes mixed pass-1 and HUD
+    TemporalFrameInfo temporal;
+    TemporalCameraInfo temporalCamera;
+    std::vector<MotionVertex> motionVertices;
+    std::vector<MotionConstants> motionConstants;
+    std::vector<GpuMotionDraw> motionDraws; // opaque depth-writing models only; no HUD/smoke
+    std::vector<GpuDraw> shadowCasters; // optional unculled opaque models, constants index into ::model
+    ShadowMapFrame shadowMap;
+    SceneEffectsFrame sceneEffects;
 };
 
 struct GpuDeviceDesc {
@@ -129,12 +160,54 @@ public:
     // times); EndFrame presents (window) or finishes (off-screen).
     virtual bool BeginFrame(const float clear[4]) = 0;
     virtual void Submit(const GpuDrawList& list) = 0;
+    // Optional temporal/native SDK boundary, after scene effects and before HUD.
+    // Default rendering keeps the original mixed pass-1 order exactly.
+    virtual bool RequiresSceneProcessing() const { return false; }
+    virtual bool NeedsShadowCasters() const { return false; }
+    virtual bool ProcessScene(std::string* error = nullptr) { return true; }
+    // Diagnostic metadata (RGBA float: previous-current pixels,previous depth,valid).
+    virtual bool ReadMotionPixels(std::vector<float>* rgba) { return false; }
+    virtual bool SetGpuTimingEnabled(bool enabled,std::string* error=nullptr) {
+        if(enabled&&error)*error="GPU timestamps are unavailable on this renderer";return !enabled;
+    }
+    virtual bool PollGpuTiming(GpuTimingSample* sample) { return false; }
     virtual void EndFrame() = 0;
     // Off-screen only, between Submit and EndFrame: the target's pixels as RGBA8, top row first.
     virtual bool ReadPixels(std::vector<uint8_t>* rgba) = 0;
+    // Off-screen presentation capture at a specified output size, including the actual
+    // spatial upscaler/final pass. Existing ReadPixels keeps its internal-size contract.
+    virtual bool ReadPresentation(int width, int height, std::vector<uint8_t>* rgba) { return false; }
+    // Diagnostic FP16 presentation readback, decoded to float scRGB (1.0 = 80 nits).
+    // Does not enable HDR on a display and is available on an off-screen device.
+    virtual bool ReadLinearPresentation(int width, int height, std::vector<float>* rgba) { return false; }
 
     virtual int TargetWidth() const = 0;
     virtual int TargetHeight() const = 0;
+    // After ProcessScene, explicit HUD may use a separate output-resolution
+    // target. Scene rendering/motion and TargetWidth/Height stay at input size.
+    virtual int HudTargetWidth() const { return TargetWidth(); }
+    virtual int HudTargetHeight() const { return TargetHeight(); }
+    virtual const std::string& HudCompositionError() const { static const std::string empty;return empty; }
+
+    // Between frames. Invalid or unsupported options fail without changing live targets/options.
+    // A successful call reports the actual accepted state (including present-mode fallback).
+    virtual bool ConfigureGraphics(const GraphicsOptions& options, std::string* error = nullptr) {
+        if (error) *error = "This renderer does not support configurable graphics";
+        return false;
+    }
+    virtual const GraphicsOptions& EffectiveGraphics() const {
+        static const GraphicsOptions defaults;
+        return defaults;
+    }
+    virtual const GraphicsCapabilities& GetGraphicsCapabilities() const {
+        static const GraphicsCapabilities none;
+        return none;
+    }
+    // Between frames: create a bounded set of real common states/PSOs for the
+    // accepted options. Never draws, dispatches, or modifies simulation state.
+    virtual bool WarmupGraphics(GraphicsWarmupStats* stats = nullptr,std::string* error = nullptr) {
+        if(error)*error="Graphics state warmup is unavailable on this renderer";return false;
+    }
 
     // Window devices (no-ops off-screen): the present mapping, the render target's size (internal resolution;
     // ignored with followWindowSize), and the window's current back-buffer size in pixels (false off-screen).

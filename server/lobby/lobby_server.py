@@ -33,11 +33,20 @@ Protocol (little-endian; every datagram starts with "H2LB", version 1, type):
 """
 
 import argparse
+import importlib.util
 import logging
+import os
+from pathlib import Path
 import secrets
 import socket
 import struct
 import time
+
+# Also supports the existing tests loading this file directly with importlib.
+_rankings_spec = importlib.util.spec_from_file_location("hotd2_rankings", Path(__file__).with_name("rankings.py"))
+_rankings_module = importlib.util.module_from_spec(_rankings_spec)
+_rankings_spec.loader.exec_module(_rankings_module)
+Rankings = _rankings_module.Rankings
 
 MAGIC = b"H2LB"
 VERSION = 1
@@ -90,7 +99,7 @@ def unpack_endpoint(data, off):
 
 
 class Server:
-    def __init__(self, bind, port):
+    def __init__(self, bind, port, rankings_db=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((bind, port))
         self.sock.settimeout(1.0)
@@ -98,6 +107,7 @@ class Server:
         self.next_id = 1
         self.rate_limits = {}
         self.log = logging.getLogger("lobby")
+        self.rankings = Rankings(rankings_db)
 
     def header(self, t):
         return MAGIC + bytes([VERSION, t])
@@ -185,6 +195,11 @@ class Server:
                 del self.rooms[room.id]
 
     def handle(self, data, addr):
+        if data[:5] == b"H2RK\x01":
+            response = self.rankings.handle(data, addr)
+            if response:
+                self.send(response, addr)
+            return
         if len(data) < 6 or data[:4] != MAGIC or data[4] != VERSION:
             return
         if data[5] == 6:
@@ -322,9 +337,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=27020)
     ap.add_argument("--bind", default="0.0.0.0")
+    ap.add_argument("--rankings-db", default=os.environ.get("RANKINGS_DB"), help="Optional persistent SQLite path; absent means shared rankings disabled")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    Server(a.bind, a.port).run()
+    Server(a.bind, a.port, a.rankings_db).run()
 
 
 if __name__ == "__main__":

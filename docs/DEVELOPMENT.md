@@ -72,6 +72,39 @@ cmake --build build --config Release --target pause_menu_test network_room_test 
 
 Tests that load levels require the game data described above. Some comparison tests also require separately captured reference data.
 
+The Night Shift preview uses the same theme for Home, Game Options, graphics and
+pause/return confirmation. Graphics Options > Display > Menu Opacity controls
+background strength (25–100%) without dimming text. The persistent Hide UI button
+or **H** reveals the scene; **H**, Show UI, Back/Reload, Enter or Start restores
+the page. Restoring a hidden page keeps the game paused and preserves selection.
+Hidden navigation and shots cannot adjust a setting. Settings marked restart
+required still apply on the next launch.
+
+Display > Reset All Graphics restores the display, image, lighting, color,
+performance and advanced renderer defaults after confirmation. Cancel is selected
+first. The reset is saved immediately; renderer, vendor upscaling and frame
+generation finish changing on restart. The menu theme, selected content pack,
+audio, controls, game settings and saves are preserved.
+
+Graphics Options > Image > Gameplay Crosshairs hides both players' gameplay sights
+on this client. It applies immediately and is saved with graphics preferences.
+Menu, Horde shop, name-entry and calibration aiming markers remain visible.
+Shooting, aiming, hit detection and network input are unchanged. Image presets
+preserve this preference; Reset All Graphics restores the default On setting.
+
+Room cancellation and Home discovery have loopback-only integration checks:
+
+```powershell
+cmake --build build --config Release --target lobby_lifecycle_test home_lobby_preview_test night_shift_test
+python tests/lobby_lifecycle_integration.py build/Release/lobby_lifecycle_test.exe
+python tests/home_lobby_preview_integration.py build/Release/home_lobby_preview_test.exe game
+.\build\Release\night_shift_test.exe game
+```
+
+The lifecycle fixture injects delayed CREATED/LIST replies and lost LEAVE packets,
+then checks cancellation and bounded connection errors against the existing server
+protocol. It never contacts the public service.
+
 The startup update check has an offline test suite:
 
 ```powershell

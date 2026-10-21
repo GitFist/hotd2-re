@@ -164,7 +164,44 @@ struct WorldEventOp {
 // Per-frame player state for the HUD (the gameplay HUD sprites are drawn by the port's HUD code from these values;
 // the original draws them inside the player task 0x00413E90: crosshair 0x004169C0, ammo 0x004177D0, lives
 // 0x004174A0, continue / game-over prompts 0x00414280 / 0x00460530). Filled at the end of StartStage() / Step().
+// Port-only local Horde results. Kept apart from the original twelve ranking tables.
+struct HordeLeaderboardEntry {
+    int rounds = 0, score = 0, players = 1, difficulty = 2;
+};
+struct HordeRunSnapshot {
+    bool active = false, debug = false;
+    int rounds = 0, score = 0, players = 0, difficulty = 2;
+};
+struct SharedLeaderboardEntry {
+    std::string name;
+    int score = 0, rounds = 0, difficulty = 2, players = 1;
+};
+struct LeaderboardRunSnapshot {
+    uint64_t sequence = 0;
+    int table = -1, score = 0, rounds = 0, difficulty = 0, players = 1;
+    int playerScores[2] = {};
+    bool eligible = false;
+};
+struct PortHomeRoom {
+    uint32_t id = 0;
+    bool privateRoom = false, unlimited = true;
+    uint32_t build = 0;
+};
+
 struct WorldHud {
+    // Native Night Shift front end (640 x 480 logical coordinates). No live service data here.
+    struct MenuPanel { float left, top, right, bottom; uint32_t color; };
+    std::vector<MenuPanel> menuPanels;
+    struct MenuText { float x, y; std::string text; float scale; uint32_t color; };
+    std::vector<MenuText> menuText;
+    int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 Publish initials, 5 Options, 6 Online, 7 Game Options, 8 Pause
+    int nightShiftRow = 0;
+    int portLobbyRequests = 0, portLobbyAction = 0;  // existing network pages: 1 Create, 2 Browse, 3 Peer
+    uint32_t portLobbyRoom = 0;  // action 4: a real waiting room selected on Home
+    int portLeaderboardRequests = 0, portLeaderboardTable = 0;
+    bool portLeaderboardShared = false;
+    int portLeaderboardPublishRequests = 0;
+    std::string portLeaderboardInitials = "AMS";
     int letterbox = 0;        // 0x009CA0F4 after the letterbox task (2 open; 1 opening; 4 bars)
     bool canShoot = false;    // 0x009C8E00 (letterbox open: shots count, ammo / reload HUD shown)
     int letterboxCounter = 0; // letterbox task +0x50 (0..40 while opening / closing)
@@ -189,6 +226,7 @@ struct WorldHud {
     uint32_t randomizerSeed = 0, randomizerHash = 0;  // port-only lockstep/recovery checks
     bool prototype = false;
     int portLightgunRequests = 0; // opens the local light-gun setup page
+    int portDisplayPage = -1;  // Night Shift: 0 Display, 1 Image, 2 Lighting, 3 System, 4 Packs
     int portWiiRequests = 0; // opens the local native Wii Remote setup page
     int portDisplayRequests = 0;  // port only: the options screen's "Display Settings" row confirmed that many times (play.exe
                                   // shows its display page over the screen while the row count grows)
@@ -387,11 +425,10 @@ struct WorldConfig {
     // (world_scene_select.cpp); the boot logos (SEGA, Empire) each skipped by a trigger / reload / start press
     // (world_front.cpp BootFrame).
     bool portFeatures = false;
-    // Port only, with portFeatures: the modernized mode select (world_front.cpp TaskMenu). The original's cascading
-    // bitmap labels are not shown; the nine entries (Scene Select included) are a left-aligned list in the options
-    // screen's font under the logo, grey / white, and a gun or mouse player aiming at a row moves the cursor there.
-    // play.exe always sets it (the port's FrontScreens in-paints the labels out of the background tiles when it
-    // is on, or shows an asset-pack menu background); false = the original's look, for the exactness tests.
+    // Port only, with portFeatures: Night Shift Home / Play / Practice / Leaderboard,
+    // using the original logo and glyphs with full-row mouse/gun and keyboard input.
+    // play.exe renders a separate silent original attract World behind this menu.
+    // false preserves the original bitmap menu and exactness-test behavior.
     bool portModernMenu = false;
     // A connected online room: host-owned mode selection, retained between games and during rejoin replay.
     bool portNetworkRoom = false;
@@ -435,6 +472,14 @@ public:
     // Port only: WorldConfig::portModernMenu after Boot (the display settings page changed it); the mode select's
     // task reads it every frame.
     void SetPortModernMenu(bool on);
+    void SetPortHordeLeaderboard(const std::vector<HordeLeaderboardEntry>& entries);
+    HordeRunSnapshot PortHordeRun() const;
+    void SetPortSharedLeaderboard(int table, const std::vector<SharedLeaderboardEntry>& entries, const std::string& status);
+    void SetPortLeaderboardPublishable(bool on, const std::string& status = "");
+    void SetPortLeaderboardRecording(bool on);  // port disables this for scripts, replay and debug runs
+    LeaderboardRunSnapshot PortLeaderboardRun() const;
+    // The port supplies only compatible real waiting rooms; at most two are displayed.
+    void SetPortHomeRooms(const std::vector<PortHomeRoom>& rooms, const std::string& status);
     // Test hook (frontend_test --resync): commit game mode `mode` now, as Game_ApplyState would at the end of this
     // frame, with the task serial counter, CRT rand state and demo index the capture shows, so that a mode can be
     // compared on its own after an earlier mode drifted.
