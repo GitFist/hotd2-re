@@ -23,6 +23,11 @@ int main(int argc, char** argv) {
     Check(Release("2026 10 19 W", "v2026.10.19-v").empty(), "older revision is ignored");
     Check(Release("2026 10 19 W", "v2026.10.16-r").empty(), "published release older than development build is ignored");
     Check(Release("2026 10 19 Z", "v2026.10.19-aa") == "v2026.10.19-aa", "aa follows z");
+    Check(Release("2026 10 19 Z", "v2026.10.21-a") == "v2026.10.21-a",
+          "published build Z is offered the Night Shift release on the later date");
+    Check(Release("2026 10 21 A", "v2026.10.21-a").empty(), "current Night Shift build is not offered its own release");
+    Check(Release("2026 10 21 A", "v2026.10.19-z").empty(), "current Night Shift build ignores the previous latest build Z");
+    Check(Release("2026 10 21 A", "v2026.10.21-b") == "v2026.10.21-b", "current Night Shift build still detects a later revision");
     Check(Release("2026 10 19 AA", "v2026.10.19-z").empty(), "z precedes aa");
     Check(Release("2026 10 19 AA", "v2026.10.19-ab") == "v2026.10.19-ab", "multi-letter revisions are ordered");
     Check(Release("2026 10 19 AZ", "v2026.10.19-ba") == "v2026.10.19-ba", "alphabetic revision carries into next prefix");

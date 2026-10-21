@@ -182,8 +182,8 @@ uint32_t WorldHash(const game::World& w) {
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026101906;
-const char* const kBuildName = "2026 10 19 NS64";
+constexpr uint32_t kBuildId = 2026102101;
+const char* const kBuildName = "2026 10 21 A";
 #else
 constexpr uint32_t kBuildId = 2026101905;
 const char* const kBuildName = "2026 10 19 NS32";
