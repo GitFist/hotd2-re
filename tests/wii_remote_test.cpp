@@ -5,6 +5,7 @@
 #include <fstream>
 #include "input/wii_remote.h"
 #include "input/pointer_guns.h"
+#include "game/menu_audio.h"
 #include "play/wii_menu.h"
 #include "play/keyboard.h"
 #include "play/gun_input.h"
@@ -37,6 +38,60 @@ static bool HudTarget(const game::WorldHud& hud, float x, float y) {
             panel.right - panel.left >= 12 && panel.bottom - panel.top <= 8)
             return true;
     return false;
+}
+static void MenuAudio() {
+    auto fake = std::make_unique<Fake>();
+    auto* backend = fake.get();
+    input::WiiRemotes source(nullptr, std::move(fake));
+    source.settings.enabled = true;
+    auto& remote = backend->snapshot.player[0];
+    remote.connected = remote.tracking = true;
+    remote.raw = {.2, .2};
+    source.Update();
+    play::WiiMenu menu;
+    menu.Open();
+    std::vector<uint32_t> sounds;
+    auto cue = [&](uint32_t expected, const char* why) { Check(sounds == std::vector<uint32_t>{expected}, why); sounds.clear(); };
+    auto quiet = [&](const char* why) { Check(sounds.empty(), why); };
+    auto click = [&](int row) {
+        play::MenuInput in;
+        in.pointer = true; in.px = 60; in.py = play::WiiMenu::RowY(row) + 20; in.trigger = true;
+        menu.Update(in, source, &sounds);
+    };
+    play::MenuInput down; down.pressed = 0x20;
+    menu.Update({}, source, &sounds);
+    menu.Update(down, source, &sounds);
+    play::MenuInput hover; hover.pointer = true; hover.px = 60; hover.py = play::WiiMenu::RowY(3) + 20;
+    menu.Update(hover, source, &sounds);
+    quiet("Wii idle, keyboard movement and pointer hover are silent");
+    play::MenuInput left; left.pressed = 0x40;
+    menu.Update(left, source, &sounds);
+    quiet("left on a Wii action row does not select it");
+    click(0); cue(game::kOptionSelectSound, "toggling Wii support emits exactly sound preview 74");
+    click(0); cue(game::kOptionSelectSound, "restoring Wii support emits select once");
+    click(3); cue(game::kOptionSelectSound, "opening Wii player setup emits select once");
+    click(1); cue(game::kOptionSelectSound, "changing a Wii binding emits select once");
+    menu.Update(left, source, &sounds); cue(game::kOptionSelectSound, "left changes a Wii binding with select once");
+    click(5); cue(game::kOptionSelectSound, "changing Wii aim smoothing emits select once");
+    click(7); cue(game::kOptionSelectSound, "resetting Wii player setup emits select once");
+    click(0); cue(game::kOptionSelectSound, "starting Wii calibration emits select once");
+    source.BeginFrame(); remote.buttons = remote.pressed = 0; source.Update(); menu.Update({}, source, &sounds);
+    quiet("waiting for the next Wii calibration press is silent");
+    remote.buttons = remote.pressed = B; source.Update(); menu.Update({}, source, &sounds);
+    cue(game::kOptionSelectSound, "an accepted fresh Wii calibration target emits select once");
+    menu.Update({}, source, &sounds); quiet("holding a Wii calibration trigger does not repeat sound");
+    play::MenuInput esc; esc.pressed = 2;
+    menu.Update(esc, source, &sounds); cue(game::kOptionBackSound, "cancelling Wii calibration emits exactly sound preview 76");
+    source.BeginFrame(); remote.buttons = remote.pressed = 0; source.Update();
+    click(0); cue(game::kOptionSelectSound, "restarting Wii calibration emits select once");
+    remote.connected = false; source.Update(); menu.Update({}, source, &sounds);
+    quiet("automatic Wii disconnect during calibration emits no menu sound");
+    click(8); cue(game::kOptionBackSound, "Wii player Back row emits back once");
+    click(6); cue(game::kOptionBackSound, "Wii overview Back row emits back once");
+    menu.Update(esc, source, &sounds); quiet("closed Wii page is silent");
+    menu.Open();
+    play::MenuInput reload; reload.reload = true;
+    menu.Update(reload, source, &sounds); cue(game::kOptionBackSound, "Wii reload closes with the back sound");
 }
 static void ModernMenuPresentation() {
     auto fake = std::make_unique<Fake>();
@@ -187,6 +242,7 @@ static void ModernMenuPresentation() {
           "P2 calibration has the same exact target with its distinct center color");
 }
 int main(){
+    MenuAudio();
     ModernMenuPresentation();
     Remote r;
     auto report=Report(B|Up|Plus);Check(DecodeReport(report.data(),report.size(),r),"valid extended IR report");

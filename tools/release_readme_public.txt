@@ -23,6 +23,11 @@ Boss Mode (time attack), Horde and Randomizer. Practice contains training and sc
 selection. Boss Mode is a scored time attack, not a practice mode.
 Options opens graphics shortcuts and Game Options. Display > Menu Style selects Night Shift
 or Classic for the next launch. Existing campaign rules and saves are retained.
+Menus stay sharp at display resolution independently of gameplay render scale. Faded edges
+and scroll indicators show when more list items are available above or below.
+Extras includes all 38 named music tracks, effects/dialogue previews, and a model viewer.
+Master volume has a gradual scale with quieter low levels. Attraction volume controls the
+background menu loop separately from gameplay music, gunfire and effects.
 
 UPDATING AN EXISTING INSTALLATION
 Close the game and extract the ENTIRE new runtime ZIP into a fresh writable folder.
@@ -43,13 +48,15 @@ Downloads and installation are manual. --no-update-check disables the check.
 ONLINE TWO-PLAYER
 Home has Host Online, Browse Lobby and Peer to Peer actions; Online also opens
 the network page. Classic uses mode select > Network.
-  Host Online / Create Room - choose Unlimited Continues (or 3 continues) and Private Room.
+  Host Online / Create Room - choose difficulty, Unlimited Continues (or 3 continues) and Private Room.
                  A private room shows a 5-digit code to give your friend. When someone joins,
                  both players enter the shared mode-selection lobby.
   Browse Lobby - view open rooms and choose one; a private room asks for its code.
+                 Listings show advertised difficulty; older hosts can show Unknown.
   Peer to Peer - Host shows a 5-digit code; your friend picks Join and enters it. Unlisted.
 The host (player 1) chooses Arcade, Original, Scene Selection, Boss Mode, Horde Mode, or Randomizer. Pause > Return to Lobby brings both
 players back to the same room. Esc pauses/resumes and Enter confirms. Either player can resume a pause.
+The host can change difficulty in the shared lobby; both players use that setting.
 Chapter results stay open until a click, shot, or Enter after a three-second minimum; either player can continue.
 Close the window or use Home > Exit to quit. Both players need the same version (shown on Network).
 Connections try direct first and automatically use the server relay when needed; no port forwarding is required.
@@ -60,10 +67,13 @@ LEADERBOARD
 Home > Leaderboard shows Arcade, Original, Horde and individual Boss Mode tables.
 Source: Local reads your own records. Source: Online is the shared service view.
 Shared records are unverified, self-reported scores rather than anti-cheat rankings.
-Publishing is manual: finish an eligible new run, choose Publish New Run, select
-initials and confirm. Opening the page never publishes your save automatically.
-The public rankings service update is pending deployment; shared queries or publishing
-can be unavailable until the matching service is installed. Local records work offline.
+After an eligible run's results and local initials screens, the online name prompt opens
+automatically. Enter a name of 1-12 characters, then Publish or Skip. Failed submissions can
+be retried in the prompt; Publish New Run remains a fallback. Type or use the on-screen
+keyboard. Letters, numbers, spaces, periods, underscores and hyphens are supported.
+Local initials stay three characters.
+Opening the page never publishes your save automatically. The public service stores shared
+records persistently; older clients display abbreviated names. Local records work offline.
 
 GRAPHICS AND DISPLAY
 Options shortcuts or Pause > Graphics Options provide Display, Image, Lighting,

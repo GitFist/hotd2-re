@@ -24,8 +24,9 @@
 // welcome; it counts the joiner as connected at its first input packet.
 //
 // Packet (little-endian; one datagram each): "H2NP", type, version 3, then
+// Configuration schema changes require a new client build ID; relay transport stays version 3.
 //   hello   (both, until connected): build u32
-//   welcome (host -> joiner): build u32, credits i32, seed u32, serial u32, volumes 3 x i32, flags u8, delay u8,
+//   welcome (host -> joiner): build u32, credits i32, seed u32, serial u32, volumes 5 x i32, flags u8, delay u8,
 //                             start frame u32, save u16 + bytes
 //   input   (both): player u8, delay u8, recovery epoch u32, ack u32 (first missing frame), hash frame u32,
 //                   hash u32, first frame u32, count u8, count x record (14 bytes: present u8, command u8, kind i8,
@@ -60,7 +61,7 @@ constexpr uint8_t kCmdResume = 2;
 struct SessionConfig {
     int32_t credits = -1;  // play.cpp --credits (-1 free play)
     uint32_t seed = 902, firstSerial = 0x10000;
-    int32_t portVolumes[3] = { -1, -1, -1 };  // the Options screen's volume rows (world state: the same on both)
+    int32_t portVolumes[5] = { -1, -1, -1, 5, 5 };  // music, guns, effects, master, attraction (shared menu state)
     uint8_t flags = 0;                        // 1 portFeatures, 2 portModernMenu, 4 persistent shared room
     uint8_t delay = 3;                        // input delay in frames (the host decides)
     uint32_t startFrame = 0;                  // the world frame the lockstep starts at (0: from the boot)
@@ -76,10 +77,21 @@ bool DecodeCode(const std::string& code, uint8_t ip[4], uint16_t* port);
 // A distinct 128-bit token authenticates each member; endpoints are learned from outgoing packets to the server.
 struct LobbyRoom {
     uint32_t id = 0;
-    uint8_t flags = 0;  // kRoom*
+    uint8_t flags = 0;  // Low five bits: kRoom*; high three bits: RoomDifficulty().
     uint32_t build = 0;
 };
 constexpr uint8_t kRoomPrivate = 1, kRoomUnlimited = 2, kRoomUnlisted = 4, kRoomRelay = 8, kRoomRejoin = 16;
+// The existing CREATE/ROOMS flags byte has three spare bits. Encoding 1..5
+// advertises Very Easy..Very Hard; zero keeps older clients/rooms unknown.
+// Reserved values 6/7 are also unknown, never guessed as a playable level.
+constexpr uint8_t kRoomDifficultyMask = 0xE0;
+constexpr uint8_t RoomDifficultyFlags(int difficulty) {
+    return difficulty >= 0 && difficulty < 5 ? static_cast<uint8_t>((difficulty + 1) << 5) : 0;
+}
+constexpr int RoomDifficulty(uint8_t flags) {
+    const int encoded = (flags & kRoomDifficultyMask) >> 5;
+    return encoded >= 1 && encoded <= 5 ? encoded - 1 : -1;
+}
 // Values 0..4 are the existing wire results; timeouts are local client states.
 enum class JoinResult { Pending = -1, Ok = 0, NoRoom = 1, WrongCode = 2, Full = 3, OtherVersion = 4, TimedOut = 5, NoAnswer = 6 };
 
@@ -122,7 +134,9 @@ public:
     // answered; LobbySilence() is the time since the server last answered (the UI's "no answer" message).
     bool SetLobbyServer(const std::string& host, uint16_t port, std::string* error);
     bool LobbyConfigured() const { return lobbyKnown_; }
-    void LobbyCreate(uint8_t flags);                                   // host: a room -> LobbyRoomId / LobbyCode
+    // Host: a room -> LobbyRoomId / LobbyCode. Supplying a difficulty replaces
+    // its flag bits; omitting it preserves encoded bits when CREATE is retried.
+    void LobbyCreate(uint8_t flags, int difficulty = -1);
     bool LobbyCreated() const { return lobbyRoom_ != 0 && lobbyHosting_; }
     uint32_t LobbyRoomId() const { return lobbyRoom_; }
     uint32_t LobbyCode() const { return lobbyCode_; }

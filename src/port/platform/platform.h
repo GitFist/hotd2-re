@@ -60,7 +60,7 @@ struct Options {
     std::string title = "hotd2-re";
     int width = 960, height = 720;  // client size
     bool window = true;             // false: headless (no window, no SDL video)
-    bool hidden = false;            // an actual hidden window for platform integration tests
+    bool hidden = false;            // defer visibility until ShowWindow (startup configuration or integration tests)
     bool resizable = true;
     Input input = Input::Auto;      // gun source for the window (play.exe); Input::Auto picks per platform
     bool guns = false;              // create a gun source
@@ -74,6 +74,10 @@ public:
     Platform& operator=(const Platform&) = delete;
 
     bool Init(const Options& o, std::string* error);
+
+    // Reveal a configured window and finish pending fullscreen/size changes before creating its GPU swap chain.
+    // SDL removes window decorations before showing a window with pending fullscreen, avoiding a startup flash.
+    bool ShowWindow(std::string* error);
 
     // Pumps the platform's events: feeds the gun source and returns the tool-level events one by one (false when empty).
     // A window close request returns Type::Quit.

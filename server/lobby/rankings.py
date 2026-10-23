@@ -1,7 +1,7 @@
 """Optional client-reported leaderboards sharing the lobby's UDP socket.
 
-H2RK v1 is independent of lockstep. A return-routability cookie is not a player
-identity or an anti-cheat check. Initials are not unique accounts; all results
+H2RK v1/v2 is independent of lockstep. A return-routability cookie is not a player
+identity or an anti-cheat check. Display names are not unique accounts; all results
 must be labelled unverified. No source IP or private room token is persisted.
 """
 import hashlib
@@ -12,12 +12,25 @@ import struct
 import time
 
 MAGIC = b"H2RK\x01"
+MAGIC_V2 = b"H2RK\x02"
 MAX_ROWS_PER_BOARD = 1000
 MAX_BUILDS = 32
 MAX_TRACKED_IPS = 2048
 MAX_PACKET = 128
 COOKIE_SECONDS = 300
 ROW = struct.Struct("<3sIHBB")  # initials, score/60-Hz time, rounds, difficulty/stage, players
+ROW_V2 = struct.Struct("<12sIHBB")
+SUBMIT = struct.Struct("<IB3sIHBB16s")
+SUBMIT_V2 = struct.Struct("<IB12sIHBB16s")
+SCHEMA = """CREATE TABLE IF NOT EXISTS rankings_v1 (
+    run BLOB PRIMARY KEY CHECK(length(run)=16), build INTEGER NOT NULL,
+    board INTEGER NOT NULL CHECK(board BETWEEN 0 AND 12),
+    name BLOB NOT NULL CHECK(length(name) BETWEEN 1 AND 12),
+    score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 2000000000),
+    rounds INTEGER NOT NULL CHECK(rounds BETWEEN 0 AND 65535),
+    difficulty INTEGER NOT NULL CHECK(difficulty BETWEEN 0 AND 6),
+    players INTEGER NOT NULL CHECK(players BETWEEN 1 AND 2),
+    created INTEGER NOT NULL)"""
 
 
 class Rankings:
@@ -29,17 +42,24 @@ class Rankings:
             self.db = sqlite3.connect(database, timeout=0.1)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS rankings_v1 (
-                run BLOB PRIMARY KEY CHECK(length(run)=16), build INTEGER NOT NULL,
-                board INTEGER NOT NULL CHECK(board BETWEEN 0 AND 12),
-                name BLOB NOT NULL CHECK(length(name)=3),
-                score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 2000000000),
-                rounds INTEGER NOT NULL CHECK(rounds BETWEEN 0 AND 65535),
-                difficulty INTEGER NOT NULL CHECK(difficulty BETWEEN 0 AND 6),
-                players INTEGER NOT NULL CHECK(players BETWEEN 1 AND 2),
-                created INTEGER NOT NULL)""")
-            self.db.execute("CREATE INDEX IF NOT EXISTS rankings_board ON rankings_v1(build,board)")
-            self.db.commit()
+            # SQLite cannot widen a CHECK in place. Rebuild an existing three-byte
+            # table in one explicit transaction; run IDs, timestamps and rankings
+            # survive, and an interrupted/failed migration rolls back the rename.
+            try:
+                with self.db:
+                    self.db.execute("BEGIN IMMEDIATE")
+                    self.db.execute(SCHEMA)
+                    schema = self.db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='rankings_v1'").fetchone()[0]
+                    if "length(name)=3" in "".join(schema.lower().split()):
+                        self.db.execute("ALTER TABLE rankings_v1 RENAME TO rankings_name3_legacy")
+                        self.db.execute(SCHEMA)
+                        self.db.execute("INSERT INTO rankings_v1 SELECT * FROM rankings_name3_legacy")
+                        self.db.execute("DROP TABLE rankings_name3_legacy")
+                    self.db.execute("CREATE INDEX IF NOT EXISTS rankings_board ON rankings_v1(build,board)")
+            except sqlite3.Error:
+                self.db.close()
+                self.db = None
+                raise
 
     def close(self):
         if self.db:
@@ -85,6 +105,7 @@ class Rankings:
             return 3  # service disabled until explicitly configured
         if (not build or board>12 or not 1<=score<=2000000000 or not 1<=players<=2 or
             difficulty>(6 if board<2 else 4) or not any(run) or
+            not 1<=len(name)<=12 or
             any(c not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-" for c in name) or not name.strip() or
             (board!=2 and rounds) or (board==2 and not rounds) or (board>=3 and (players!=1 or score>1296000))):
             return 2
@@ -105,15 +126,17 @@ class Rankings:
             return 5
 
     def handle(self, packet, address):
-        """Return at most 127 bytes or None. Never forwards gameplay packets."""
-        if not 10<=len(packet)<=MAX_PACKET or packet[:5]!=MAGIC:
+        """Return at most 127 (v1) / 217 (v2) bytes or None. Never forwards gameplay packets."""
+        if not 10<=len(packet)<=MAX_PACKET or packet[:5] not in (MAGIC,MAGIC_V2):
             return None
+        magic = packet[:5]
+        modern = magic==MAGIC_V2
         kind = packet[5]
         request = packet[6:10]
         if kind==1 and len(packet)==10:
             if not self._allow(address[0],False): return None
             cookie = self._cookie(address,int(time.time())//COOKIE_SECONDS)
-            return MAGIC+bytes([101])+request+cookie
+            return magic+bytes([101])+request+cookie
         if kind==2 and len(packet)==31:
             build,board = struct.unpack_from("<IB",packet,10)
             if not self._cookie_valid(address,packet[15:31]) or not self._allow(address[0],False): return None
@@ -124,23 +147,34 @@ class Rankings:
             except sqlite3.Error:
                 rows,status = [],5
             # Status distinguishes an empty enabled board from an undeployed service.
-            out = MAGIC+bytes([102])+request+struct.pack("<IBBB",build,board,status,len(rows))
-            return out+b"".join(ROW.pack(*row) for row in rows)
-        if kind==3 and len(packet)==58:
-            if not self._cookie_valid(address,packet[42:58]): return None
+            out = magic+bytes([102])+request+struct.pack("<IBBB",build,board,status,len(rows))
+            if modern:
+                return out+b"".join(ROW_V2.pack(*row) for row in rows)
+            # Old clients still require three nonblank ASCII bytes. Only their
+            # display is abbreviated; storage and v2 retain the complete name.
+            def legacy(row):
+                name = row[0][:3]
+                if not name.strip(): name = row[0].lstrip()[:3]
+                return ROW.pack(name.ljust(3,b" "),*row[1:])
+            return out+b"".join(legacy(row) for row in rows)
+        submit = SUBMIT_V2 if modern else SUBMIT
+        cookie_start = 10+submit.size
+        if kind==3 and len(packet)==cookie_start+16:
+            if not self._cookie_valid(address,packet[cookie_start:]): return None
             if not self._allow(address[0],False): return None
-            build,board,name,score,rounds,difficulty,players,run = struct.unpack_from("<IB3sIHBB16s",packet,10)
+            build,board,name,score,rounds,difficulty,players,run = submit.unpack_from(packet,10)
+            if modern: name = name.rstrip(b"\0")  # only trailing NUL padding; embedded NUL remains invalid
             # Lost acknowledgements do not consume another write token. Repeated
             # datagrams still use the bounded read budget and cannot mutate a run.
             try:
                 old = self.db.execute("SELECT build,board,name,score,rounds,difficulty,players FROM rankings_v1 WHERE run=?",(run,)).fetchone() if self.db else None
             except sqlite3.Error:
-                return MAGIC+bytes([103])+request+bytes([5])
+                return magic+bytes([103])+request+bytes([5])
             if old:
                 status = 1 if old==(build,board,name,score,rounds,difficulty,players) else 2
             elif not self._allow(address[0],True):
                 status = 5
             else:
                 status = self._submit(build,board,name,score,rounds,difficulty,players,run)
-            return MAGIC+bytes([103])+request+bytes([status])
+            return magic+bytes([103])+request+bytes([status])
         return None

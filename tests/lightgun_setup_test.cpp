@@ -1,4 +1,5 @@
 #include "input/lightguns.h"
+#include "game/menu_audio.h"
 #include "play/lightgun_menu.h"
 #include "play/pause_menu.h"
 #include <cmath>
@@ -26,7 +27,55 @@ static bool HasTarget(const game::WorldHud& hud,double x,double y){
     for(const auto& panel:hud.menuPanels)if(panel.color==0xFFFFFFFF&&Near((panel.left+panel.right)*.5,x)&&Near((panel.top+panel.bottom)*.5,y))return true;
     return false;
 }
+static void MenuAudio(){
+    input::Lightguns guns;
+    Feed(guns,a,.2,.3,1);Feed(guns,a,.2,.3,0,1);guns.BeginFrame();
+    play::LightgunMenu page;page.Open();
+    std::vector<uint32_t> sounds;
+    auto cue=[&](uint32_t expected,const char* why){Check(sounds==std::vector<uint32_t>{expected},why);sounds.clear();};
+    auto quiet=[&](const char* why){Check(sounds.empty(),why);};
+    play::MenuInput down;down.pressed=0x20;
+    page.Update({},guns,true,&sounds);page.Update(down,guns,true,&sounds);
+    auto hover=Click(3);hover.trigger=false;page.Update(hover,guns,true,&sounds);
+    quiet("light-gun idle, keyboard row movement and pointer hover are silent");
+    page.Update(Click(3),guns,true,&sounds);cue(game::kOptionSelectSound,"opening light-gun player setup emits exactly sound preview 74");
+    play::MenuInput left;left.pressed=0x40;
+    page.Update(left,guns,true,&sounds);quiet("left on a light-gun action row is not a selection");
+    play::MenuInput esc;esc.pressed=2;
+    page.Update(esc,guns,true,&sounds);cue(game::kOptionBackSound,"Escape from light-gun player setup emits exactly sound preview 76");
+    auto mode=Click(0);mode.trigger=false;page.Update(mode,guns,true,&sounds);
+    page.Update(left,guns,true,&sounds);cue(game::kOptionSelectSound,"changing the light-gun input mode emits sound preview 74");
+    page.Update(Click(1),guns,true,&sounds);cue(game::kOptionSelectSound,"starting physical gun assignment emits select once");
+    page.Update({},guns,true,&sounds);quiet("waiting for a gun assignment is silent");
+    page.Update(esc,guns,true,&sounds);cue(game::kOptionBackSound,"cancelling gun assignment emits back once");
+    page.Update(Click(3),guns,true,&sounds);cue(game::kOptionSelectSound,"reopening player setup emits select once");
+    page.Update(Click(0),guns,true,&sounds);cue(game::kOptionSelectSound,"opening gun calibration emits select once");
+    Feed(guns,a,.2,.2,1);page.Update({},guns,true,&sounds);
+    cue(game::kOptionSelectSound,"a valid fresh gun calibration target emits select once");
+    page.Update({},guns,true,&sounds);quiet("holding a gun calibration trigger does not repeat sound");
+    page.Update(esc,guns,true,&sounds);cue(game::kOptionBackSound,"cancelling gun calibration emits back once");
+    Feed(guns,a,.2,.2,0,1);guns.BeginFrame();
+    page.Update(Click(1),guns,true,&sounds);cue(game::kOptionSelectSound,"opening physical binding capture emits select once");
+    page.Update(esc,guns,true,&sounds);cue(game::kOptionBackSound,"cancelling gun binding capture emits back once");
+    page.Update(Click(1),guns,true,&sounds);cue(game::kOptionSelectSound,"reopening binding capture emits select once");
+    Feed(guns,a,.4,.4,16);page.Update({},guns,true,&sounds);
+    cue(game::kOptionSelectSound,"saving a fresh physical binding emits select once");
+    Feed(guns,a,.4,.4,0,16);guns.BeginFrame();
+    page.Update(Click(5),guns,true,&sounds);cue(game::kOptionSelectSound,"entering the gun test emits select once");
+    Feed(guns,a,.4,.4,16);page.Update({},guns,true,&sounds);
+    quiet("live gun test shots do not produce extra menu select sounds");
+    page.Update(esc,guns,true,&sounds);cue(game::kOptionBackSound,"leaving the gun test emits back once");
+    page.Update(Click(8),guns,true,&sounds);cue(game::kOptionBackSound,"player Back row uses the back sound");
+    page.Update(Click(7),guns,true,&sounds);cue(game::kOptionBackSound,"overview Back row uses the back sound");
+    page.Update(esc,guns,true,&sounds);quiet("closed light-gun menu emits no sound");
+    Feed(guns,a,.4,.4,0,16);guns.BeginFrame();page.Open();
+    page.Update(Click(1),guns,true,&sounds);cue(game::kOptionSelectSound,"restarting gun assignment emits select once");
+    Feed(guns,a,.4,.4,1);page.Update({},guns,true,&sounds);
+    cue(game::kOptionSelectSound,"confirmed physical assignment emits select once");
+    page.Update({},guns,true,&sounds);quiet("physical assignment acknowledgement does not repeat");
+}
 int main(){
+    MenuAudio();
     using A=play::LightgunMenu::Action;
     input::Lightguns g;Feed(g,a,.2,.3,1);Feed(g,b,.7,.8,1);
     Check(g.Player(0).connected&&g.Player(1).connected,"legacy trigger order assigns two guns");
@@ -132,8 +181,15 @@ int main(){
     automatic.BeginAssign(1);Feed(automatic,b,.5,.5,1);
     Check(automatic.settings.player[0].device==a&&automatic.settings.player[0].buttons[0]==16,"assigning second gun preserves customized first gun");
     play::PauseMenu pause;play::Settings volume;std::vector<uint32_t> sounds;pause.Open();play::MenuInput down;down.pressed=0x20;
-    for(int i=0;i<play::PauseMenu::kLightguns;++i)pause.Update(down,volume,sounds);
-    play::MenuInput enter;enter.pressed=8;Check(pause.Update(enter,volume,sounds)==play::PauseMenu::Action::Lightguns&&pause.IsOpen(),"pause opens gun setup without resuming");
+    pause.Update(down,volume,sounds);
+    play::MenuInput enter;enter.pressed=8;pause.Update(enter,volume,sounds);
+    Check(pause.DisplayOpen()&&pause.IsOpen(),"pause opens shared Options without resuming");
+    pause.Display().SetPage(play::DisplayMenu::kDevices);
+    for(int row:play::DisplayMenu::Rows(play::DisplayMenu::kDevices))
+        if(std::string(play::DisplayMenu::Label(row))=="Light Guns")pause.Display().FocusRow(row);
+    pause.Update(enter,volume,sounds);
+    Check(pause.Display().TakeDeviceAction()==play::DisplayMenu::DeviceAction::Lightguns&&pause.IsOpen(),
+          "shared Devices category opens lightgun setup while the game remains paused");
 #ifdef _WIN32
     input::Lightguns native;input::RawInput raw;raw.setup=&native;
     raw.deviceKeyProvider=[](HANDLE h){return h==reinterpret_cast<HANDLE>(1)?a:b;};

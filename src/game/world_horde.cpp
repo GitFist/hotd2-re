@@ -19,7 +19,7 @@
 //     from the torso up); a gun player aims at a cell and pulls the trigger to buy with the money of kills (the hook in
 //     Enemy_ApplyShot's score tail) and round bonuses: the original mode's special weapons (0x00414B90: shotgun burst,
 //     machine gun, grenade), power ups (damage factor), magazines (CHAMBER), lives, barrel repairs / reinforcement and
-//     three CPU agents (Amy, Harry, Goldman: the player skeletons 0x3C / 0x3B / 0x3D) who stand by the barrels and shoot
+//     three CPU agents (Amy, Harry, Goldman: the player skeletons 0x3B / 0x3C / 0x3D) who stand by the barrels and shoot
 //     the zombies with their own rate / accuracy / damage;
 // Everything here runs inside the deterministic world sim (lockstep co-op works as for any game).
 
@@ -167,8 +167,10 @@ struct AgentDef {
     float flashX, flashY;  // the muzzle flash in view space (the agent stands beside the players, off screen)
 };
 constexpr AgentDef kAgentDef[kAgents] = {
-    { "AMY", 0x3C, 0x60F, 2500, 50, 60, 25, -0.46f, -0.30f },
-    { "HARRY", 0x3B, 0x610, 6000, 32, 70, 35, 0.46f, -0.30f },
+    // Native st2evtbl.bin records 0xA8A8 / 0xA974: Amy is player3 (0x3B),
+    // Harry is player4 (0x3C); verified against their original head meshes.
+    { "AMY", 0x3B, 0x60F, 2500, 50, 60, 25, -0.46f, -0.30f },
+    { "HARRY", 0x3C, 0x610, 6000, 32, 70, 35, 0.46f, -0.30f },
     { "GOLDMAN", 0x3D, 0x614, 10000, 14, 55, 30, -0.46f, -0.12f },
 };
 

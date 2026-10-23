@@ -4,26 +4,24 @@
 #include <charconv>
 #include <fstream>
 
+#include "game/menu_audio.h"
 #include "game/menu_text.h"
 
 namespace play {
 
 namespace {
 
-constexpr float kCellH = 24.0f;    // 0x004ECB84
 constexpr float kLabelX = 2.0f;    // cells (the options screen's lines start at cell 2)
 constexpr float kConfirmY = 8.0f;  // the question
 constexpr float kChoiceY = 10.0f;  // Yes / No
 constexpr float kYesX = 12.0f, kNoX = 24.0f;
 constexpr uint32_t kSelected = 0x111;  // red, depth 0.9 (the options screen's selected line)
 constexpr uint32_t kNormal = 1;
-constexpr uint32_t kSndCursor = 0xA9, kSndConfirm = 0x121A9;
-constexpr float kModernRowLeft = 104, kModernRowRight = 536, kModernPreviousX = 432;
+constexpr float kModernRowLeft = 104, kModernRowRight = 536;
 constexpr float kModernConfirmTop = 274, kModernConfirmBottom = 312;
 constexpr float kModernReturnLeft = 128, kModernReturnRight = 304, kModernCancelLeft = 336, kModernCancelRight = 512;
 
-const char* const kLabels[play::PauseMenu::kRowCount] = {"Resume",           "Music",       "Gun Shots",  "Effects + Dialogue",
-                                                      "Graphics Options", "Wii Remotes", "Light Guns", "Return to Main Menu"};
+const char* const kLabels[play::PauseMenu::kRowCount] = {"Resume", "Options", "Return to Main Menu"};
 
 }  // namespace
 
@@ -47,7 +45,11 @@ bool Settings::Load(const std::string& path) {
             if (integer && (numeric == 0 || numeric == 1)) field = numeric != 0;
         };
         auto& graphics = display.graphics;
-        if (key == "music")
+        if (key == "master") {
+            if (integer) master = std::clamp(numeric, 0, 10);
+        } else if (key == "attraction") {
+            if (integer) attraction = std::clamp(numeric, 0, 10);
+        } else if (key == "music")
             music = v;
         else if (key == "guns")
             guns = v;
@@ -181,7 +183,7 @@ bool Settings::Load(const std::string& path) {
 bool Settings::Save(const std::string& path) const {
     std::ofstream f(path, std::ios::trunc);
     if (!f) return false;
-    f << "music=" << music << "\nguns=" << guns << "\nsfx=" << sfx << "\n";
+    f << "master=" << master << "\nmusic=" << music << "\nguns=" << guns << "\nsfx=" << sfx << "\nattraction=" << attraction << "\n";
     if (!input.empty()) f << "input=" << input << "\n";
     f << "fullscreen=" << (display.fullscreen ? 1 : 0) << "\n";
     f << "fullscreen_mode=" << (display.exclusiveFullscreen ? "exclusive" : "borderless") << "\n";
@@ -228,20 +230,10 @@ float PauseMenu::RowY(int row) {
     switch (row) {
         case kResume:
             return 5.0f;
-        case kMusic:
+        case kOptions:
             return 7.0f;
-        case kGuns:
-            return 8.0f;
-        case kSfx:
-            return 9.0f;
-        case kDisplay:
-            return 11.0f;
-        case kWii:
-            return 12.0f;
-        case kLightguns:
-            return 13.0f;
         case kReturn:
-            return 14.0f;
+            return 9.0f;
         default:
             return 0.0f;
     }
@@ -260,13 +252,13 @@ int PauseMenu::ConfirmAt(float px, float py) {
     return -1;
 }
 
-float PauseMenu::ModernRowTop(int row) { return 128.f + 32.f * row; }
+float PauseMenu::ModernRowTop(int row) { return 152.f + 56.f * row; }
 
 int PauseMenu::ModernRowAt(float px, float py) {
     if (px < kModernRowLeft || px >= kModernRowRight) return -1;
     for (int row = 0; row < kRowCount; ++row) {
         const float top = ModernRowTop(row);
-        if (py >= top - 2 && py < top + 26) return row;
+        if (py >= top - 1 && py < top + 40) return row;
     }
     return -1;
 }
@@ -278,19 +270,6 @@ int PauseMenu::ModernConfirmAt(float px, float py) {
     return -1;
 }
 
-int* PauseMenu::Volume(Settings& s, int row) {
-    switch (row) {
-        case kMusic:
-            return &s.music;
-        case kGuns:
-            return &s.guns;
-        case kSfx:
-            return &s.sfx;
-        default:
-            return nullptr;
-    }
-}
-
 PauseMenu::Action PauseMenu::Update(const Input& in, Settings& s, std::vector<uint32_t>& sounds) {
     if (!open_) return Action::None;
     if (display_.IsOpen() && (display_.UiHidden() || display_.ResetConfirming())) {
@@ -298,7 +277,7 @@ PauseMenu::Action PauseMenu::Update(const Input& in, Settings& s, std::vector<ui
         return Action::None;
     }
     if (in.start) {  // the original resumes with the pause button
-        sounds.push_back(kSndConfirm);
+        sounds.push_back(game::kOptionBackSound);
         display_.Close();
         return Action::Resume;
     }
@@ -310,54 +289,34 @@ PauseMenu::Action PauseMenu::Update(const Input& in, Settings& s, std::vector<ui
         const int under = in.pointer ? modern_ ? ModernRowAt(in.px, in.py) : RowAt(in.px, in.py) : -1;
         if (pointer_.Update(in.pointer, in.px, in.py, in.trigger || in.reload) && under >= 0 && under != cursor_) {
             cursor_ = under;
-            sounds.push_back(kSndCursor);
         }
         if (in.pressed & 0x10) {
             cursor_ = (cursor_ + kRowCount - 1) % kRowCount;
-            sounds.push_back(kSndCursor);
         }
         if (in.pressed & 0x20) {
             cursor_ = (cursor_ + 1) % kRowCount;
-            sounds.push_back(kSndCursor);
         }
-        int* vol = Volume(s, cursor_);
         const bool overCursor = under == cursor_;
-        int d = 0;
-        if (in.pressed & 0x80) ++d;
-        if (in.pressed & 0x40) --d;
-        if (vol && overCursor) {
-            if (in.trigger) d += game::MenuPointerStep(in.px, modern_ ? kModernPreviousX : 520);
-            if (in.reload) --d;
-        }
-        if (vol && d != 0) {
-            const int nv = std::clamp(*vol + d, 0, 10);
-            if (nv != *vol) {
-                *vol = nv;
-                sounds.push_back(kSndCursor);
-            }
-        }
-        const bool select = (in.pressed & 0xC) != 0 || (in.trigger && overCursor && !vol);
-        const bool back = (in.pressed & 0x2) != 0 || (in.reload && !vol);
+        const bool back = (in.pressed & 0x2) != 0 || in.reload;
         if (back) {
-            sounds.push_back(kSndConfirm);
+            sounds.push_back(game::kOptionBackSound);
             return Action::Resume;
         }
+        const bool select = (in.pressed & 0xC) != 0 || (in.trigger && overCursor);
         if (select) {
             if (cursor_ == kResume) {
-                sounds.push_back(kSndConfirm);
+                sounds.push_back(game::kOptionBackSound);
                 return Action::Resume;
             }
-            if (cursor_ == kWii) return Action::WiiRemotes;
-            if (cursor_ == kLightguns) return Action::Lightguns;
-            if (cursor_ == kDisplay) {
+            if (cursor_ == kOptions) {
                 display_.Open();
-                sounds.push_back(kSndConfirm);
+                sounds.push_back(game::kOptionSelectSound);
             }
             if (cursor_ == kReturn) {
                 confirm_ = true;
                 confirmYes_ = false;  // No is the safe default
                 pointer_ = {};
-                sounds.push_back(kSndConfirm);
+                sounds.push_back(game::kOptionSelectSound);
             }
         }
         return Action::None;
@@ -366,21 +325,19 @@ PauseMenu::Action PauseMenu::Update(const Input& in, Settings& s, std::vector<ui
     const int under = in.pointer ? modern_ ? ModernConfirmAt(in.px, in.py) : ConfirmAt(in.px, in.py) : -1;
     if (pointer_.Update(in.pointer, in.px, in.py, in.trigger || in.reload) && under >= 0 && (under == 1) != confirmYes_) {
         confirmYes_ = under == 1;
-        sounds.push_back(kSndCursor);
     }
     if (in.pressed & 0xF0) {
         confirmYes_ = !confirmYes_;
-        sounds.push_back(kSndCursor);
     }
     const bool select = (in.pressed & 0xC) != 0 || (in.trigger && under == (confirmYes_ ? 1 : 0));
     const bool back = (in.pressed & 0x2) != 0 || in.reload;
     if (back) {
         confirm_ = false;
-        sounds.push_back(kSndCursor);
+        sounds.push_back(game::kOptionBackSound);
         return Action::None;
     }
     if (select) {
-        sounds.push_back(kSndConfirm);
+        sounds.push_back(confirmYes_ ? game::kOptionSelectSound : game::kOptionBackSound);
         if (confirmYes_) return Action::ReturnToTitle;
         confirm_ = false;
     }
@@ -407,9 +364,7 @@ void PauseMenu::Sprites(const game::ExeImage& exe, int pausePlayer, const Settin
         for (int r = 0; r < kRowCount; ++r)
             game::MenuText(exe, kLabelX, RowY(r), r == kReturn && networkRoom_ ? "Return to Lobby" : kLabels[r],
                            r == cursor_ ? kSelected : kNormal, out);
-        if (cursor_ >= kMusic && cursor_ <= kSfx) game::MenuAdjustArrows(520, 620, RowY(cursor_) * kCellH + 22, out);
-        game::MenuTextScaled(exe, 32, 370, "Click or shoot   Reload to reverse", 0, 0.8f, out);
-        // (the volume values are drawn by the caller with game::MenuNum at cell x 35, the options screen's number column)
+        game::MenuTextScaled(exe, 32, 370, "Click or shoot   Reload to resume", 0, 0.8f, out);
     } else {
         game::MenuText(exe, 0.0f, kConfirmY, networkRoom_ ? "Return both players to Lobby?" : "Return to the Main Menu?", 2, out);
         game::MenuText(exe, kYesX, kChoiceY, "Yes", confirmYes_ ? kSelected : kNormal, out);
@@ -450,21 +405,12 @@ void PauseMenu::ModernHud(int pausePlayer, const Settings& s, game::WorldHud& hu
     for (int row = 0; row < kRowCount; ++row) {
         const float top = ModernRowTop(row);
         if (row == cursor_)
-            hud.menuPanels.push_back({kModernRowLeft, top - 2, kModernRowRight, top + 26, 0xCC8F2026});
+            hud.menuPanels.push_back({kModernRowLeft, top - 1, kModernRowRight, top + 40, 0xCC8F2026});
         else
-            hud.menuPanels.push_back({kModernRowLeft, top + 26, kModernRowRight, top + 27, 0x354E514E});
+            hud.menuPanels.push_back({kModernRowLeft, top + 40, kModernRowRight, top + 41, 0x354E514E});
         text(112, top, row == kReturn && networkRoom_ ? "Return to Lobby" : kLabels[row], .55f);
-        const int* volume = row == kMusic ? &s.music : row == kGuns ? &s.guns : row == kSfx ? &s.sfx : nullptr;
-        if (volume) {
-            text(462, top, std::to_string(std::clamp(*volume, 0, 10) * 10) + "%", .55f);
-            if (row == cursor_) {
-                text(kModernPreviousX, top, "<", .55f);
-                text(518, top, ">", .55f);
-            }
-        }
     }
-    const bool volume = cursor_ >= kMusic && cursor_ <= kSfx;
-    text(112, 403, volume ? "LEFT / RIGHT: VOLUME   RELOAD: LOWER" : "SELECT / SHOOT: OPEN   RELOAD / BACK: RESUME", .4f, 0xFFC1BAAC);
+    text(112, 403, "SELECT / SHOOT: OPEN   RELOAD / BACK: RESUME", .4f, 0xFFC1BAAC);
 }
 
 }  // namespace play

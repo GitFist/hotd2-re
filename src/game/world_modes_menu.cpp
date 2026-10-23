@@ -5,6 +5,7 @@
 #include <filesystem>
 
 #include "game/world_modes.h"
+#include "game/menu_audio.h"
 
 namespace game {
 
@@ -62,7 +63,9 @@ void ModesBoot(World::Impl& w) {
         w.cfg.livesSetting = w.exe.S16(0x004D0EDC + 2 * static_cast<uint32_t>(s.U8(SaveData::kLives) % 5));
         w.cfg.difficulty = s.U8(SaveData::kDifficulty) % 5;
         const int c = s.S8(SaveData::kCredits);
-        w.cfg.creditSetting = c < 0 ? -1 : c;
+        // The host selected continues when creating the room; the shared save supplies
+        // difficulty/lives, but must not replace that explicit room rule.
+        if (!w.cfg.portNetworkRoom) w.cfg.creditSetting = c < 0 ? -1 : c;
     }
 }
 
@@ -76,6 +79,14 @@ int ModesCredits(World::Impl& w, int entry) {
 // 0x00496960, a confirmed entry other than arcade / exit (the caller freed the screens: 0x0049ED70, 0x0049DFD0)
 bool ModesMenuConfirm(World::Impl& w, int e) {
     if (e < 1 || e > 6) return false;
+    if (e == 5 && w.cfg.portFeatures) {
+        // Both menu themes open the port's complete tabbed settings directly.
+        // Keep the original mode-12 handlers for exactness, without exposing a second options screen in the port.
+        w.front.nightShiftDisplayPage = 0;
+        ++w.front.nightShiftDisplayRequests;
+        w.SoundCall(World::kOptionFeedback, kOptionSelectSound);
+        return true;
+    }
     ModesState& m = *w.modes;
     if (e <= 3) {
         // 0x009A21C0 = 1, credits 0x00406F60(0x00496B70(e)), 0x009CA08C = e, 0x009A2BBC = 0, sound 0x121A9; the player's

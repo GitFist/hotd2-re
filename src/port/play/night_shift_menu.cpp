@@ -22,6 +22,9 @@ void AppendNightShiftPanels(const game::WorldHud& hud,std::vector<port::ModelRen
 }
 
 bool AttractPreview::Step(const std::string& gameDir,bool enabled,int ticks) {
+    ++soundRevision_;
+    sounds_.clear();
+    warmupSounds_.clear();
     enabled_=enabled;
     if(!enabled||failed_)return !failed_;
     if(!world_) {
@@ -31,20 +34,22 @@ bool AttractPreview::Step(const std::string& gameDir,bool enabled,int ticks) {
         c.savePath.clear(); c.saveDir=gameDir; c.applySaveSettings=false;
         c.portFeatures=false; c.portModernMenu=false; c.portNetworkRoom=false;
         next->Boot(c);
-        next->ForceMode(5,0x10000,0,0);
+        next->ForceMode(3,0x10000,0,0);
         world_=std::move(next);
-        // Advance past the stage resource setup so the first menu frame has scenery.
+        // Advance past title resource setup so the first menu frame has scenery.
         // This changes only this preview World's RNG, task serials and frame counters.
-        for(int i=0;i<90;++i)world_->Step();
+        for(int i=0;i<90;++i) {
+            world_->Step();
+            const auto& events=world_->Sounds();
+            warmupSounds_.insert(warmupSounds_.end(),events.begin(),events.end());
+        }
     }
     for(int i=0;i<std::clamp(ticks,0,8);++i) {
-        if(world_->GameMode()!=5) {
-            // DemoFrame already advances the demo index before its mode switch. Use
-            // that authoritative value; never derive it from the live menu's clock.
-            demo_=world_->Hud().demoIndex;
-            world_->ForceMode(5,0x10000,0,demo_);
-        }
+        // Keep the original title -> tutorial -> demo -> story -> title sequence.
+        // Its own front end advances / wraps the demo index without menu input.
         world_->Step();
+        const auto& events=world_->Sounds();
+        sounds_.insert(sounds_.end(),events.begin(),events.end());
     }
     return true;
 }

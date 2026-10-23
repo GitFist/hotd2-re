@@ -39,13 +39,14 @@ constexpr uint32_t kUp = 0x10, kDown = 0x20, kOk = 0xC, kBack = 2;  // P1's bits
 void RoomFrame(World::Impl& w) {
     auto& m = *w.modes;
     m.netState = 1;
-    constexpr int rows = 7;  // Arcade, Original, Scene, Boss, Horde, Randomizer, Leave
+    constexpr int difficultyRow = 6, rows = 8;  // Keep mode choices 0..5 stable; Difficulty, then Leave.
+    constexpr float rowStart = 5.0f, rowStep = 1.1f;
     uint32_t buttons = w.pressed & 0xFFFF;
     const auto& gun = w.input[0];
     if (gun.kind == 1 && gun.x < 640 && gun.y < 480) {
         int row = -1;
         for (int i = 0; i < rows; ++i)
-            if (MenuTextRowHit(float(gun.x), float(gun.y), 5.0f + i * 1.25f, 184, 520)) row = i;
+            if (MenuTextRowHit(float(gun.x), float(gun.y), rowStart + i * rowStep, 184, 600)) row = i;
         // Move on aim changes, not continuously: keyboard navigation must work with a parked mouse.
         if ((gun.x != m.netAimX || gun.y != m.netAimY || gun.fired) && row >= 0)
             w.front.menuCursor = row;
@@ -60,7 +61,16 @@ void RoomFrame(World::Impl& w) {
         w.Sound(0x500A9);
         return;
     }
-    if (buttons & kOk) {
+    if (w.front.menuCursor == difficultyRow && (buttons & (kOk | 0x40 | 0x80))) {
+        const int step = buttons & 0x40 ? -1 : 1;
+        w.cfg.difficulty = (w.cfg.difficulty + step + 5) % 5;
+        // This room selection travels through the same P1 lockstep inputs as
+        // mode selection. Update the shared save copy too, so mode setup's
+        // Store cannot restore the old difficulty; do not save local preferences.
+        m.save.SetU8(SaveData::kDifficulty, static_cast<uint8_t>(w.cfg.difficulty));
+        w.Sound(0x3E16A9);
+        w.Note("network room: host selected difficulty " + std::to_string(w.cfg.difficulty));
+    } else if ((buttons & kOk) && w.front.menuCursor < difficultyRow) {
         const int choice = w.front.menuCursor;
         w.front.sceneSelect = choice == 2;
         w.front.sceneStart = -1;
@@ -83,9 +93,12 @@ void RoomFrame(World::Impl& w) {
     };
     text(0, 1.7f, "MULTIPLAYER LOBBY", 2);
     text(0, 3.3f, "PLAYER 1 HOST", 0x42);
-    static const char* labels[] = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "LEAVE ROOM" };
-    for (int i = 0; i < rows; ++i) text(12, 5.0f + i * 1.25f, labels[i], i == w.front.menuCursor ? 0x10 : 1);
+    static const char* labels[] = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "", "LEAVE ROOM" };
+    const std::string difficulty = "DIFFICULTY: " + w.exe.CStr(0x00569758 + static_cast<uint32_t>(w.cfg.difficulty) * 10);
+    for (int i = 0; i < rows; ++i)
+        text(12, rowStart + i * rowStep, i == difficultyRow ? difficulty.c_str() : labels[i], i == w.front.menuCursor ? 0x10 : 1);
     text(0, 14.0f, w.cfg.creditSetting < 0 ? "UNLIMITED CONTINUES ON" : "UNLIMITED CONTINUES OFF", 0x42);
+    text(0, 15.2f, "HOST: LEFT/RIGHT OR ENTER TO CHANGE", 0x42);
     text(0, 16.5f, "ESC LEAVES ROOM", 0x42);
 }
 

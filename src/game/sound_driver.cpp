@@ -18,6 +18,10 @@ void SoundDriver::PushRing(int ch, uint32_t id) {
 
 // 0x004AC020
 bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint32_t id) {
+    if (channel == kSndBgmChannel) {
+        previewMusicId_ = 0;
+        previewMusicPaused_ = previewResumeOnActivate_ = false;
+    }
     // Free finished SE channels that are not cached in the ring.
     for (int ch = 0; ch < kSndSeChannels; ++ch)
         if (!b_.IsPlaying(ch) && !InRing(ch)) b_.Release(ch);
@@ -99,7 +103,7 @@ void SoundDriver::Command(uint32_t cmd) {
         b_.Pause(kSndBgmChannel);
         return;
     case 0x3A0:
-        b_.Play(kSndBgmChannel, true);
+        b_.Play(kSndBgmChannel, previewMusicId_ == 0);
         return;
     case 0x300A0:
     case 0x1100A0:
@@ -121,6 +125,8 @@ void SoundDriver::Command(uint32_t cmd) {
 // 0x00401000
 void SoundDriver::StopSlot(int slot) {
     if (slot == 0) {
+        previewMusicId_ = 0;
+        previewMusicPaused_ = previewResumeOnActivate_ = false;
         b_.Stop(kSndBgmChannel);
         b_.Release(kSndBgmChannel);
     } else if (slot == 1) {
@@ -134,6 +140,8 @@ void SoundDriver::StopSlot(int slot) {
 
 // 0x0041D350
 void SoundDriver::StopAll() {
+    b_.Stop(kPreviewEffectChannel);
+    b_.Release(kPreviewEffectChannel);
     curBgm_ = 0;
     StopSlot(slotBgm_);
     StopSlot(slotVoice_);
@@ -142,6 +150,19 @@ void SoundDriver::StopAll() {
 
 // 0x0049E780 (WM_ACTIVATEAPP)
 void SoundDriver::OnActivate(bool active) {
+    if (previewMusicId_) {
+        // An update dialog may temporarily suspend audio. Preserve both one-shot playback and an explicit Pause.
+        if (active) {
+            if (previewResumeOnActivate_) b_.Play(kSndBgmChannel, false);
+            previewResumeOnActivate_ = false;
+        } else {
+            previewResumeOnActivate_ = b_.IsPlaying(kSndBgmChannel);
+            if (previewResumeOnActivate_) b_.Pause(kSndBgmChannel);
+            StopSlot(1);
+            Command(0x300A0);
+        }
+        return;
+    }
     if (active) {
         Command(0x3A0);
     } else {
@@ -149,6 +170,52 @@ void SoundDriver::OnActivate(bool active) {
         StopSlot(1);
         Command(0x300A0);
     }
+}
+
+bool SoundDriver::PreviewMusic(const SoundTable& table, uint32_t id, bool restart) {
+    const auto request = ResolveSound(table, id);
+    if (request.action != SoundAction::PlayFile || request.channel != kSndBgmChannel) return false;
+    if (!restart && previewMusicId_ == id) {
+        if (b_.IsPlaying(kSndBgmChannel)) return true;
+        // Only Pause preserves a position. A finished/reset track must start at the beginning, including when the
+        // backend still has a queued-but-drained buffer after a suspend/finish race.
+        if (!previewMusicPaused_) b_.Stop(kSndBgmChannel);
+        previewMusicPaused_ = previewResumeOnActivate_ = false;
+        return b_.Play(kSndBgmChannel, false);
+    }
+    if (!PlayFile(request.path, false, kSndBgmChannel, 0xFFFFFFFF)) return false;
+    previewMusicId_ = curBgm_ = id;
+    return true;
+}
+
+void SoundDriver::PausePreviewMusic(uint32_t id) {
+    if (previewMusicId_ != id || !b_.IsPlaying(kSndBgmChannel)) return;
+    b_.Pause(kSndBgmChannel);
+    previewMusicPaused_ = true;
+    previewResumeOnActivate_ = false;
+}
+
+void SoundDriver::ResetPreviewMusic(uint32_t id) {
+    if (previewMusicId_ != id) return;
+    b_.Stop(kSndBgmChannel);
+    previewMusicPaused_ = previewResumeOnActivate_ = false;
+}
+
+bool SoundDriver::PreviewEffect(const SoundTable& table, uint32_t id) {
+    const auto request = ResolveSound(table, id);
+    if (request.action != SoundAction::PlayFile || request.channel == kSndBgmChannel || request.stopLoopedSe)
+        return false;
+    // Dedicated channel prevents gameplay ring reuse or a voice/SE stop command from altering the selected music.
+    return PlayFile(request.path, false, kPreviewEffectChannel, 0xFFFFFFFF);
+}
+
+void SoundDriver::StopPreviews() {
+    if (previewMusicId_) {
+        StopSlot(0);
+        curBgm_ = 0;
+    }
+    b_.Stop(kPreviewEffectChannel);
+    b_.Release(kPreviewEffectChannel);
 }
 
 // 0x0041CFD0

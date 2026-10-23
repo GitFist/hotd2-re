@@ -75,6 +75,80 @@ class LobbyServiceTest(unittest.TestCase):
         with patch.object(lobby.time, "monotonic", return_value=101.0):
             self.assertTrue(self.server.allow_packet("127.0.0.1"))
 
+    def test_difficulty_metadata_survives_create_retry_and_list(self):
+        # The client encodes difficulty + 1 in the high three flags bits. Zero
+        # means an older host did not advertise a difficulty. The existing server
+        # must preserve the byte without changing packet layout or room policy.
+        for difficulty_code in range(6):
+            for policy in (0, lobby.F_PRIVATE, lobby.F_UNLIMITED, lobby.F_UNLISTED,
+                           lobby.F_RELAY | lobby.F_REJOIN):
+                with self.subTest(difficulty_code=difficulty_code, policy=policy):
+                    self.server.rooms.clear()
+                    self.server.rate_limits.clear()
+                    self.sent.clear()
+                    flags = policy | (difficulty_code << 5)
+                    room = self.create(flags=flags)
+                    original_code = room.code
+                    self.assertEqual(room.flags, flags)
+                    self.assertIs(self.create(flags=flags), room)
+                    self.assertEqual(len(self.server.rooms), 1)
+                    self.assertEqual(room.code, original_code)
+                    self.assertEqual(room.flags, flags)
+                    self.assertEqual(self.sent[-1][0], self.server.header(101) +
+                                     struct.pack('<II', room.id, original_code))
+                    self.request(2, struct.pack('<II', room.id, room.code), self.host)
+                    self.assertEqual(self.sent[-1][0], self.server.header(105))
+                    self.request(3, struct.pack('<I', room.build), self.guest)
+                    listed = self.sent[-1][0]
+                    expected = self.server.header(102)
+                    if policy & lobby.F_UNLISTED:
+                        expected += b'\0'
+                    else:
+                        expected += b'\1' + struct.pack('<IBI', room.id, flags, room.build)
+                    self.assertEqual(listed, expected)
+                    self.assertIsNone(room.joiner_public, 'reading metadata must not join a room')
+
+    def test_difficulty_metadata_does_not_change_private_join_or_relay_rules(self):
+        for difficulty_code in range(6):
+            with self.subTest(difficulty_code=difficulty_code):
+                self.server.rooms.clear()
+                self.server.rate_limits.clear()
+                self.sent.clear()
+                flags = lobby.F_PRIVATE | lobby.F_RELAY | lobby.F_REJOIN | (difficulty_code << 5)
+                room = self.create(flags=flags)
+
+                def join(code, build):
+                    self.request(4, struct.pack('<III', room.id, code, build) +
+                                 lobby.pack_endpoint(self.guest), self.guest)
+                    return self.sent[-1][0]
+
+                self.assertEqual(join(room.code + 1, room.build)[10], 2)
+                self.assertEqual(join(room.code, room.build + 1)[10], 4)
+                self.assertIsNone(room.joiner_public)
+                accepted = join(room.code, room.build)
+                self.assertEqual(accepted[10], 0)
+                self.assertEqual(accepted[23:39], room.tokens[1])
+                self.assertEqual(accepted[39:], bytes([lobby.F_REJOIN]))
+                self.assertEqual(self.sent[-2][0][22:38], room.tokens[0])
+                self.assertEqual(self.sent[-2][0][38:], bytes([lobby.F_REJOIN]))
+                self.assertEqual(room.flags, flags)
+                tokens = room.tokens
+                self.assertIs(self.create(flags=flags), room)
+                self.assertEqual(self.sent[-1][0], self.server.peer_packet(room))
+                self.assertEqual(join(room.code, room.build), accepted)
+                self.assertEqual(room.tokens, tokens)
+                self.assertEqual(room.flags, flags)
+                self.sent.clear()
+                packet = b'H2NP\x03\x03'
+                self.send_relay(room, 0, packet, token=b'x' * 16)
+                self.assertEqual(self.sent, [], 'difficulty metadata must not bypass relay authentication')
+                self.send_relay(room, 0, packet)
+                expected = self.server.header(106) + struct.pack('<I', room.id) + room.tokens[1] + packet
+                self.assertEqual(self.sent, [(expected, self.guest)])
+                self.request(3, struct.pack('<I', room.build), self.guest)
+                self.assertEqual(self.sent[-1][0], self.server.header(102) + b'\0',
+                                 'difficulty metadata must not expose occupied rooms')
+
     def relay_room(self, flags=0):
         room = self.create(flags=flags | lobby.F_RELAY, build=2026100705)
         self.request(4, struct.pack("<III", room.id, room.code, room.build) + lobby.pack_endpoint(self.guest), self.guest)

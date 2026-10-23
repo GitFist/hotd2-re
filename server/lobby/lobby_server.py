@@ -10,7 +10,9 @@ Run: python3 lobby_server.py [--port 27020] [--bind 0.0.0.0]   (or the Dockerfil
 
 Protocol (little-endian; every datagram starts with "H2LB", version 1, type):
   client -> server
-    1 CREATE  build u32, flags u8 (1 private, 2 unlimited continues, 4 unlisted = peer to peer), local ip 4, local port u16
+    1 CREATE  build u32, flags u8, local ip 4, local port u16
+              flags: 1 private, 2 unlimited continues, 4 unlisted, 8 relay, 16 rejoin;
+              bits 5..7: difficulty + 1 (1 Very Easy .. 5 Very Hard; 0/6/7 unknown)
     2 REFRESH room u32, code u32                     (every ~2 s while hosting; answered with OK or PEER)
     3 LIST    build u32
     4 JOIN    room u32 (0 = by code only), code u32, build u32, local ip 4, local port u16
@@ -195,7 +197,7 @@ class Server:
                 del self.rooms[room.id]
 
     def handle(self, data, addr):
-        if data[:5] == b"H2RK\x01":
+        if data[:5] in (b"H2RK\x01", b"H2RK\x02"):
             response = self.rankings.handle(data, addr)
             if response:
                 self.send(response, addr)

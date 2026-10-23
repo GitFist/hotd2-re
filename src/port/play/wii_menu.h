@@ -9,7 +9,7 @@ public:
     void Open(){open_=true;player_=-1;cursor_=0;calibration_=-1;pointer_={};notice_.clear();}
     bool IsOpen()const{return open_;}
     void Close(){open_=false;calibration_=-1;}
-    bool Update(const MenuInput& in,input::WiiRemotes& remotes);
+    bool Update(const MenuInput& in,input::WiiRemotes& remotes,std::vector<uint32_t>* sounds=nullptr);
     void Sprites(const game::ExeImage& exe,const input::WiiRemotes& remotes,std::vector<game::SpriteDef>& out)const;
     void ModernHud(const input::WiiRemotes& remotes,game::WorldHud& hud)const;
     int Cursor()const{return cursor_;}

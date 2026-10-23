@@ -114,7 +114,7 @@ price and state: the glyph font (0x0055E054), the item select's name sprites (0x
 GRENADE, 0x617 FIRST AID KIT), the original mode's item models of etc_1.bin drawn in view space `kModelDepth` off
 (`CellModel`: the agent's pistol 0x1591, shotgun 0x109E, machine gun 0x109B, grenade 0x1087, the power ups 0x10A5.. and
 the chamber 0x107E.. as the upgrades' pictures, lamp 0x109A, first aid kit 0x1097, the barrel), the agents as their own
-bodies from the torso up (`MakeBody`: the player skeletons 0x3C Amy, 0x3B Harry, 0x3D Goldman with the pelvis / leg
+bodies from the torso up (`MakeBody`: the player skeletons 0x3B Amy, 0x3C Harry, 0x3D Goldman with the pelvis / leg
 nodes 9..15 without models, motion 0x32C, facing the camera). A gun player's aim (`WorldInput::x / y`) picks the cell,
 the trigger (0x009C9028 bit 2) buys, start (bit 3) or the READY cell ends the player's shopping. Items (`Item`, prices
 `ItemPrice`, states `ItemStatus`):

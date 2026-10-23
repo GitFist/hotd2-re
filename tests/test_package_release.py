@@ -1,4 +1,4 @@
-"""Synthetic public packages and read-only game metadata tests; no game ZIPs."""
+"""Synthetic package and read-only game metadata tests; no original game data."""
 import hashlib
 import json
 import os
@@ -60,7 +60,7 @@ const char* const kBuildName = "2026 10 19 NS32";
         self.addCleanup(self.revision.stop)
 
     def package(self, **arguments):
-        return release.stage_package(kind="public", architecture=arguments.pop("architecture", "x86"), exe=arguments.pop("exe", self.exe), source_dir=self.source,
+        return release.stage_package(kind=arguments.pop("kind", "public"), architecture=arguments.pop("architecture", "x86"), exe=arguments.pop("exe", self.exe), source_dir=self.source,
                                      out=arguments.pop("out", self.root / "new-output"), **arguments)
 
     def test_actual_pe_selects_ns32_when_source_lists_ns64_first(self):
@@ -124,6 +124,7 @@ const char* const kBuildName = "2026 10 19 NS32";
         (self.source / "game").mkdir()
         (self.source / "game/Hod2.exe").write_bytes(b"original game is never copied")
         archive = self.package()
+        self.assertEqual(archive.name, "hotd2re-win-x86.zip")
         with zipfile.ZipFile(archive) as contents:
             names = contents.namelist()
             self.assertNotIn("hotd2re/game/Hod2.exe", names)
@@ -223,6 +224,30 @@ const char* const kBuildName = "2026 10 19 NS32";
         self.assertEqual({name.casefold() for _, name, _, _ in selected},
                          {"game/" + name for name in release.REQUIRED_GAME_FILES} | {"game/tex/model.bin"})
         self.assertFalse(list(self.root.rglob("*.zip")))
+
+    def test_complete_archive_uses_stable_name_and_matching_checksum(self):
+        directory, metadata, entries = self.game_manifest()
+        for architecture in ("x86", "x64"):
+            with self.subTest(architecture=architecture):
+                exe = fake_pe(self.root / architecture / "hotd2.exe", architecture,
+                              "2026 10 19 NS64" if architecture == "x64" else "2026 10 19 NS32")
+                archive = self.package(kind="complete", architecture=architecture, exe=exe,
+                                       game_dir=directory, game_manifest=metadata,
+                                       out=self.root / ("complete-" + architecture))
+                self.assertEqual(archive.name, "hotd2re-complete.zip")
+                checksum = archive.with_name("hotd2re-complete.zip.sha256")
+                self.assertEqual(checksum.read_text(),
+                                 f"{release.sha256(archive)}  hotd2re-complete.zip\n")
+                with zipfile.ZipFile(archive) as contents:
+                    self.assertIsNone(contents.testzip())
+                    for entry in entries:
+                        relative = entry["file"].replace("\\", "/")
+                        self.assertEqual(contents.read("hotd2re/game/" + relative),
+                                         (directory / relative).read_bytes())
+                    manifest = json.loads(contents.read("hotd2re/PACKAGE-MANIFEST.json"))
+                    self.assertEqual(manifest["packageKind"], "complete")
+                    self.assertEqual(manifest["executable"]["architecture"], architecture)
+                    self.assertTrue(manifest["originalGameDataIncluded"])
 
     def test_truncated_manifest_missing_boot_data_is_refused(self):
         directory, metadata, result = self.game_manifest()

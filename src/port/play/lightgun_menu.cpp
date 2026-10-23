@@ -1,4 +1,5 @@
 #include "lightgun_menu.h"
+#include "game/menu_audio.h"
 #include "game/menu_text.h"
 #include "play/device_menu_hud.h"
 
@@ -19,28 +20,29 @@ std::string Status(const input::Lightguns& guns,int p){
     return r.relative?"Mouse device ready":"Light gun ready";
 }
 }
-LightgunMenu::Action LightgunMenu::Update(const MenuInput& in,input::Lightguns& guns,bool gunMode){
+LightgunMenu::Action LightgunMenu::Update(const MenuInput& in,input::Lightguns& guns,bool gunMode,std::vector<uint32_t>* sounds){
     if(!open_)return Action::None;
+    auto sound=[&](uint32_t id){if(sounds)sounds->push_back(id);};
     if(testing_){
-        if(in.pressed&2){testing_=false;guns.ReleaseButtons();return Action::None;}
+        if(in.pressed&2){testing_=false;guns.ReleaseButtons();sound(game::kOptionBackSound);return Action::None;}
         for(int p=0;p<2;++p)if(guns.Player(p).pressed&input::kTrigger)++shots_[p];
         return Action::None;
     }
     // Assignment, calibration and bindings only accept fresh physical input. Keyboard
     // Escape always cancels, even if the chosen physical button used to mean Back.
     if(guns.Assigning()>=0){
-        if(in.pressed&2){guns.CancelAssign();notice_="Assignment cancelled";}
+        if(in.pressed&2){guns.CancelAssign();notice_="Assignment cancelled";sound(game::kOptionBackSound);}
         return Action::None;
     }
-    if(guns.TakeAssigned()){notice_="Gun assigned - open player settings to test";return Action::Save;}
+    if(guns.TakeAssigned()){notice_="Gun assigned - open player settings to test";sound(game::kOptionSelectSound);return Action::Save;}
     if(calibration_>=0||binding_>=0){
-        if(in.pressed&2){calibration_=binding_=-1;notice_="Cancelled - previous settings kept";guns.ReleaseButtons();return Action::None;}
+        if(in.pressed&2){calibration_=binding_=-1;notice_="Cancelled - previous settings kept";guns.ReleaseButtons();sound(game::kOptionBackSound);return Action::None;}
         auto r=guns.Reading(player_);
         if(!r.connected){calibration_=binding_=-1;notice_="Gun disconnected - reconnect and retry";return Action::None;}
         if(binding_>=0){
             if(r.sequence>captureAfter_&&r.pressed){
                 for(auto b:input::kGunButtons)if(r.pressed&b){guns.settings.player[player_].Bind(binding_,b);break;}
-                binding_=-1;guns.settings.manual=true;guns.ReleaseButtons();notice_="Button saved";return Action::Save;
+                binding_=-1;guns.settings.manual=true;guns.ReleaseButtons();notice_="Button saved";sound(game::kOptionSelectSound);return Action::Save;
             }
         }else{
             auto fire=guns.settings.player[player_].buttons[0];
@@ -49,6 +51,7 @@ LightgunMenu::Action LightgunMenu::Update(const MenuInput& in,input::Lightguns& 
                 waitRelease_=true;
                 if(!r.onScreen){notice_="Aim inside the game image";return Action::None;}
                 samples_[calibration_++]=r.aim;
+                sound(game::kOptionSelectSound);
                 if(calibration_==4){bool ok=guns.settings.player[player_].calibration.Fit(samples_);calibration_=-1;
                     notice_=ok?"Calibration saved - test your aim":"Calibration failed - retry all four targets";
                     if(ok)guns.settings.manual=true;guns.ReleaseButtons();return ok?Action::Save:Action::None;}
@@ -58,6 +61,7 @@ LightgunMenu::Action LightgunMenu::Update(const MenuInput& in,input::Lightguns& 
     }
     if(in.start||in.reload||(in.pressed&2)){
         if(player_>=0){player_=-1;cursor_=0;pointer_={};}else Close(guns);
+        sound(game::kOptionBackSound);
         return Action::None;
     }
     int under=-1,rows=player_<0?8:9;
@@ -66,8 +70,9 @@ LightgunMenu::Action LightgunMenu::Update(const MenuInput& in,input::Lightguns& 
     if(in.pressed&0x10)cursor_=(cursor_+rows-1)%rows;
     if(in.pressed&0x20)cursor_=(cursor_+1)%rows;
     bool choose=(in.pressed&0xc)||(in.trigger&&under==cursor_);
-    if(player_<0&&cursor_==0&&(choose||(in.pressed&0xc0)))return gunMode?Action::MouseMode:Action::GunMode;
+    if(player_<0&&cursor_==0&&(choose||(in.pressed&0xc0))){sound(game::kOptionSelectSound);return gunMode?Action::MouseMode:Action::GunMode;}
     if(!choose)return Action::None;
+    sound((player_<0&&cursor_==7)||(player_>=0&&cursor_==8)?game::kOptionBackSound:game::kOptionSelectSound);
     notice_.clear();
     if(player_<0){
         if(cursor_==1||cursor_==2){

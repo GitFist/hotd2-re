@@ -2,8 +2,9 @@
 
 // Optional client-reported shared records, independent of deterministic gameplay.
 // The service uses the configured lobby endpoint, but a distinct socket/protocol.
-// Initials are display names, not authenticated identities. Only an explicit user
+// Names are display names, not authenticated identities. Only an explicit user
 // publish action should call Submit; reading this client never uploads old saves.
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -11,8 +12,10 @@
 
 namespace port::net {
 
+inline constexpr size_t kLeaderboardMaxNameLength = 12;
+
 struct LeaderboardEntry {
-    std::string name;
+    std::string name;          // 1..12 uppercase ASCII characters; local save initials remain three characters
     uint32_t score = 0;       // score, or 60-Hz frames for board 3..12
     uint16_t rounds = 0;      // Horde only
     uint8_t difficulty = 0;   // stage reached for Arcade/Original; difficulty otherwise
@@ -22,7 +25,7 @@ struct LeaderboardSubmission : LeaderboardEntry {
     int table = 0;            // 0 Arcade, 1 Original, 2 Horde, 3..12 bosses/rush
     // Local-only positive monotonic completion token. A new real run needs a
     // new token even when every visible value matches. Retrying this token is
-    // idempotent; once sent, its original initials/payload remain frozen.
+    // idempotent; once sent, its original name/payload remain frozen.
     uint64_t completionToken = 0;
 };
 

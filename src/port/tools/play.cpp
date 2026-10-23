@@ -66,18 +66,24 @@
 #include "port/play/gameplay_hud.h"
 #include "port/play/gun_input.h"
 #include "port/play/home_lobby_preview.h"
+#include "port/play/attraction_audio.h"
 #include "port/play/keyboard.h"
 #include "port/play/lightgun_menu.h"
 #include "port/play/local_leaderboard.h"
 #include "port/play/night_shift_menu.h"
+#include "port/play/model_gallery.h"
+#include "port/play/model_gallery_audio.h"
 #include "port/play/pack_preview.h"
 #include "port/play/pause_menu.h"
 #include "port/play/renderer_fallback.h"
+#include "port/play/run_name_prompt.h"
+#include "port/play/scroll_hint.h"
 #include "port/play/widescreen.h"
 #include "port/play/wii_menu.h"
 #include "render/display_calibration.h"
 #include "render/frame_statistics.h"
 #include "render/gpu_budget.h"
+#include "render/hud_composition.h"
 #include "render/output_resolution.h"
 #include "render/ui_font.h"
 #ifdef _WIN32
@@ -181,12 +187,13 @@ uint32_t WorldHash(const game::World& w) {
 
 // The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
+// Presentation-only updates can change the displayed label while retaining multiplayer compatibility.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026102101;
-const char* const kBuildName = "2026 10 21 A";
+constexpr uint32_t kBuildId = 2026102200;
+const char* const kBuildName = "2026 10 22 E";
 #else
-constexpr uint32_t kBuildId = 2026101905;
-const char* const kBuildName = "2026 10 19 NS32";
+constexpr uint32_t kBuildId = 2026102201;
+const char* const kBuildName = "2026 10 22 NS32 E";
 #endif
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
@@ -382,10 +389,14 @@ struct Lobby {
 
 std::string RoomLabel(const port::net::LobbyRoom& r, uint32_t build) {
     std::string s = "ROOM " + std::to_string(r.id);
-    while (s.size() < 10) s += ' ';
+    s.append(s.size() < 10 ? 10 - s.size() : 1, ' ');
     s += (r.flags & port::net::kRoomPrivate) ? "PRIVATE  " : "PUBLIC   ";
+    static constexpr const char* levels[] = {"VERY EASY", "EASY", "NORMAL", "HARD", "VERY HARD"};
+    const int difficulty = port::net::RoomDifficulty(r.flags);
+    s += difficulty >= 0 ? levels[difficulty] : "UNKNOWN";
+    s += "  ";
     s += (r.flags & port::net::kRoomUnlimited) ? "UNLIMITED" : "3 CONTINUES";
-    if (r.build != build) s += "  OTHER VER";  // (36 cells at most: fits from cell 2)
+    if (r.build != build) s += "  OTHER VER";
     return s;
 }
 
@@ -396,7 +407,15 @@ void LobbySprites(const game::ExeImage& exe, const Lobby& l, const port::net::Se
     auto row = [&](int i, const std::string& text, bool list = false) {
         const float x = list ? Lobby::kListX : Lobby::kRowX;
         const float y = (list ? Lobby::kListY0 : Lobby::kRowY0) + static_cast<float>(i) * (list ? Lobby::kListPitch : Lobby::kRowPitch);
-        game::MenuText(exe, x, y, text, i == l.cursor ? 0x10u : 1u, out);
+        const uint32_t flags = i == l.cursor ? 0x10u : 1u;
+        if (list) {
+            // Full difficulty names and long room IDs must fit the Classic menu too.
+            const float width = game::MenuTextAdvance(exe, 1) * static_cast<float>(text.size());
+            const float scale = width > 580 ? 580 / width : 1;
+            game::MenuTextScaled(exe, x * 16, y * 24 + (1 - scale) * 22, text, flags, scale, out);
+        } else {
+            game::MenuText(exe, x, y, text, flags, out);
+        }
     };
     auto note = [&](float y, const std::string& text, uint32_t flags = 0x40u) {
         game::MenuText(exe, 0.0f, y, text, flags | 2u, out);
@@ -595,7 +614,9 @@ std::vector<ScriptLine> LoadScript(const std::string& path) {
 }
 
 // World::Hud -> game::HudState (the HUD layouts read the original's globals; see game/hud.h for each field).
-game::HudState MakeHudState(const game::WorldHud& h, const game::WorldInput in[2], int modeAge, uint32_t blink, bool freePlay) {
+game::HudState MakeHudState(const game::World& world, const game::WorldInput in[2], int modeAge, uint32_t blink, bool freePlay) {
+    const auto& h = world.Hud();
+    const auto options = world.GetPortGameOptions();
     game::HudState s;
     s.gameMode = h.gameMode;
     if (h.prototype) s.weaponMode = 1;
@@ -620,6 +641,7 @@ game::HudState MakeHudState(const game::WorldHud& h, const game::WorldInput in[2
         d.empty = w.empty ? 1 : 0;
         d.reloadTimer = static_cast<int16_t>(w.reloadBlink);
         d.inputKind = static_cast<int8_t>(w.inputKind);
+        d.crosshairStyle = static_cast<int8_t>(options.crosshair[p]);
         d.gunValid = w.gunValid ? 1 : 0;
         d.gunFired = w.fired ? 1 : 0;
         d.deviceMode = in[p].deviceMode;
@@ -675,9 +697,9 @@ void StepTitleCard(const game::WorldHud& h) {
     g_cardSprites = card.Run(0);
 }
 
-std::vector<game::SpriteDef> WorldSprites(const game::WorldHud& h) {
+std::vector<game::SpriteDef> WorldSprites(const game::WorldHud& h, bool includeTitleCard = true) {
     std::vector<game::SpriteDef> out;
-    out.insert(out.end(), g_cardSprites.begin(), g_cardSprites.end());
+    if (includeTitleCard) out.insert(out.end(), g_cardSprites.begin(), g_cardSprites.end());
     for (const auto& l : h.subtitles) {  // voice-line subtitles (task 0x00435AA0, glyphs 0x00436850)
         const auto v = game::SubtitleSprites(g_subtitles, l.group, l.line, 0);
         out.insert(out.end(), v.begin(), v.end());
@@ -760,6 +782,8 @@ int main(int argc, char** argv) {
         dir = argv[1];
     }
     int width = 960, height = 720, shotFrame = -1, runFrames = 0, shotEvery = 0, shotFrom = 0, shotPhase = 0;
+    int captureRenderWidth = 0, captureRenderHeight = 0;
+    bool captureRenderSizeGiven = false;
     uint32_t seed = 902;
     uint32_t firstSerial = 0x10000;  // the play captures: 65551 (history-dependent)
     int credits = -1;                // -1: free play; else that many credits (the play captures: 5)
@@ -798,6 +822,13 @@ int main(int argc, char** argv) {
             width = atoi(argv[++i]);
         else if (a == "--height" && i + 1 < argc)
             height = atoi(argv[++i]);
+        else if (a == "--render-width" && i + 1 < argc) {
+            captureRenderWidth = atoi(argv[++i]);
+            captureRenderSizeGiven = true;
+        } else if (a == "--render-height" && i + 1 < argc) {
+            captureRenderHeight = atoi(argv[++i]);
+            captureRenderSizeGiven = true;
+        }
         else if (a == "--script" && i + 1 < argc)
             scriptPath = argv[++i];
         else if (a == "--screenshot" && i + 1 < argc)
@@ -908,6 +939,12 @@ int main(int argc, char** argv) {
                 s = c == std::string::npos ? std::string() : s.substr(c + 1);
             }
         }
+    }
+    // Diagnostic captures can hold output size fixed while varying the actual
+    // scene target. Ordinary screenshot and interactive sizing stays unchanged.
+    if (captureRenderSizeGiven && (screenshot.empty() || !port::ValidHudOutputSize(captureRenderWidth, captureRenderHeight))) {
+        std::fprintf(stderr, "--render-width and --render-height require a screenshot and a valid paired render size\n");
+        return 2;
     }
     // The port's settings (volumes, display, and "input=" for the gun source: a touchpad's clicks are synthesized by
     // Windows and never reach raw input, so such players set input=mouse). --input / --width / --height / --renderer on
@@ -1057,7 +1094,7 @@ int main(int argc, char** argv) {
     bool netPlayerAssigned = netplay;
     auto deviceForPlayer = [&](int p) { return netPlayerAssigned ? (p == netLocal ? 0 : -1) : p; };
     auto keyboardPlayer = [&] { return netPlayerAssigned ? netLocal : 0; };
-    int netVolumes[3] = {-1, -1, -1};  // joiner: the host's Options-screen volume rows (world state)
+    int netVolumes[5] = {-1, -1, -1, 5, 5};  // joiner: the host's Options-screen volume rows (world state)
     bool netVolumesSet = false;
     uint8_t netCmd = 0;  // kCmd* for the next pushed input (the pause menu's Return to Main Menu)
     long long netStalls = 0;
@@ -1096,7 +1133,7 @@ int main(int argc, char** argv) {
             cfg.portStageResults = screenshot.empty() || getenv("HOTD2_PLAY_MENU") || getenv("HOTD2_STAGE_RESULTS");
             return world.StartStage(cfg, &err);
         }
-        game::WorldConfig boot;  // World::Boot: frame 0 of the game; the mode select gives --credits credits (free play)
+        game::WorldConfig boot;  // World::Boot: frame 0; playable menus load saved rules, native captures use explicit defaults.
         boot.creditSetting = credits >= 0 ? credits - 1 : -1;
         boot.startFrame = 0;
         boot.gameOver = true;
@@ -1106,10 +1143,15 @@ int main(int argc, char** argv) {
             boot.portVolumes[0] = netVolumesSet ? netVolumes[0] : volumes.music;      // the options screen's volume rows
             boot.portVolumes[1] = netVolumesSet ? netVolumes[1] : volumes.guns;       // (netplay joiner: the host's)
             boot.portVolumes[2] = netVolumesSet ? netVolumes[2] : volumes.sfx;
+            boot.portVolumes[3] = netVolumesSet ? netVolumes[3] : volumes.master;
+            boot.portVolumes[4] = netVolumesSet ? netVolumes[4] : volumes.attraction;
             boot.portFeatures = true;  // back button on the item select, Scene Select
             boot.portModernMenu = activeNightShift;
             boot.portStageResults = true;
         }
+        // Playable sessions use the saved gameplay rules from the first run after launch.
+        // Native replay captures keep their explicit WorldConfig settings.
+        boot.applySaveSettings = boot.portFeatures;
         // the port's own save (rankings, grades, items, options); the original's files are only read when it is absent
         bool saveGiven = false;
         for (int k = firstOpt; k < argc; ++k) saveGiven = saveGiven || std::string(argv[k]) == "--save";
@@ -1146,8 +1188,9 @@ int main(int argc, char** argv) {
         g.portFeatures = (c.flags & 1) != 0;
         g.portModernMenu = (c.flags & 2) != 0;
         g.portNetworkRoom = (c.flags & 4) != 0;
+        g.applySaveSettings = g.portFeatures;
         g.portStageResults = true;
-        for (int k = 0; k < 3; ++k) g.portVolumes[k] = c.portVolumes[k];
+        for (int k = 0; k < 5; ++k) g.portVolumes[k] = c.portVolumes[k];
         g.savePath = scratchSave.string();
         if (!world.StartNetworkGame(g, &err)) return false;
         keyScriptPos = 0;
@@ -1179,6 +1222,7 @@ int main(int argc, char** argv) {
     po.width = width;
     po.height = height;
     po.window = !headless;
+    po.hidden = true;  // apply saved fullscreen before SDL exposes the initial decorated window
     po.input = common.input;
     po.guns = true;
     if (!plat.Init(po, &err)) {
@@ -1203,13 +1247,20 @@ int main(int argc, char** argv) {
             fprintf(stderr, "Fullscreen is unavailable; using a window\n");
         }
     }
+    // Showing applies SDL's pending fullscreen state without exposing the windowed frame. Do this before sizing
+    // the renderer: hidden windows still report their windowed dimensions and SDL_GPU cannot acquire their swap chain.
+    if (!plat.ShowWindow(&err)) {
+        fprintf(stderr, "platform: %s\n", err.c_str());
+        return 1;
+    }
     int initialWindowW = width, initialWindowH = height;
     if (!headless) plat.ClientSize(&initialWindowW, &initialWindowH);
     float viewportAspect = play::DisplayViewportAspect(volumes.display.viewport, initialWindowW, initialWindowH);
     const auto initialImage =
         play::DisplayImageRect(initialWindowW, initialWindowH, viewportAspect, volumes.display.stretch, volumes.display.integerScale);
-    const int authoredH = headless ? height : 480 * volumes.display.renderScale;
-    const int authoredW = headless ? width : static_cast<int>(std::lround(authoredH * viewportAspect));
+    const int authoredH = headless ? (captureRenderSizeGiven ? captureRenderHeight : height) : 480 * volumes.display.renderScale;
+    const int authoredW = headless ? (captureRenderSizeGiven ? captureRenderWidth : width)
+                                  : static_cast<int>(std::lround(authoredH * viewportAspect));
     const auto initialSize = port::ChooseOutputResolution(static_cast<port::OutputResolution>(volumes.display.resolutionMode), authoredW,
                                                           authoredH, initialImage.w, initialImage.h);
     const int renderH = initialSize.height, renderW = initialSize.width;
@@ -1375,8 +1426,8 @@ int main(int argc, char** argv) {
         int ww = width, wh = height;
         if (!headless) gpu->WindowSizePixels(&ww, &wh);
         const auto image = play::DisplayImageRect(ww, wh, aspect, volumes.display.stretch, volumes.display.integerScale);
-        const int ah = headless ? height : 480 * volumes.display.renderScale;
-        const int aw = headless ? width : static_cast<int>(std::lround(ah * aspect));
+        const int ah = headless ? (captureRenderSizeGiven ? captureRenderHeight : height) : 480 * volumes.display.renderScale;
+        const int aw = headless ? (captureRenderSizeGiven ? captureRenderWidth : width) : static_cast<int>(std::lround(ah * aspect));
         return port::ChooseOutputResolution(static_cast<port::OutputResolution>(volumes.display.resolutionMode), aw, ah, image.w, image.h);
     };
 #ifdef _WIN32
@@ -1555,18 +1606,23 @@ int main(int argc, char** argv) {
         sndDriver = std::make_unique<game::SoundDriver>(*sndBackend);
     if (audio && !headless && !sndDriver) fprintf(stderr, "audio: %s\n", err.empty() ? "cannot read the sound tables" : err.c_str());
 
+    // The menu scenery has its own sound channels: gameplay and Extras commands must never stop or replace them.
+    std::unique_ptr<port::AudioOutput> attractionBackend;
+    std::unique_ptr<game::SoundDriver> attractionDriver;
+    if (sndDriver && activeNightShift) {
+        attractionBackend = plat.CreateAudio(common.audio, dir, &err);
+        if (attractionBackend) attractionDriver = std::make_unique<game::SoundDriver>(*attractionBackend);
+        else fprintf(stderr, "attraction audio: %s\n", err.c_str());
+    }
+
     // The port's pause menu (src/port/play/pause_menu.h; not in the original): volumes per category, return to the
     // title. The settings live next to the port's save file (the working directory). Interactive runs only: scripted /
     // headless runs keep the original's pause (the label; start resumes).
     auto applyVolumes = [&] {
-        const int pv[3] = {volumes.music, volumes.guns, volumes.sfx};
+        const int pv[5] = {volumes.music, volumes.guns, volumes.sfx, volumes.master, volumes.attraction};
         world.SetPortVolumes(pv);  // the options screen's rows follow
-        if (!sndDriver) return;
-        game::SoundDriver::Volumes gv;
-        gv.gain[game::SoundDriver::kMusic] = static_cast<float>(volumes.music) / 10.0f;
-        gv.gain[game::SoundDriver::kGuns] = static_cast<float>(volumes.guns) / 10.0f;
-        gv.gain[game::SoundDriver::kSfx] = static_cast<float>(volumes.sfx) / 10.0f;
-        sndDriver->SetVolumes(gv);
+        if (sndDriver) sndDriver->SetVolumes(play::GameAudioVolumes(volumes.master, volumes.music, volumes.guns, volumes.sfx));
+        if (attractionDriver) attractionDriver->SetVolumes(play::AttractionAudioVolumes(volumes.master, volumes.attraction));
     };
     applyVolumes();
     play::PauseMenu menu;
@@ -1669,8 +1725,71 @@ int main(int argc, char** argv) {
                                                          : "Texture pack saved. Restart the game to apply.");
         }
     };
+    // Every entry point edits the same saved values. The page holds only a UI snapshot;
+    // consume its changes once, then refresh from the world and the local mixer settings.
+    auto bindOptionValues = [&](play::DisplayMenu& page) {
+        play::DisplayMenu::OptionValues values;
+        values.audio[0] = volumes.music;
+        values.audio[1] = volumes.guns;
+        values.audio[2] = volumes.sfx;
+        values.audio[3] = volumes.master;
+        values.audio[4] = volumes.attraction;
+        const auto saved = world.GetPortGameOptions();
+        values.difficulty = saved.difficulty;
+        values.lives = saved.lives;
+        values.credits = saved.credits;
+        values.crosshair[0] = saved.crosshair[0];
+        values.crosshair[1] = saved.crosshair[1];
+        values.freePlayUnlocked = saved.freePlayUnlocked;
+        values.gameplayEditable = saved.editable;
+        page.SetOptionValues(values);
+    };
+    auto applyOptionValues = [&](play::DisplayMenu& page) {
+        play::DisplayMenu::OptionValues values;
+        if (page.TakeOptionChange(&values)) {
+            const bool audioChanged = values.audio[0] != volumes.music || values.audio[1] != volumes.guns ||
+                                      values.audio[2] != volumes.sfx || values.audio[3] != volumes.master ||
+                                      values.audio[4] != volumes.attraction;
+            if (audioChanged) {
+                volumes.music = values.audio[0];
+                volumes.guns = values.audio[1];
+                volumes.sfx = values.audio[2];
+                volumes.master = values.audio[3];
+                volumes.attraction = values.audio[4];
+                applyVolumes();
+            }
+            auto saved = world.GetPortGameOptions();
+            const bool gameplayChanged = values.difficulty != saved.difficulty || values.lives != saved.lives ||
+                                         values.credits != saved.credits || values.crosshair[0] != saved.crosshair[0] ||
+                                         values.crosshair[1] != saved.crosshair[1];
+            if (gameplayChanged) {
+                saved.difficulty = values.difficulty;
+                saved.lives = values.lives;
+                saved.credits = values.credits;
+                saved.crosshair[0] = values.crosshair[0];
+                saved.crosshair[1] = values.crosshair[1];
+                page.SetStatus(world.SetPortGameOptions(saved) ? "Gameplay settings saved for the next run."
+                                                              : "Gameplay settings are unavailable during a run or online session.");
+            }
+        }
+        if (page.TakeGameplayReset()) {
+            if (world.ResetPortGameOptions()) {
+                volumes.display.redBlood = false;
+                volumes.display.showCrosshairs = true;
+                page.SetStatus("Gameplay defaults restored. Records, unlocks and device calibration are preserved.");
+            } else {
+                page.SetStatus("Gameplay defaults could not be restored during a run or online session.");
+            }
+        }
+        bindOptionValues(page);
+    };
+    bindOptionValues(optionsPage);
+    bindOptionValues(menu.Display());
     int displayRequestsSeen = 0;
+    int modelViewerRequestsSeen = 0;
+    play::ModelGallery modelGallery;
     play::AttractPreview attract;
+    play::AttractionAudio attractionAudio;
     play::LocalHordeLeaderboard hordeRecords;
     const std::string hordeRecordsPath = "hotd2re_horde_records.txt";
     if (!headless) hordeRecords.Load(hordeRecordsPath);
@@ -1679,9 +1798,14 @@ int main(int argc, char** argv) {
     uint64_t rankingsRevision = 0, completedRunSequence = 0;
     port::net::LeaderboardSubmission pendingRecord;
     bool pendingRecordValid = false, publishingRecord = false;
+    play::RunNamePrompt runNamePrompt;
+    uint32_t promptPrevKeys = 0;
+    bool promptInputConsumed = false;
     uint64_t pendingCompletionToken = 0, publishingCompletionToken = 0;
     int previousRunMode = world.GameMode();
+    bool previousBossSelector = false;
     bool active = true;  // focus gates local input and the system cursor, never the game clock or audio
+    int optionsScroll = 0, optionsTabDelta = 0;
     // One frame of menu input from the keyboard edges and the pointing device (the given player's device first).
     auto menuInput = [&](uint32_t pressedKeys, int firstPlayer) {
         play::MenuInput mi;
@@ -1689,6 +1813,8 @@ int main(int argc, char** argv) {
         mi.pressed = pressedKeys & ~(play::kEscapeKey | play::kPreviewKey);
         mi.start = (pressedKeys & play::kEscapeKey) != 0;
         mi.preview = (pressedKeys & play::kPreviewKey) != 0;
+        mi.scroll = optionsScroll;
+        mi.pageDelta = optionsTabDelta;
         for (int q = 0; q < 2 && guns; ++q) {
             const int dev = deviceForPlayer((q + firstPlayer) % 2);
             if (dev < 0) continue;
@@ -1706,6 +1832,18 @@ int main(int argc, char** argv) {
         return mi;
     };
 
+    auto updateRunNamePrompt = [&](const play::MenuInput& mi) {
+        if (runNamePrompt.Update(mi) != play::RunNamePrompt::Action::Publish) return;
+        if (pendingRecordValid && pendingRecord.completionToken == runNamePrompt.Token() && !publishingRecord) {
+            pendingRecord.name = runNamePrompt.Name();
+            std::string submitError;
+            if (rankings.Submit(pendingRecord, &submitError)) {
+                publishingRecord = true;
+                publishingCompletionToken = pendingRecord.completionToken;
+                runNamePrompt.BeginSubmitting();
+            } else runNamePrompt.FinishSubmission(false, submitError);
+        } else runNamePrompt.FinishSubmission(false, publishingRecord ? "A RESULT IS STILL BEING SENT" : "THIS RUN IS NO LONGER AVAILABLE");
+    };
     const float clear[4] = {0, 0, 0, 1};
     if (netplay) {
         // Lobby (direct IP for now): the host waits for the joiner's hello and answers with the session config; the
@@ -1723,9 +1861,13 @@ int main(int argc, char** argv) {
             c.portVolumes[0] = volumes.music;
             c.portVolumes[1] = volumes.guns;
             c.portVolumes[2] = volumes.sfx;
+            c.portVolumes[3] = volumes.master;
+            c.portVolumes[4] = volumes.attraction;
             c.flags = 3;
             c.delay = static_cast<uint8_t>(netDelay);
-            if (std::ifstream sf(savePath, std::ios::binary); sf) c.save.assign(std::istreambuf_iterator<char>(sf), {});
+            game::SaveData matchSave;
+            if (!matchSave.LoadNative(savePath)) matchSave.LoadOriginal(dir, assets.Exe());
+            c.save = matchSave.NativeBytes();
             net.SetConfig(c);
             printf("netplay: hosting on UDP port %d, waiting for a player to join...\n", netPort);
         } else if (netCode) {
@@ -1784,7 +1926,7 @@ int main(int argc, char** argv) {
             firstSerial = c.firstSerial;
             cfg.seedCounter = seed;
             cfg.firstSerial = firstSerial;
-            for (int k = 0; k < 3; ++k) netVolumes[k] = c.portVolumes[k];
+            for (int k = 0; k < 5; ++k) netVolumes[k] = c.portVolumes[k];
             netVolumesSet = true;
             savePath = "hotd2re_save_net.bin";  // the host's save, this side's copy (rankings written here go nowhere)
             std::ofstream sf(savePath, std::ios::binary | std::ios::trunc);
@@ -1837,7 +1979,7 @@ int main(int argc, char** argv) {
         world.SetPortHomeRooms({}, "CHECKING WAITING ROOMS...");
     };
     auto updateSystemCursor = [&] {
-        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen(),
+        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || runNamePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
         plat.SetCursorVisible(play::SystemCursorVisible(world.Hud(), context));
     };
@@ -1890,6 +2032,8 @@ int main(int argc, char** argv) {
         }
         if (publishingRecord && rankings.SubmissionFinished()) {
             publishingRecord = false;
+            if (runNamePrompt.Token() == publishingCompletionToken)
+                runNamePrompt.FinishSubmission(rankings.LastSubmitAccepted(), rankings.Error());
             if (pendingRecord.completionToken != publishingCompletionToken)
                 world.SetPortLeaderboardPublishable(pendingRecordValid, "NEW RUN READY / PUBLISH WHEN YOU CHOOSE");
             else if (rankings.LastSubmitAccepted()) {
@@ -1911,6 +2055,7 @@ int main(int argc, char** argv) {
                 hordeRecords.DiscardPending();
                 pendingRecordValid = false;
                 world.SetPortLeaderboardPublishable(false);
+                runNamePrompt.Reset();
                 if (sndDriver) sndDriver->StopAll();
                 if (!startNetworkGame()) {
                     fprintf(stderr, "rejoin: %s\n", err.c_str());
@@ -1961,6 +2106,35 @@ int main(int argc, char** argv) {
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
                 if (ev.type == T::Quit) quit = true;
+                if (active && runNamePrompt.IsOpen() && ev.type == T::KeyDown &&
+                    (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127))) {
+                    const char ch = ev.shift && ev.ch == '-' ? '_' : ev.ch;
+                    runNamePrompt.Edit(ev.key == platform::Key::Backspace ? "" : std::string(1, ch),
+                                       ev.key == platform::Key::Backspace);
+                    g_keys &= ~KeyBit(ev.key);
+                    continue;
+                }
+                if (modelGallery.IsOpen() && (active || ev.type == T::Focus || ev.type == T::KeyUp)) {
+                    int ww, wh;
+                    plat.ClientSize(&ww, &wh);
+                    const auto image = play::DisplayImageRect(ww, wh, viewportAspect, volumes.display.stretch, volumes.display.integerScale);
+                    float x = -1, y = -1;
+                    input::WindowToImage(ev.x, ev.y, image, &x, &y);
+                    port::CrtWarpUV(&x, &y, volumes.display.graphics.crtCurvature);
+                    modelGallery.HandleEvent(ev, play::MenuPointerX(x, viewportAspect) * 640, y * 480);
+                }
+                const bool optionsInput = (optionsPage.IsOpen() || (menu.IsOpen() && menu.DisplayOpen())) &&
+                                          !wiiPage.IsOpen() && !lightgunPage.IsOpen();
+                if (active && optionsInput && ev.type == T::MouseWheel && ev.wheel != 0) {
+                    optionsScroll = std::clamp(optionsScroll + (ev.wheel > 0 ? 1 : -1), -8, 8);
+                } else if (active && !netplay && !optionsInput && !modelGallery.IsOpen() && ev.type == T::MouseWheel && ev.wheel != 0 &&
+                           world.Hud().nightShiftPage == 9) {
+                    // Wheel scrolling only changes library focus; it never emits an audio command.
+                    world.ScrollPortExtras(ev.wheel > 0 ? -3 : 3);
+                }
+                if (active && optionsInput && ev.type == T::KeyDown && !ev.repeat &&
+                    (ev.key == platform::Key::PageUp || ev.key == platform::Key::PageDown))
+                    optionsTabDelta += ev.key == platform::Key::PageUp ? -1 : 1;
                 if (active && (wiiPage.IsOpen() || lightgunPage.IsOpen()) && (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
                     int ww, wh;
                     plat.ClientSize(&ww, &wh);
@@ -1975,6 +2149,17 @@ int main(int argc, char** argv) {
                     if (ev.type == T::MouseDown) {
                         wiiMouse.trigger |= ev.button == 1;
                         wiiMouse.reload |= ev.button == 3;
+                    }
+                }
+                if (active && !netplay && !optionsInput && !wiiPage.IsOpen() && !lightgunPage.IsOpen() &&
+                    !modelGallery.IsOpen() && world.GameMode() == 4 && world.Hud().nightShiftPage == 4 && ev.type == T::KeyDown) {
+                    // Name typing owns printable keys, including Space/H/P, which otherwise trigger game actions.
+                    if (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127)) {
+                        const char ch = ev.shift && ev.ch == '-' ? '_' : ev.ch;
+                        world.EditPortLeaderboardName(ev.key == platform::Key::Backspace ? "" : std::string(1, ch),
+                                                      ev.key == platform::Key::Backspace);
+                        g_keys &= ~KeyBit(ev.key);
+                        continue;
                     }
                 }
                 if (active && ev.type == T::KeyDown) g_keys |= KeyBit(ev.key);
@@ -1994,6 +2179,7 @@ int main(int argc, char** argv) {
                         typed.clear();
                         typedBackspace = false;
                         wiiMouse = {};
+                        optionsScroll = optionsTabDelta = 0;
                         lightguns.ReleaseButtons();
                     }  // key-ups are not seen while inactive
                 }
@@ -2013,13 +2199,26 @@ int main(int argc, char** argv) {
                 applyDisplay();
             wii.Update();
             focusedGuns.UpdateFocus(active);  // drain background edges after polling; held buttons wait for release
+            if (netplay && runNamePrompt.IsOpen()) {
+                // Name entry is local UI, so it must remain usable while the peer's game clock waits.
+                auto mi = menuInput(g_keys & ~promptPrevKeys, netLocal);
+                mi.start = active && ((g_keys & ~promptPrevKeys) & play::kEscapeKey) != 0;
+                const int dev = deviceForPlayer(netLocal);
+                if (active && guns && dev >= 0 && (guns->Player(dev).pressed & input::kStart)) mi.pressed |= 8;
+                if (mi.trigger && !mi.pointer) { mi.trigger = false; mi.reload = true; }
+                updateRunNamePrompt(mi);
+                promptInputConsumed = true;
+                if (guns) guns->BeginFrame();
+            }
+            promptPrevKeys = g_keys;
             updateSystemCursor();
             if (availableUpdate.empty()) availableUpdate = updates.TakeAvailable();
             if (active && !availableUpdate.empty() && !netplay && lobby.page == Lobby::kOff &&
                 (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !wiiPage.IsOpen() &&
-                !lightgunPage.IsOpen()) {
+                !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !runNamePrompt.IsOpen()) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
+                if (attractionDriver) attractionAudio.Update(*attractionDriver, sndTable, attract, false);
                 plat.NotifyUpdate(kBuildName, availableUpdate);
                 // The modal can leave input and focus events queued. Preserve window
                 // close/activation, then discard its key/mouse edges before resuming.
@@ -2107,12 +2306,13 @@ int main(int argc, char** argv) {
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
             bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false, lightgunOpenedThisFrame = false;
+            const bool namePromptWasOpen = runNamePrompt.IsOpen() || promptInputConsumed;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
             const uint32_t scriptedKeyEdges = g_keys & ~menuPrevKeys;
             int menuPausePlayer = 0;
-            if (menuEnabled && !net.CatchingUp()) {
+            if (menuEnabled && !net.CatchingUp() && !namePromptWasOpen) {
                 const game::WorldHud& hh = world.Hud();
                 if (hh.paused && !menu.IsOpen()) {
                     menu.Open();
@@ -2140,9 +2340,11 @@ int main(int argc, char** argv) {
                     std::vector<uint32_t> menuSounds;
                     const play::Settings before = volumes;
                     const bool pageWasOpen = menu.DisplayOpen();
+                    bindOptionValues(menu.Display());
                     const play::PauseMenu::Action act = menu.Update(mi, volumes, menuSounds);
+                    applyOptionValues(menu.Display());
+                    optionsScroll = optionsTabDelta = 0;
                     const bool graphicsReset = menu.Display().TakeGraphicsReset();
-                    if (volumes.music != before.music || volumes.guns != before.guns || volumes.sfx != before.sfx) applyVolumes();
                     if (volumes.display != before.display) {
                         applyDisplay();
                         menu.Display().SetStatus(displayNotice);
@@ -2150,15 +2352,16 @@ int main(int argc, char** argv) {
                     applyPackChoice(menu.Display());
                     if (graphicsReset) saveGraphicsReset(menu.Display());
                     if (sndDriver)
-                        for (uint32_t id : menuSounds) sndDriver->PlayGameSound(sndTable, id, game::SoundContext{6, 0});
-                    if (act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen()))
+                        for (uint32_t id : menuSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
+                    if (volumes != before || act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen()))
                         volumes.Save(settingsPath);  // leaving the menu / page keeps the settings
-                    if (act == play::PauseMenu::Action::WiiRemotes) {
+                    const auto deviceAction = menu.Display().TakeDeviceAction();
+                    if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
                         wiiPage.Open();
                         wii.BeginFrame();
                         wiiOpenedThisFrame = true;
                     }
-                    if (act == play::PauseMenu::Action::Lightguns) {
+                    if (deviceAction == play::DisplayMenu::DeviceAction::Lightguns) {
                         lightgunPage.Open();
                         wii.BeginFrame();
                         lightgunOpenedThisFrame = true;
@@ -2208,8 +2411,11 @@ int main(int argc, char** argv) {
                     mi.trigger |= wiiMouse.trigger;
                     mi.reload |= wiiMouse.reload;
                 }
-                if (wiiPage.Update(mi, wii) && !wii.settings.Save(wiiSettingsPath))
+                std::vector<uint32_t> deviceSounds;
+                if (wiiPage.Update(mi, wii, &deviceSounds) && !wii.settings.Save(wiiSettingsPath))
                     fprintf(stderr, "Wii Remote settings could not be saved\n");
+                if (sndDriver)
+                    for (uint32_t id : deviceSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
                 wiiMouse = {};
             }
             if ((active || headless) && menuEnabled && lightgunPage.IsOpen() && !lightgunOpenedThisFrame) {
@@ -2236,7 +2442,10 @@ int main(int argc, char** argv) {
                     mi.trigger |= wiiMouse.trigger;
                     mi.reload |= wiiMouse.reload;
                 }
-                auto act = lightgunPage.Update(mi, lightguns, plat.CurrentInput() == platform::Input::RawInput);
+                std::vector<uint32_t> deviceSounds;
+                auto act = lightgunPage.Update(mi, lightguns, plat.CurrentInput() == platform::Input::RawInput, &deviceSounds);
+                if (sndDriver)
+                    for (uint32_t id : deviceSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
                 using LA = play::LightgunMenu::Action;
                 if (act == LA::GunMode || act == LA::MouseMode) {
                     auto mode = act == LA::GunMode ? platform::Input::RawInput : platform::Input::Mouse;
@@ -2259,26 +2468,37 @@ int main(int argc, char** argv) {
                     lightgunPage.Notice("Could not save gun settings - check folder access");
                 wiiMouse = {};
             }
-            if (menuEnabled && optionsPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+            if (menuEnabled && optionsPage.IsOpen() && !pageWasOpen && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
-                const play::DisplaySettings before = volumes.display;
-                const bool restorePreview = optionsPage.UiHidden() || optionsPage.ResetConfirming();
-                const bool updatedClosed = optionsPage.Update(mi, volumes.display, pageSounds);
+                const play::Settings before = volumes;
+                bindOptionValues(optionsPage);
+                const bool closed = optionsPage.Update(mi, volumes.display, pageSounds);
+                applyOptionValues(optionsPage);
+                optionsScroll = optionsTabDelta = 0;
                 const bool graphicsReset = optionsPage.TakeGraphicsReset();
-                const bool closed = (!restorePreview && mi.start) || updatedClosed;
-                if (!restorePreview && mi.start) optionsPage.Close();
-                if (volumes.display != before) {
+                if (volumes.display != before.display) {
                     applyDisplay();
                     optionsPage.SetStatus(displayNotice);
                 }
                 applyPackChoice(optionsPage);
                 if (graphicsReset) saveGraphicsReset(optionsPage);
                 if (sndDriver)
-                    for (uint32_t id : pageSounds) sndDriver->PlayGameSound(sndTable, id, game::SoundContext{12, 0});
-                if (closed) volumes.Save(settingsPath);
+                    for (uint32_t id : pageSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
+                if ((closed || volumes != before) && !volumes.Save(settingsPath))
+                    optionsPage.SetStatus("Could not save local options - check folder access.");
+                const auto deviceAction = optionsPage.TakeDeviceAction();
+                if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
+                    wiiPage.Open();
+                    wii.BeginFrame();
+                }
+                if (deviceAction == play::DisplayMenu::DeviceAction::Lightguns) {
+                    lightgunPage.Open();
+                    wii.BeginFrame();
+                }
             }
+            if (!optionsPage.IsOpen() && !menu.DisplayOpen()) optionsScroll = optionsTabDelta = 0;
             menuPrevKeys = g_keys;
             if (!script.empty() && !(netplay && !keyScript.empty())) scriptFrame(frame + 1);
             for (int p = 0; p < 2; ++p) {
@@ -2360,6 +2580,62 @@ int main(int argc, char** argv) {
                     netPresent[p] = true;
                 }
             }
+            if (namePromptWasOpen) {
+                play::MenuInput mi;
+                mi.start = active && (scriptedKeyEdges & play::kEscapeKey) != 0;
+                int pointer = -1;
+                for (int p = 0; p < 2; ++p) {
+                    if (netplay && p != netLocal) continue;
+                    mi.pressed |= in[p].pressed & ~0xCu;
+                    if (!in[p].fired) mi.pressed |= in[p].pressed & 0xC;
+                    mi.trigger |= in[p].fired && !in[p].offscreen;
+                    mi.reload |= in[p].offscreen || (in[p].pressed & 2) != 0;
+                    if (in[p].kind == 1 && in[p].x < 640 && in[p].y < 480 && (pointer < 0 || in[p].fired)) pointer = p;
+                }
+                if (pointer >= 0) { mi.pointer = true; mi.px = in[pointer].x; mi.py = in[pointer].y; }
+                if (!netplay) updateRunNamePrompt(mi);
+                // Only newly captured local input is consumed; recorded peer inputs stay untouched.
+                for (int p = 0; p < 2; ++p) {
+                    if (netplay && p != netLocal) continue;
+                    in[p].held = in[p].pressed = 0;
+                    in[p].fired = in[p].offscreen = false;
+                    in[p].x = in[p].y = 0xFFFF;
+                    netPresent[p] = true;
+                }
+                typed.clear(); typedBackspace = false;
+                // Clear only after the normal key/button history has consumed the closing input.
+                // During a peer stall this latch survives even if Skip has already closed the prompt.
+                promptInputConsumed = false;
+            }
+            if (modelGallery.IsOpen()) {
+                play::MenuInput mi;
+                mi.pressed = (in[0].pressed | in[1].pressed) & ~0xC;
+                mi.start = (scriptedKeyEdges & play::kEscapeKey) != 0;
+                // A shot takes priority over a resting pointer, including a second player's gun.
+                int pointer = -1;
+                for (int p = 0; p < 2; ++p) {
+                    if (in[p].kind == 1 && in[p].x < 640 && in[p].y < 480) {
+                        if (pointer < 0 || in[p].fired) pointer = p;
+                    }
+                    mi.trigger |= in[p].fired && !in[p].offscreen;
+                    mi.reload |= in[p].offscreen || (in[p].pressed & 2) != 0;
+                    if (!in[p].fired) mi.pressed |= in[p].pressed & 0xC;
+                }
+                if (pointer >= 0) {
+                    mi.pointer = true;
+                    mi.px = in[pointer].x;
+                    mi.py = in[pointer].y;
+                }
+                modelGallery.Update(mi);
+                modelGallery.Prepare(assets, renderer);
+                // All modal input, including scripted shots, ends here.
+                for (int p = 0; p < 2; ++p) {
+                    in[p].held = in[p].pressed = 0;
+                    in[p].fired = in[p].offscreen = false;
+                    in[p].x = in[p].y = 0xFFFF;
+                }
+                if (!modelGallery.IsOpen()) renderer.ClearCache();
+            }
             // The in-game online lobby: the world's Network screen (mode 15 state 1 with the port's hooks) with
             // play.exe's pages over it; it takes this machine's input (in[0]: keyboard, pad, the first device) and
             // lets only the top page's back through to the world.
@@ -2411,14 +2687,16 @@ int main(int argc, char** argv) {
                     c.portVolumes[0] = volumes.music;
                     c.portVolumes[1] = volumes.guns;
                     c.portVolumes[2] = volumes.sfx;
+                    c.portVolumes[3] = volumes.master;
+                    c.portVolumes[4] = volumes.attraction;
                     c.flags = 7;  // port features, modern menus, persistent shared room
                     c.delay = static_cast<uint8_t>(netDelay);
                     c.startFrame = static_cast<uint32_t>(cfg.startFrame);
                     game::SaveData matchSave;
-                    if (!matchSave.LoadNative(savePath)) matchSave.Defaults(assets.Exe());
+                    if (!matchSave.LoadNative(savePath)) matchSave.LoadOriginal(dir, assets.Exe());
                     c.save = matchSave.NativeBytes();
                     net.SetConfig(c);
-                    net.LobbyCreate(flags);
+                    net.LobbyCreate(flags, matchSave.U8(game::SaveData::kDifficulty) % 5);
                     lobby.page = Lobby::kWaiting;
                     lobby.pageSeconds = 0;
                 };
@@ -2783,6 +3061,9 @@ int main(int argc, char** argv) {
                 }
             }
             // --- one game frame ---
+            // A local end-of-run modal holds the finished screen. Connected rooms
+            // must keep advancing and sending neutral input while each player types.
+            if (namePromptWasOpen && !netplay) continue;
             world.SetPortLeaderboardRecording(!headless && script.empty() && keyScript.empty() && !net.CatchingUp() &&
                                               !net.ReplayPending() && !replayStep);
             world.Step();
@@ -2866,7 +3147,7 @@ int main(int argc, char** argv) {
                 static bool loaded = (tables.Load(assets.Exe()), true);
                 (void)loaded;
                 game::HudState ls =
-                    MakeHudState(world.Hud(), in, modeAge, world.Hud().paused ? blink : world.Hud().frameCounter, credits < 0);
+                    MakeHudState(world, in, modeAge, world.Hud().paused ? blink : world.Hud().frameCounter, credits < 0);
                 std::vector<game::SpriteDef> all = WorldSprites(world.Hud());
                 const auto hud = HudSprites(ls, world.Hud(), volumes.display.showCrosshairs);
                 all.insert(all.end(), hud.begin(), hud.end());
@@ -2877,11 +3158,15 @@ int main(int argc, char** argv) {
                         fprintf(tlog, "%d %X %X\n", world.Frame(), d.id, f);
             }
             ++modeAge;
-            if (world.GameMode() == 6 && previousRunMode != 6) {
+            const bool bossSelector = world.GameMode() == 6 && world.Hud().gameType == 3 &&
+                                      world.Hud().subState == 2 && (world.Hud().flags5900 & 0x18) == 0x18;
+            if (world.GameMode() == 6 && (previousRunMode != 6 || (previousBossSelector && !bossSelector))) {
                 pendingRecordValid = false;
                 world.SetPortLeaderboardPublishable(false);
+                runNamePrompt.Reset();
             }
             previousRunMode = world.GameMode();
+            previousBossSelector = bossSelector;
             const auto& leaderboardHud = world.Hud();
             if (leaderboardHud.portLeaderboardRequests != leaderboardRequestsSeen) {
                 leaderboardRequestsSeen = leaderboardHud.portLeaderboardRequests;
@@ -2914,7 +3199,10 @@ int main(int argc, char** argv) {
                     pendingRecord.difficulty = complete.difficulty;
                     pendingRecord.players = complete.players;
                     pendingRecordValid = pendingRecord.score > 0;
-                    world.SetPortLeaderboardPublishable(pendingRecordValid, "NEW RUN READY / PUBLISH WHEN YOU CHOOSE");
+                    world.SetPortLeaderboardPublishable(pendingRecordValid, "NEW RUN READY / ONLINE NAME AFTER RESULTS");
+                    if (pendingRecordValid)
+                        runNamePrompt.Queue(pendingRecord.completionToken, pendingRecord.table, pendingRecord.score,
+                                            pendingRecord.rounds, world.Hud().portLeaderboardInitials);
                 }
             }
             if (!headless && script.empty() && keyScript.empty() && !net.CatchingUp() && hordeRecords.Observe(world.PortHordeRun())) {
@@ -2929,11 +3217,19 @@ int main(int argc, char** argv) {
                     pendingRecord.rounds = entry.rounds;
                     pendingRecord.difficulty = entry.difficulty;
                     pendingRecord.players = entry.players;
-                    pendingRecordValid = entry.rounds > 0;
-                    world.SetPortLeaderboardPublishable(pendingRecordValid, "HORDE RUN READY / PUBLISH WHEN YOU CHOOSE");
+                    pendingRecordValid = entry.rounds > 0 && entry.rounds <= 65535 && entry.score > 0;
+                    world.SetPortLeaderboardPublishable(pendingRecordValid, "HORDE RUN READY / ONLINE NAME AFTER RESULTS");
+                    if (pendingRecordValid)
+                        runNamePrompt.Queue(pendingRecord.completionToken, pendingRecord.table, pendingRecord.score,
+                                            pendingRecord.rounds, world.Hud().portLeaderboardInitials);
                 }
             }
-            attract.Step(dir, activeNightShift && (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && !netplay);
+            if (runNamePrompt.MaybeOpen(world.Hud(), headless || !script.empty() || !keyScript.empty() || net.CatchingUp() ||
+                                    net.ReplayPending() || menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() ||
+                                    lightgunPage.IsOpen() || modelGallery.IsOpen() || publishingRecord)) promptPrevKeys = g_keys;
+            attract.Step(dir, activeNightShift && (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && !netplay && !modelGallery.IsOpen());
+            if (attractionDriver)
+                attractionAudio.Update(*attractionDriver, sndTable, attract, attract.Get() && world.Hud().nightShiftPage != 9);
             {
                 // Asset pack: the overrides of a texture file the game has just started loading (WorldHud::texFiles
                 // 0 -> 3 / 4, Res_LoadTexFile) are decoded on worker threads from now on, ahead of their first draw.
@@ -2991,15 +3287,23 @@ int main(int argc, char** argv) {
                 lastGpu = gpu;
             }
             if (const int* pv = world.Hud().portVolumes;
-                pv[0] >= 0 && (pv[0] != volumes.music || pv[1] != volumes.guns || pv[2] != volumes.sfx)) {
+                pv[0] >= 0 && (pv[0] != volumes.music || pv[1] != volumes.guns || pv[2] != volumes.sfx ||
+                               pv[3] != volumes.master || pv[4] != volumes.attraction)) {
                 volumes.music = pv[0];  // changed on the options screen
                 volumes.guns = pv[1];
                 volumes.sfx = pv[2];
+                volumes.master = pv[3];
+                volumes.attraction = pv[4];
                 applyVolumes();
                 volumes.Save(settingsPath);
             }
+            if (const int req = world.Hud().portModelViewerRequests; req != modelViewerRequestsSeen) {
+                if (req > modelViewerRequestsSeen && menuEnabled && !netplay) modelGallery.Open();
+                modelViewerRequestsSeen = req;
+            }
             if (const int req = world.Hud().portDisplayRequests; req != displayRequestsSeen) {  // the options screen's Display Settings row
                 if (req > displayRequestsSeen && menuEnabled) {
+                    bindOptionValues(optionsPage);
                     optionsPage.Open();
                     if (world.Hud().portDisplayPage >= 0 && world.Hud().portDisplayPage < play::DisplayMenu::kPageCount)
                         optionsPage.SetPage(static_cast<play::DisplayMenu::Page>(world.Hud().portDisplayPage));
@@ -3044,6 +3348,12 @@ int main(int argc, char** argv) {
         }
         if (sndDriver)  // in order, each with the game mode / type it was issued in (BGM table), stops and commands too
             for (const auto& s : sounds) game::PlaySoundEvent(*sndDriver, sndTable, s);
+        play::ApplyModelGalleryAudio(modelGallery,sndDriver.get(),sndTable);
+        // Gate transitions even when a network wait or menu action skipped the simulation tick above.
+        if (attractionDriver)
+            attractionAudio.Update(*attractionDriver, sndTable, attract,
+                activeNightShift && !netplay && world.Hud().nightShiftPage != 9 &&
+                (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff));
         updateSystemCursor();  // pause/resume and menus apply before presentation throttling
         // --- render ---
         // Capture before render throttling/headless skips, so pausing always has
@@ -3124,10 +3434,28 @@ int main(int argc, char** argv) {
         scene.SetRenderInterpolation(interpolate, static_cast<float>(clock.Alpha()));
         game::Mat4 vp;
         std::vector<port::ModelRenderer::SpriteDraw> sprites;
+        auto buildAttractBackground = [&] {
+            const game::World& preview = *attract.Get();
+            vp = scene.BuildFromWorld(renderer, preview);
+            if (noHud) return;
+            // Tutorial instructions, story pictures / caption effects, and dialogue belong to
+            // the preview World. The live game's chapter-card animation must not leak into it.
+            auto defs = WorldSprites(preview.Hud(), false);
+            std::erase_if(defs, [&](const game::SpriteDef& definition) {
+                if (definition.id == 0x900) return true;  // original PRESS START prompt
+                // Keep the modern menu's logo and text as the only title overlay.
+                return preview.GameMode() == 3 &&
+                       ((definition.id >= 0xAB1 && definition.id <= 0xAB5) || definition.id == 0x8FE ||
+                        definition.id == 0xA5A || definition.id == 0x231);
+            });
+            static const bool noTexRes = getenv("HOTD2_NO_TEXRES") != nullptr;
+            const auto overlay = scene.MakeSpriteDraws(defs, .8f, noTexRes ? nullptr : &preview.Hud().texFiles);
+            sprites.insert(sprites.end(), overlay.begin(), overlay.end());
+        };
         const bool previewHidden = optionsPage.IsOpen() ? optionsPage.UiHidden() : menu.DisplayOpen() ? menu.Display().UiHidden() : false;
         auto appendMenuCrosshairs = [&] {
             if (previewHidden) return;
-            auto hs = MakeHudState(world.Hud(), in, modeAge, blink, credits < 0);
+            auto hs = MakeHudState(world, in, modeAge, blink, credits < 0);
             std::vector<game::SpriteDef> defs;
             for (int p = 0; p < 2; ++p)
                 if (in[p].kind == 1 && (netplay || (deviceForPlayer(p) >= 0 && guns && guns->Player(deviceForPlayer(p)).connected))) {
@@ -3138,13 +3466,32 @@ int main(int argc, char** argv) {
                     }
                     defs.insert(defs.end(), cross.begin(), cross.end());
                 }
-            const auto crosshairs = scene.MakeSpriteDraws(defs, 0.0001f, nullptr);
+            auto crosshairs = scene.MakeSpriteDraws(defs, 0.0001f, nullptr);
+            // Keep aiming cursors above decorative list fades without changing their projection.
+            for (auto& crosshair : crosshairs) crosshair.depth = .00002f;
             sprites.insert(sprites.end(), crosshairs.begin(), crosshairs.end());
         };
         const int pattern = optionsPage.IsOpen() ? optionsPage.CalibrationPattern()
                             : menu.DisplayOpen() ? menu.Display().CalibrationPattern()
                                                  : -1;
-        if (pattern >= 0) {
+        if (runNamePrompt.IsOpen()) {
+            renderer.SetScene(assets, {});
+            vp = game::Mat4::Identity();
+            game::WorldHud nameHud;
+            runNamePrompt.ModernHud(nameHud);
+            play::AppendNightShiftPanels(nameHud, sprites, viewportAspect);
+            if (uiFont.Available()) uiFont.Append(nameHud.menuText, sprites, port::ViewportXScale(viewportAspect));
+            else {
+                std::vector<game::SpriteDef> text;
+                for (const auto& line : nameHud.menuText)
+                    game::MenuTextScaled(assets.Exe(), line.x, line.y - 12 * line.scale, line.text, 0, line.scale, text);
+                auto draws = scene.MakeSpriteDraws(text, .0001f, nullptr);
+                sprites.insert(sprites.end(), draws.begin(), draws.end());
+            }
+        } else if (modelGallery.IsOpen()) {
+            modelGallery.Prepare(assets, renderer);
+            vp = game::Mat4::Identity();
+        } else if (pattern >= 0) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             int cw = gpu->TargetWidth(), ch = gpu->TargetHeight();
@@ -3160,6 +3507,9 @@ int main(int argc, char** argv) {
                 calibrationKind = pattern;
             }
             port::ModelRenderer::SpriteDraw patternSprite{};
+            // Calibration pixels describe scene rendering; their controls use
+            // the independent menu pass like the rest of Options.
+            patternSprite.hud = false;
             patternSprite.texture = &calibrationImage;
             patternSprite.isp = 0xE4000000;
             patternSprite.tsp = 0x94918000;
@@ -3177,7 +3527,7 @@ int main(int argc, char** argv) {
             if (world.Hud().paused && !lastSceneDraws.empty())
                 vp = scene.BuildFromWorld(renderer, world, &lastSceneDraws);
             else if (attract.Get())
-                vp = scene.BuildFromWorld(renderer, *attract.Get());
+                buildAttractBackground();
             else if (world.GameMode() == 6)
                 vp = scene.BuildFromWorld(renderer, world);
             else {
@@ -3206,7 +3556,7 @@ int main(int argc, char** argv) {
             sprites = scene.MakeSpriteDraws(results, 0.001f, nullptr);
         } else if (lobby.page != Lobby::kOff && activeNightShift && uiFont.Available()) {
             if (attract.Get())
-                vp = scene.BuildFromWorld(renderer, *attract.Get());
+                buildAttractBackground();
             else {
                 renderer.SetScene(assets, {});
                 vp = game::Mat4::Identity();
@@ -3236,7 +3586,7 @@ int main(int argc, char** argv) {
             if (world.Hud().paused && !lastSceneDraws.empty())
                 vp = scene.BuildFromWorld(renderer, world, &lastSceneDraws);
             else if (attract.Get())
-                vp = scene.BuildFromWorld(renderer, *attract.Get());
+                buildAttractBackground();
             else {
                 renderer.SetScene(assets, {});
                 vp = game::Mat4::Identity();
@@ -3251,20 +3601,21 @@ int main(int argc, char** argv) {
                 auto detail = [&](float y, const std::string& text) {
                     if (!text.empty()) displayHud.menuText.push_back({left, y, text.substr(0, 40), .44f, 0xFFC1BAAC});
                 };
-                detail(258, info.caption);
+                detail(244, info.caption);
                 if (info.original)
-                    detail(282, "No visual pack selected for next launch.");
+                    detail(264, "No visual pack selected for next launch.");
                 else {
-                    detail(282, info.name);
-                    if (!info.author.empty()) detail(306, "By " + info.author);
-                    if (!info.version.empty()) detail(330, "Version " + info.version);
+                    detail(264, info.name);
+                    if (!info.author.empty()) detail(284, "By " + info.author);
+                    if (!info.version.empty()) detail(304, "Version " + info.version);
                 }
-                detail(354, info.message);
+                detail(324, info.message);
             }
             play::AppendNightShiftPanels(displayHud, sprites, viewportAspect, volumes.display.menuOpacity);
             if (!displayPage.UiHidden() && displayPage.CurrentPage() == play::DisplayMenu::kPacks)
-                packPreview.AppendSprites(sprites, 30, 258, 280, 106, port::ViewportXScale(viewportAspect));
+                packPreview.AppendSprites(sprites, 30, 240, 280, 86, port::ViewportXScale(viewportAspect));
             uiFont.Append(displayHud.menuText, sprites, port::ViewportXScale(viewportAspect));
+            play::AppendMenuScrollHint(displayPage.ScrollHint(), sprites, viewportAspect);
             appendMenuCrosshairs();
         } else if (menu.IsOpen() && menu.IsModern() && uiFont.Available()) {
             if (!lastSceneDraws.empty())
@@ -3286,17 +3637,9 @@ int main(int argc, char** argv) {
             vp = scene.BuildFromWorld(renderer, world, &lastSceneDraws);
             std::vector<game::SpriteDef> md;
             menu.Display().Sprites(assets.Exe(), volumes.display, md, true);
-            game::HudState hs = MakeHudState(world.Hud(), in, modeAge, blink, credits < 0);
-            for (int p = 0; !previewHidden && p < 2; ++p)
-                if (in[p].kind == 1 && (netplay || (deviceForPlayer(p) >= 0 && guns && guns->Player(deviceForPlayer(p)).connected))) {
-                    auto cross = game::HudCrosshair(hs, p);
-                    for (auto& c : cross) {  // in front of the overlay, like the page
-                        c.depth = 0.0002f;
-                        c.flags |= 0x700;
-                    }
-                    md.insert(md.end(), cross.begin(), cross.end());
-                }
             sprites = scene.MakeSpriteDraws(md, 0.0001f, nullptr);  // nearer than the overlay's 0.0005: drawn after it
+            play::AppendMenuScrollHint(menu.Display().ScrollHint(), sprites, viewportAspect);
+            appendMenuCrosshairs();
         } else if (menu.IsOpen() || optionsPage.IsOpen()) {
             // The pause menu (or the display page over the Options screen) is the whole frame, as the options screen is
             // in the original: no world draws (the pause's dark overlay 0x93E sits in front of everything and would hide
@@ -3306,26 +3649,19 @@ int main(int argc, char** argv) {
             std::vector<game::SpriteDef> md;
             if (menu.IsOpen()) {
                 menu.Sprites(assets.Exe(), world.Hud().pausePlayer, volumes, md);
-                if (menu.MainRows()) {  // the volume values in the options screen's number column
-                    game::MenuNum(assets.Exe(), 35.0f, play::PauseMenu::RowY(play::PauseMenu::kMusic), volumes.music, md);
-                    game::MenuNum(assets.Exe(), 35.0f, play::PauseMenu::RowY(play::PauseMenu::kGuns), volumes.guns, md);
-                    game::MenuNum(assets.Exe(), 35.0f, play::PauseMenu::RowY(play::PauseMenu::kSfx), volumes.sfx, md);
-                }
             } else {
                 optionsPage.Sprites(assets.Exe(), volumes.display, md);
             }
-            // the gun players' crosshairs at their aim (in[p].x / y still follow the device while the menu takes the buttons)
-            game::HudState hs = MakeHudState(world.Hud(), in, modeAge, blink, credits < 0);
-            for (int p = 0; p < 2; ++p)
-                if (in[p].kind == 1 && (netplay || (deviceForPlayer(p) >= 0 && guns && guns->Player(deviceForPlayer(p)).connected))) {
-                    const auto cross = game::HudCrosshair(hs, p);
-                    md.insert(md.end(), cross.begin(), cross.end());
-                }
             sprites =
                 scene.MakeSpriteDraws(md, menu.IsOpen() ? 0.001f : 0.8f, nullptr);  // the paused near plane (the label's depth is 0.6)
+            if (menu.IsOpen() && menu.DisplayOpen())
+                play::AppendMenuScrollHint(menu.Display().ScrollHint(), sprites, viewportAspect);
+            else if (optionsPage.IsOpen())
+                play::AppendMenuScrollHint(optionsPage.ScrollHint(), sprites, viewportAspect);
+            appendMenuCrosshairs();
         } else if (world.Hud().nightShiftPage >= 0 && lobby.page == Lobby::kOff) {
             if (attract.Get())
-                vp = scene.BuildFromWorld(renderer, *attract.Get());
+                buildAttractBackground();
             else {
                 renderer.SetScene(assets, {});
                 vp = game::Mat4::Identity();
@@ -3340,10 +3676,13 @@ int main(int argc, char** argv) {
                 const auto menuSprites = scene.MakeSpriteDraws(menuDefs, .001f, nullptr);
                 sprites.insert(sprites.end(), menuSprites.begin(), menuSprites.end());
                 if (uiFont.Available()) uiFont.Append(world.Hud().menuText, sprites, port::ViewportXScale(viewportAspect));
+                for (const auto& hint : world.Hud().menuScrollHints)
+                    play::AppendMenuScrollHint(hint, sprites, viewportAspect);
+                if (!world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
             }
         } else {
             vp = scene.BuildFromWorld(renderer, world);
-            game::HudState hs = MakeHudState(world.Hud(), in, modeAge, blink, credits < 0);
+            game::HudState hs = MakeHudState(world, in, modeAge, blink, credits < 0);
             std::vector<game::SpriteDef> defs = noHud ? std::vector<game::SpriteDef>() : WorldSprites(world.Hud());
             const auto hud = noHud ? std::vector<game::SpriteDef>() : HudSprites(hs, world.Hud(), volumes.display.showCrosshairs);
             defs.insert(defs.end(), hud.begin(), hud.end());
@@ -3363,8 +3702,13 @@ int main(int argc, char** argv) {
             static const bool noTexRes = getenv("HOTD2_NO_TEXRES") != nullptr;  // comparisons: every sprite file loaded
             const auto spr = scene.MakeSpriteDraws(defs, world.Hud().paused ? 0.001f : 0.8f, noTexRes ? nullptr : &world.Hud().texFiles);
             sprites.insert(sprites.end(), spr.begin(), spr.end());
+            if (!noHud && lobby.page == Lobby::kOff) {
+                for (const auto& hint : world.Hud().menuScrollHints)
+                    play::AppendMenuScrollHint(hint, sprites, viewportAspect);
+                if (!world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
+            }
         }
-        if (!previewHidden && ((!networkNotice.empty() && plat.Seconds() < networkNoticeUntil) ||
+        if (!modelGallery.IsOpen() && !previewHidden && ((!networkNotice.empty() && plat.Seconds() < networkNoticeUntil) ||
                                (netplay && (net.PlayingAlone() || net.CatchingUp() || net.SecondsSinceRemote() > 1)))) {
             std::vector<game::SpriteDef> status;
             std::string message;
@@ -3383,7 +3727,7 @@ int main(int argc, char** argv) {
             const auto overlay = scene.MakeSpriteDraws(status, 0.0001f, nullptr);
             sprites.insert(sprites.end(), overlay.begin(), overlay.end());
         }
-        if (volumes.display.statistics && !noHud && !previewHidden) {
+        if (volumes.display.statistics && !noHud && !previewHidden && !modelGallery.IsOpen()) {
             std::vector<game::SpriteDef> stats;
             game::MenuTextScaled(assets.Exe(), 12, 10, perfLabel, 0, .5f, stats);
             game::MenuTextScaled(assets.Exe(), 12, 27, perfDetail, 0, .42f, stats);
@@ -3407,6 +3751,13 @@ int main(int argc, char** argv) {
         }
 #endif
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
+        const bool outputResolutionMenu = !previewHidden &&
+            (menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || runNamePrompt.IsOpen() ||
+             world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
+             world.NetworkLobby() || lobby.page != Lobby::kOff);
+        // Menu readability is independent of scene resolution and the saved
+        // gameplay Sharp HUD preference. Hide UI still previews the game alone.
+        gpu->SetMenuOverlay(outputResolutionMenu);
         const bool beganFrame = gpu->BeginFrame(clear);
         // BeginFrame may switch HDR off even when it cannot start a drawable
         // frame (for example while minimized or waiting for presentation).
@@ -3428,7 +3779,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         temporalEnabled |= dlss.active || generatedFrames.active;
         if (generatedFrames.active)
-            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen());
+            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen() || runNamePrompt.IsOpen());
 #endif
         if (temporalEnabled) {
             temporal.enabled = true;
@@ -3451,8 +3802,11 @@ int main(int argc, char** argv) {
             }
         }
         renderer.SetTemporalFrame(temporal);
-        renderer.DrawGame(gpu->TargetWidth(), gpu->TargetHeight(), vp.m, &scene.lighting, &scene.fog, scene.view.m, &sprites,
-                          &scene.itemLights, scene.projection.m);
+        if (modelGallery.IsOpen())
+            modelGallery.Draw(renderer, uiFont, gpu->TargetWidth(), gpu->TargetHeight(), viewportAspect);
+        else
+            renderer.DrawGame(gpu->TargetWidth(), gpu->TargetHeight(), vp.m, &scene.lighting, &scene.fog, scene.view.m, &sprites,
+                              &scene.itemLights, scene.projection.m);
         if (!gpu->HudCompositionError().empty() && gpu->HudCompositionError() != displayNotice) {
             displayNotice = gpu->HudCompositionError();
             optionsPage.SetStatus(displayNotice);
@@ -3500,7 +3854,7 @@ int main(int argc, char** argv) {
             char name[512];
             snprintf(name, sizeof(name), screenshot.c_str(), world.Frame());  // "%d" in the name: the frame
             int captureW = gpu->TargetWidth(), captureH = gpu->TargetHeight();
-            if (volumes.display.graphics.outputResolutionHud) {
+            if (volumes.display.graphics.outputResolutionHud || outputResolutionMenu || captureRenderSizeGiven) {
                 captureW = width;
                 captureH = height;
             }
@@ -3518,9 +3872,14 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "failed to write %s\n", name);
                 return 1;
             }
+            if (captureRenderSizeGiven) {
+                std::printf("render capture: scene %dx%d; output %dx%d; menu overlay %s; sharp HUD %s\n",
+                            gpu->TargetWidth(), gpu->TargetHeight(), captureW, captureH, outputResolutionMenu ? "on" : "off",
+                            volumes.display.graphics.outputResolutionHud ? "on" : "off");
+            }
             if (!keyScript.empty()) {
-                printf("checkpoint frame %d mode %d paused %d type %d\n", world.Frame(), world.GameMode(), world.Hud().paused ? 1 : 0,
-                       world.Hud().gameType);
+                printf("checkpoint frame %d mode %d paused %d type %d rank %d difficulty %d\n", world.Frame(), world.GameMode(),
+                       world.Hud().paused ? 1 : 0, world.Hud().gameType, world.Hud().rank, world.GetPortGameOptions().difficulty);
                 fflush(stdout);
             }
             if (everyShot) {

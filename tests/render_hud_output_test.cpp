@@ -1,5 +1,6 @@
 // Real output-resolution raster UI, not a resized low-resolution overlay.
 #include "render/d3d11_device.h"
+#include "render/d3d12_device.h"
 #include "render/model_renderer.h"
 #include "game/camera.h"
 #include <algorithm>
@@ -25,10 +26,12 @@ static port::ModelRenderer::SpriteDraw Sprite(float left,float top,bool hud,cons
 }
 int main(int argc,char** argv){
     std::string error;port::GpuDeviceDesc desc;desc.width=160;desc.height=120;std::unique_ptr<port::GpuDevice> gpu;
+    const bool native=argc>1&&!std::strcmp(argv[1],"d3d12");
+    if(native)gpu=port::CreateD3D12Device(desc,&error);else
 #ifdef HOTD2_TEST_SDL_GPU
     if(argc>1&&!std::strcmp(argv[1],"sdlgpu")){Require(SDL_InitSubSystem(SDL_INIT_VIDEO),SDL_GetError());gpu=port::CreateSdlGpuDevice(desc,&error);}else
 #endif
-    gpu=port::CreateD3D11Device(desc,&error);Require(gpu!=nullptr,error.c_str());Require(gpu->GetGraphicsCapabilities().outputResolutionHud,"real output-HUD capability missing");
+    gpu=port::CreateD3D11Device(desc,&error);Require(gpu!=nullptr,error.c_str());Require(native||gpu->GetGraphicsCapabilities().outputResolutionHud,"real output-HUD capability missing");
     port::ModelRenderer renderer;Require(renderer.Init(gpu.get(),&error),error.c_str());port::AssetStore assets;auto model=Model();
     port::ModelRenderer::SceneItem item;item.model=&model;item.cullable=false;item.noMeshCull=true;item.motionTracked=true;item.motionIdentity.task=1;
     port::RgbaImage checker;checker.width=checker.height=64;checker.pixels.resize(64*64*4);
@@ -54,13 +57,37 @@ int main(int argc,char** argv){
         double sum=0;for(int y=int(height*.12f);y<int(height*.33f);++y)for(int x=int(width*.09f);x<int(width*.25f);++x)sum+=std::abs(int(pixels[(y*width+x)*4+1])-int(pixels[(y*width+x+1)*4+1]));return sum;
     };
     for(int samples:{1,2,4})for(auto size:{std::pair<int,int>{320,240},{347,257}}){
+        if(native&&samples!=1)continue;
         const int outW=size.first,outH=size.second;port::PresentParams present;present.w=outW;present.h=outH;gpu->SetPresent(present);
         port::GraphicsOptions options;options.msaa=samples;Require(gpu->ConfigureGraphics(options,&error),error.c_str());Require(gpu->ResizeTarget(160,120),"restore input resolution");const auto old=render(outW,outH);
         // The output UI is deliberately single sampled. A multisampled checker
         // reference can blend the shared triangle edge at fractional dimensions.
         Require(gpu->ResizeTarget(outW,outH),"full-resolution HUD reference");auto referenceOptions=options;referenceOptions.msaa=1;Require(gpu->ConfigureGraphics(referenceOptions,&error),error.c_str());
         const auto reference=render(outW,outH);Require(gpu->ConfigureGraphics(options,&error),error.c_str());Require(gpu->ResizeTarget(160,120),"restore input for independent HUD");
+        gpu->SetMenuOverlay(true);Require(gpu->RequiresSceneProcessing(),"menu override did not extract explicit UI");
+        Require(gpu->EffectiveGraphics()==options&&!gpu->EffectiveGraphics().outputResolutionHud,"menu override changed saved/effective graphics");
+        const auto menu=render(outW,outH);
+        Require(gpu->TargetWidth()==160&&gpu->TargetHeight()==120&&gpu->HudTargetWidth()==outW&&gpu->HudTargetHeight()==outH,"menu override changed scene dimensions or retained input-size UI");
+        compareHud(menu,reference,outW,outH,"menu override");
+        gpu->SetMenuOverlay(false);Require(gpu->EffectiveGraphics()==options,"closing menu changed effective graphics");
+        Require(render(outW,outH)==old,"closing menu did not restore exact original mixed image");
+        if(native){
+            for(int y=int(outH*.55f);y<int(outH*.72f);++y)for(int x=int(outW*.6f);x<int(outW*.72f);++x)for(int k=0;k<4;++k)
+                Require(menu[(y*outW+x)*4+k]==old[(y*outW+x)*4+k],"native menu extracted or reordered a world sprite");
+            Require(variation(menu,outW,outH)>variation(old,outW,outH)*1.5+1000,"native menu did not recover genuine pixel detail");
+            options.postAA=1;options.sharpening=3;options.bloom=2;options.gamma=43;options.brightness=54;options.saturation=37;options.colorGrade=2;options.crtMask=2;options.crtGlow=1;
+            Require(gpu->ConfigureGraphics(options,&error),error.c_str());gpu->SetMenuOverlay(true);const auto graded=render(outW,outH);
+            gpu->SetMenuOverlay(false);options.postAA=options.sharpening=options.bloom=0;Require(gpu->ConfigureGraphics(options,&error),error.c_str());
+            Require(gpu->ResizeTarget(outW,outH),"native graded full-resolution reference");compareHud(graded,render(outW,outH),outW,outH,"native grade/CRT");
+            Require(gpu->ResizeTarget(160,120),"restore native input after menu");options={};Require(gpu->ConfigureGraphics(options,&error),error.c_str());
+            Require(render(outW,outH)==old,"native menu post effects failed to restore original image");
+            std::printf("PASS %s %dx%d: native menu pixel detail, internal world sprites, unchanged effective settings, once-only grade/CRT and exact Off\n",gpu->Name(),outW,outH);
+            continue;
+        }
         options.outputResolutionHud=true;Require(gpu->ConfigureGraphics(options,&error),error.c_str());const auto sharp=render(outW,outH);
+        Require(menu==sharp,"menu override differs from genuine output-resolution HUD composition");
+        gpu->SetMenuOverlay(true);Require(render(outW,outH)==sharp,"menu override changed enabled output-resolution HUD");
+        gpu->SetMenuOverlay(false);Require(render(outW,outH)==sharp,"closing menu disabled saved output-resolution HUD");
         Require(gpu->TargetWidth()==160&&gpu->TargetHeight()==120&&gpu->HudTargetWidth()==outW&&gpu->HudTargetHeight()==outH,"HUD target replaced internal scene dimensions");
         compareHud(sharp,reference,outW,outH);Require(variation(sharp,outW,outH)>variation(old,outW,outH)*1.5+1000,"output HUD did not recover genuine pixel detail");
         // A world sprite stays in the internal scene and keeps its old pixels.
@@ -77,7 +104,16 @@ int main(int argc,char** argv){
         Require(gpu->ConfigureGraphics(options,&error),error.c_str());const auto graded=render(outW,outH);
         options.outputResolutionHud=false;options.msaa=1;Require(gpu->ConfigureGraphics(options,&error),error.c_str());Require(gpu->ResizeTarget(outW,outH),"resize graded reference");const auto gradedReference=render(outW,outH);compareHud(graded,gradedReference,outW,outH,"grade/CRT");
         Require(gpu->ResizeTarget(160,120),"restore final input");options=port::GraphicsOptions{};options.msaa=samples;Require(gpu->ConfigureGraphics(options,&error),error.c_str());Require(render(outW,outH)==old,"HUD Off did not restore exact original mixed image");
-        std::printf("PASS %s MSAA%d %dx%d: genuine HUD pixel detail, internal world sprites, TAA/spatial isolation, once-only grade/CRT and exact Off\n",gpu->Name(),samples,outW,outH);
+        std::printf("PASS %s MSAA%d %dx%d: native menu override without settings changes, genuine HUD detail, internal world sprites, TAA/spatial isolation, once-only grade/CRT and exact Off\n",gpu->Name(),samples,outW,outH);
+    }
+    if(native){
+        port::PresentParams present;present.w=9000;present.h=1;gpu->SetPresent(present);gpu->SetMenuOverlay(true);render(320,240);
+        Require(!gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==160,"native failed menu resize lost internal fallback");
+        present.w=320;present.h=240;gpu->SetPresent(present);render(320,240);
+        Require(gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==320,"native menu resize did not recover");
+        gpu->SetMenuOverlay(false);render(320,240);
+        Require(gpu->HudTargetWidth()==160&&!gpu->RequiresSceneProcessing()&&!gpu->EffectiveGraphics().outputResolutionHud,"native menu override persisted after closing");
+        return 0;
     }
     // Diagnostic FP16 output proves the HUD receives the same single scRGB
     // conversion as a full-resolution reference, without changing a display.
@@ -92,4 +128,9 @@ int main(int argc,char** argv){
     present.w=9000;present.h=1;gpu->SetPresent(present);Require(!gpu->ConfigureGraphics(options,&error),"invalid output target accepted");render(320,240);
     Require(!gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==160,"failed HUD resize was silent or lost internal fallback");
     present.w=320;present.h=240;gpu->SetPresent(present);render(320,240);Require(gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==320,"valid HUD resize did not recover");
+    options.outputResolutionHud=false;Require(gpu->ConfigureGraphics(options,&error),error.c_str());gpu->SetMenuOverlay(true);
+    present.w=9000;present.h=1;gpu->SetPresent(present);render(320,240);
+    Require(!gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==160&&!gpu->EffectiveGraphics().outputResolutionHud,"menu resize failure lost fallback or changed graphics settings");
+    present.w=320;present.h=240;gpu->SetPresent(present);render(320,240);Require(gpu->HudCompositionError().empty()&&gpu->HudTargetWidth()==320,"valid menu resize did not recover");
+    gpu->SetMenuOverlay(false);render(320,240);Require(gpu->HudTargetWidth()==160&&!gpu->RequiresSceneProcessing(),"closing recovered menu retained output HUD override");
 }

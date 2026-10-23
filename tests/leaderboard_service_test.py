@@ -1,5 +1,6 @@
 """Local-only checks for opt-in unverified ranking storage and UDP protocol."""
 import importlib.util
+from contextlib import closing
 from pathlib import Path
 import secrets
 import sqlite3
@@ -27,27 +28,35 @@ class RankingServiceTest(unittest.TestCase):
         self.service.close()
         self.temp.cleanup()
 
-    def header(self,kind):
+    def header(self,kind,version=1):
         self.serial += 1
-        return rankings.MAGIC+bytes([kind])+struct.pack("<I",self.serial)
+        return b"H2RK"+bytes([version,kind])+struct.pack("<I",self.serial)
 
-    def cookie(self,address=None):
-        response = self.service.handle(self.header(1),address or self.addr)
+    def cookie(self,address=None,version=1):
+        response = self.service.handle(self.header(1,version),address or self.addr)
         self.assertEqual(len(response),26)
+        self.assertEqual(response[:6],b"H2RK"+bytes([version,101]))
         return response[10:26]
 
-    def submit(self,table=0,score=100,rounds=0,difficulty=2,players=1,name=b"AMS",run=None,address=None,build=None):
+    def submit(self,table=0,score=100,rounds=0,difficulty=2,players=1,name=b"AMS",run=None,address=None,build=None,version=1):
         address = address or self.addr
-        body = struct.pack("<IB3sIHBB16s",build or self.build,table,name,score,rounds,difficulty,players,run or secrets.token_bytes(16))
-        response = self.service.handle(self.header(3)+body+self.cookie(address),address)
+        submit = rankings.SUBMIT_V2 if version==2 else rankings.SUBMIT
+        self.assertLessEqual(len(name),12 if version==2 else 3,"test helper must not truncate the submitted name")
+        body = submit.pack(build or self.build,table,name,score,rounds,difficulty,players,run or secrets.token_bytes(16))
+        response = self.service.handle(self.header(3,version)+body+self.cookie(address,version),address)
         self.assertEqual(len(response),11)
+        self.assertEqual(response[:6],b"H2RK"+bytes([version,103]))
         return response[-1]
 
-    def query(self,table=0,build=None):
-        response = self.service.handle(self.header(2)+struct.pack("<IB",build or self.build,table)+self.cookie(),self.addr)
-        self.assertLessEqual(len(response),127)
+    def query(self,table=0,build=None,version=1):
+        response = self.service.handle(self.header(2,version)+struct.pack("<IB",build or self.build,table)+self.cookie(version=version),self.addr)
+        self.assertLessEqual(len(response),217 if version==2 else 127)
+        self.assertEqual(response[:6],b"H2RK"+bytes([version,102]))
         self.assertEqual(response[15],0)
-        return [rankings.ROW.unpack_from(response,17+i*11) for i in range(response[16])]
+        row = rankings.ROW_V2 if version==2 else rankings.ROW
+        self.assertEqual(len(response),17+response[16]*row.size)
+        result = [row.unpack_from(response,17+i*row.size) for i in range(response[16])]
+        return [(name.rstrip(b"\0"),*values) for name,*values in result] if version==2 else result
 
     def refill(self):
         self.service.budgets.clear()
@@ -58,6 +67,79 @@ class RankingServiceTest(unittest.TestCase):
         self.service.close()
         self.service = rankings.Rankings(self.path)
         self.assertEqual(self.query()[0][1],900)
+
+    def test_online_names_and_legacy_queries(self):
+        for name,score in ((b"AMS",100),(b"LONG_NAME-12",200),(b"Z",300),(b"A B._-09",400)):
+            self.refill();self.assertEqual(self.submit(name=name,score=score,version=2),0)
+        self.assertEqual([r[0] for r in self.query(version=2)],[b"A B._-09",b"Z",b"LONG_NAME-12",b"AMS"])
+        self.assertEqual([r[0] for r in self.query()],[b"A B",b"Z  ",b"LON",b"AMS"])
+        self.assertEqual(self.service.db.execute("SELECT name FROM rankings_v1 ORDER BY score DESC").fetchall(),
+                         [(b"A B._-09",),(b"Z",),(b"LONG_NAME-12",),(b"AMS",)])
+        self.service.close();self.service=rankings.Rankings(self.path)
+        self.assertEqual(self.query(version=2)[2][0],b"LONG_NAME-12")
+        # Leading spaces are legal; v1 projection must still be nonblank.
+        self.refill();self.assertEqual(self.submit(name=b"   AMS_LONG",score=500,version=2),0)
+        self.assertEqual(self.query()[0][0],b"AMS")
+        self.assertEqual(self.query(version=2)[0][0],b"   AMS_LONG")
+
+    def test_v2_length_characters_and_padding(self):
+        for name in (b"",b" "*12,b"lower",b"A!B",b"A\xffB",b"A\0B",b"A\tB"):
+            self.refill();self.assertEqual(self.submit(name=name,version=2),2)
+        run=secrets.token_bytes(16)
+        self.assertEqual(self.service._submit(self.build,0,b"ABCDEFGHIJKLM",100,0,2,1,run),2)
+        # A 13-byte wire field is rejected as malformed instead of being truncated.
+        cookie=self.cookie(version=2)
+        body=struct.pack("<IB13sIHBB16s",self.build,0,b"ABCDEFGHIJKLM",100,0,2,1,run)
+        self.assertIsNone(self.service.handle(self.header(3,2)+body+cookie,self.addr))
+        self.assertEqual(self.query(version=2),[])
+        self.refill();self.assertEqual(self.submit(name=b"ABCDEFGHIJKL",version=2),0)
+        self.assertEqual(self.query(version=2)[0][0],b"ABCDEFGHIJKL")
+
+    def test_v1_v2_retry_identity_and_response_capacity(self):
+        run=secrets.token_bytes(16)
+        self.assertEqual(self.submit(name=b"AMS",run=run),0)
+        self.assertEqual(self.submit(name=b"AMS",run=run,version=2),1)
+        self.refill();self.assertEqual(self.submit(name=b"AMS_LONG",run=run,version=2),2)
+        for score in range(1,11):
+            self.refill();self.assertEqual(self.submit(table=1,score=score,name=b"LONG_NAME-12",version=2),0)
+        self.refill();self.assertEqual(len(self.query(table=1,version=2)),10)
+        self.assertEqual(len(self.query(table=1)),10)
+
+    def test_migrate_three_byte_database_preserves_existing_records(self):
+        self.service.close()
+        legacy_schema=rankings.SCHEMA.replace("length(name) BETWEEN 1 AND 12","length(name)=3")
+        records=[(b"A"*16,self.build,0,b"OLD",900,0,2,1,12345),
+                 (b"B"*16,self.build,2,b"Z  ",500,8,4,2,12346)]
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DROP TABLE rankings_v1")
+            db.execute(legacy_schema)
+            db.execute("CREATE INDEX rankings_board ON rankings_v1(build,board)")
+            db.executemany("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",records)
+        self.service=rankings.Rankings(self.path)
+        self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),records)
+        self.assertEqual(self.query(version=2)[0][0],b"OLD")
+        self.assertEqual(self.query(table=2)[0][0],b"Z  ")
+        self.assertEqual(self.submit(name=b"OLD",score=900,run=b"A"*16,version=2),1)
+        self.refill();self.assertEqual(self.submit(name=b"LONG_NAME-12",version=2),0)
+        self.assertIsNotNone(self.service.db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='rankings_board'").fetchone())
+        self.assertIsNone(self.service.db.execute("SELECT 1 FROM sqlite_master WHERE name='rankings_name3_legacy'").fetchone())
+        self.service.close();self.service=rankings.Rankings(self.path)
+        self.assertEqual(self.service.db.execute("SELECT COUNT(*) FROM rankings_v1").fetchone()[0],3)
+
+    def test_migration_failure_rolls_back_original_table(self):
+        self.service.close()
+        legacy_schema=rankings.SCHEMA.replace("length(name) BETWEEN 1 AND 12","length(name)=3")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DROP TABLE rankings_v1")
+            db.execute(legacy_schema)
+            db.execute("PRAGMA ignore_check_constraints=ON")
+            db.execute("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",(b"X"*16,self.build,0,b"OLD",100,0,2,3,12345))
+        with self.assertRaises(sqlite3.IntegrityError):
+            rankings.Rankings(self.path)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            self.assertIn("length(name)=3",db.execute("SELECT sql FROM sqlite_master WHERE name='rankings_v1'").fetchone()[0])
+            self.assertEqual(db.execute("SELECT name,players FROM rankings_v1").fetchall(),[(b"OLD",3)])
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='rankings_name3_legacy'").fetchone())
 
     def test_board_build_isolation_and_sort_direction(self):
         for table,score,rounds in ((0,100,0),(0,200,0),(3,800,0),(3,400,0),(2,1000,2),(2,10,3)):
@@ -129,6 +211,8 @@ class RankingServiceTest(unittest.TestCase):
             sent = [];server.send=lambda packet,address:sent.append((packet,address))
             server.handle(self.header(1),self.addr)
             self.assertEqual(sent[-1][0][5],101)
+            server.handle(self.header(1,2),self.addr)
+            self.assertEqual(sent[-1][0][:6],b"H2RK\x02\x65")
             self.assertEqual(server.rooms,{})
             server.handle(b"H2LB\x01\x03"+struct.pack("<I",self.build),self.addr)
             self.assertEqual(sent[-1][0][:6],b"H2LB\x01\x66")

@@ -24,6 +24,7 @@
 #include "d3d12_final_frames.h"
 #include "d3d12_frame_pacer.h"
 #include "d3d12_gpu_timer.h"
+#include "hud_composition.h"
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -96,12 +97,15 @@ public:
     bool ReadMotionPixels(std::vector<float>*) override;
     bool SetGpuTimingEnabled(bool enabled,std::string* error) override {if(active_){if(error)*error="Configure GPU timing between frames";return false;}return gpuTimer_.Enable(enabled,error);}
     bool PollGpuTiming(GpuTimingSample* sample) override {return gpuTimer_.Poll(sample);}
-    bool RequiresSceneProcessing() const override { return callback_ != nullptr || finalFrames_.Enabled(); }
+    void SetMenuOverlay(bool enabled) override { menuOverlay_ = enabled; }
+    bool RequiresSceneProcessing() const override { return callback_ != nullptr || finalFrames_.Enabled() || menuOverlay_; }
     const std::string& HudCompositionError() const override { return sceneProcessingError_; }
     bool NeedsShadowCasters() const override { return rayScene_.Info().enabled; }
     bool ProcessScene(std::string* error = nullptr) override;
     int TargetWidth() const override { return width_; }
     int TargetHeight() const override { return height_; }
+    int HudTargetWidth() const override { return menuReady_ ? menuColor_.w : width_; }
+    int HudTargetHeight() const override { return menuReady_ ? menuColor_.h : height_; }
     bool ConfigureGraphics(const GraphicsOptions&, std::string*) override;
     const GraphicsOptions& EffectiveGraphics() const override { return graphics_; }
     const GraphicsCapabilities& GetGraphicsCapabilities() const override { return capabilities_; }
@@ -146,7 +150,10 @@ private:
     void DrawMotion(const GpuDrawList&);
     void DrawReactive(const GpuDrawList&);
     void SaveMotionDepth();
-    Target& FinalColor() { return output_.resource ? output_ : color_; }
+    bool ComposeMenuScene(std::string*);
+    bool EnsureMenuTargets(std::string*);
+    Target& FinalColor() { return menuReady_ ? menuColor_ : output_.resource ? output_ : color_; }
+    UINT FinalRtv() const { return menuReady_ ? 8 : output_.resource ? 4 : 0; }
     void FrameBindings();
     D3D12_CPU_DESCRIPTOR_HANDLE Cpu(ID3D12DescriptorHeap* heap, UINT index, UINT stride) const {
         auto h = heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += SIZE_T(index) * stride; return h;
@@ -171,6 +178,9 @@ private:
     UINT swapFlags_ = 0;
     int width_ = 0, height_ = 0, backW_ = 0, backH_ = 0;
     Target color_, capture_, output_, back_[2];
+    Target menuColor_;
+    ComPtr<ID3D12Resource> menuDepth_;
+    bool menuOverlay_ = false, menuReady_ = false;
     ComPtr<ID3D12Resource> depth_;
     ComPtr<ID3D12Resource> outputDepth_;
     Target motionMetadata_, motionXY_, reactiveMask_;
@@ -237,7 +247,7 @@ bool D3D12Device::Init(const GpuDeviceDesc& desc, std::string* error) {
         d.Flags = visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         return !Failed(device_->CreateDescriptorHeap(&d, IID_PPV_ARGS(&heap)), "CreateDescriptorHeap", error);
     };
-    if (!makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8, false, rtv_) || !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 3, false, dsv_) ||
+    if (!makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 9, false, rtv_) || !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false, dsv_) ||
         !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kSrvSlots, true, srv_) || !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kTextureSlots, false, srvCpu_) || !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerSlots, true, sampler_)) return false;
     rtvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     srvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -510,7 +520,7 @@ void D3D12Device::FrameBindings() {
 void D3D12Device::BindTarget(Target& target, UINT rtv, bool depth, int x, int y, int w, int h) {
     Barrier(list_.Get(), target.resource.Get(), target.state, D3D12_RESOURCE_STATE_RENDER_TARGET); target.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     const auto rt = Cpu(rtv_.Get(), rtv, rtvStride_);
-    const auto ds = Cpu(dsv_.Get(), &target == &output_ ? 1 : 0, device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV));
+    const auto ds = Cpu(dsv_.Get(), &target == &menuColor_ ? 3 : &target == &output_ ? 1 : 0, device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV));
     list_->OMSetRenderTargets(1, &rt, FALSE, depth ? &ds : nullptr);
     const D3D12_VIEWPORT vp{float(x),float(y),float(w ? w : target.w),float(h ? h : target.h),0,1};
     const D3D12_RECT scissor{0,0,target.w,target.h}; list_->RSSetViewports(1, &vp); list_->RSSetScissorRects(1, &scissor);
@@ -525,13 +535,13 @@ bool D3D12Device::BeginFrame(const float clear[4]) {
     }
     if (!BeginCommands()) return false;
     for (auto& c : constants_) c.resource->Unmap(0, nullptr); constants_.clear();
-    textureTables_.clear(); nextSrv_ = kTextureSlots; output_ = {}; outputDepth_.Reset(); motionReady_ = reactiveReady_ = false; temporal_ = {}; active_ = true; ++frameNumber_;
+    textureTables_.clear(); nextSrv_ = kTextureSlots; output_ = {}; outputDepth_.Reset(); menuReady_ = false; motionReady_ = reactiveReady_ = false; temporal_ = {}; active_ = true; ++frameNumber_;
     rayScene_.BeginFrame(); rayAddress_ = 0;
     raySynchronizationCpuMs_=0;
     finalFrames_.BeginFrame();
     sceneProcessingError_.clear();
     gpuTimer_.Begin(list_.Get(),frameNumber_,width_,height_);
-    FrameBindings(); auto& target = FinalColor(); BindTarget(target, output_.resource ? 4 : 0, true);
+    FrameBindings(); auto& target = FinalColor(); BindTarget(target, FinalRtv(), true);
     list_->ClearRenderTargetView(Cpu(rtv_.Get(), 0, rtvStride_), clear, 0, nullptr);
     list_->ClearDepthStencilView(dsv_->GetCPUDescriptorHandleForHeapStart(), D3D12_CLEAR_FLAG_DEPTH, 0.f, 0, 0, nullptr);
     return true;
@@ -551,7 +561,7 @@ void D3D12Device::Submit(const GpuDrawList& draws) {
         }
     }
     if (draws.temporal.enabled) DrawMotion(draws);
-    FrameBindings(); auto& target = FinalColor(); BindTarget(target, output_.resource ? 4 : 0, true);
+    FrameBindings(); auto& target = FinalColor(); BindTarget(target, FinalRtv(), true);
     size_t drawIndex = 0;
     for (const auto& draw : draws.draws) {
         const size_t currentDraw = drawIndex++;
@@ -587,7 +597,7 @@ void D3D12Device::Submit(const GpuDrawList& draws) {
 }
 void D3D12Device::DrawPresent(Target& target, UINT rtv, int x, int y, int w, int h, int crt) {
     auto& source = FinalColor();
-    DrawPresentFrom(source, output_.resource ? 4 : 2, target, rtv, x, y, w, h, crt, graphics_);
+    DrawPresentFrom(source, menuReady_ ? 7 : output_.resource ? 4 : 2, target, rtv, x, y, w, h, crt, menuReady_ ? HudDisplayGraphics(graphics_) : graphics_);
 }
 void D3D12Device::DrawPresentFrom(Target& source,UINT sourceSrv,Target& target,UINT rtv,int x,int y,int w,int h,int crt,const GraphicsOptions& graphics) {
     Barrier(list_.Get(), source.resource.Get(), source.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); source.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
@@ -606,7 +616,7 @@ void D3D12Device::EndFrame() {
         generationStats_.lastPairIntervalMs=0;
         generationStats_.lastPresentationEligible=false;
         std::string error; const auto raster = FrameInterop(); auto& finalColor = FinalColor();
-        const bool evaluated = finalFrames_.Evaluate(raster,finalColor.resource.Get(),finalColor.state,graphics_,present_.crt,generationPaused_,&error);
+        const bool evaluated = finalFrames_.Evaluate(raster,finalColor.resource.Get(),finalColor.state,menuReady_ ? HudDisplayGraphics(graphics_) : graphics_,present_.crt,generationPaused_,&error);
         SaveMotionDepth();
         if(evaluated)gpuTimer_.End(list_.Get());
         if (evaluated && Flush() && finalFrames_.ResolveFlag(&error)) {
@@ -662,7 +672,7 @@ bool D3D12Device::ReadTarget(Target& target, std::vector<uint8_t>* rgba) {
 bool D3D12Device::ReadPixels(std::vector<uint8_t>* rgba) {
     if (!offscreen_ || !active_) return false;
     const bool effects = graphics_.postAA || graphics_.sharpening || graphics_.bloom || graphics_.colorGrade || graphics_.crtMask || graphics_.crtCurvature || graphics_.crtGlow || graphics_.brightness != 50 || graphics_.gamma != 50 || graphics_.contrast != 50 || graphics_.saturation != 50;
-    if (effects || output_.resource) return ReadPresentation(width_, height_, rgba);
+    if (effects || output_.resource || menuReady_) return ReadPresentation(width_, height_, rgba);
     return ReadTarget(color_, rgba);
 }
 bool D3D12Device::ReadPresentation(int w, int h, std::vector<uint8_t>* rgba) {
@@ -818,7 +828,7 @@ bool D3D12Device::Interop(std::string* error) {
             }
         }
     }
-    FrameBindings(); auto& target = FinalColor(); BindTarget(target, output_.resource ? 4 : 0, true); return okay;
+    FrameBindings(); auto& target = FinalColor(); BindTarget(target, FinalRtv(), true); return okay;
 }
 NativeD3D12FrameInterop D3D12Device::FrameInterop() const {
     NativeD3D12FrameInterop frame;frame.device=device_.Get();frame.queue=queue_.Get();frame.commands=list_.Get();frame.color=color_.resource.Get();frame.depth=depth_.Get();frame.width=width_;frame.height=height_;frame.frame=frameNumber_;frame.colorState=color_.state;
@@ -826,9 +836,40 @@ NativeD3D12FrameInterop D3D12Device::FrameInterop() const {
     if(motionReady_){frame.motion=motionXY_.resource.Get();frame.motionState=motionXY_.state;frame.motionValid=true;frame.depth=motionDepth_.Get();frame.resetHistory=temporal_.reset||!previousDepthReady_||temporal_.frameId!=previousTemporalFrame_+1;frame.jitterX=temporal_.jitterPixels[0];frame.jitterY=temporal_.jitterPixels[1];frame.camera=temporalCamera_;if(reactiveReady_){frame.reactiveMask=reactiveMask_.resource.Get();frame.reactiveMaskState=reactiveMask_.state;}}
     return frame;
 }
+bool D3D12Device::EnsureMenuTargets(std::string* error) {
+    int width=present_.w,height=present_.h;
+    if(width<=0||height<=0){width=width_;height=height_;WindowSizePixels(&width,&height);}
+    if(!ValidHudOutputSize(width,height)){if(error)*error="HUD output requires dimensions up to 8192 and at most 16 million pixels";return false;}
+    if(menuColor_.resource&&menuDepth_&&menuColor_.w==width&&menuColor_.h==height)return true;
+    auto desc=TextureDesc(width,height,DXGI_FORMAT_D32_FLOAT,D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    const auto heap=Heap(D3D12_HEAP_TYPE_DEFAULT);D3D12_CLEAR_VALUE clear{};clear.Format=DXGI_FORMAT_D32_FLOAT;
+    ComPtr<ID3D12Resource> depth;Target color;
+    if(FAILED(device_->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_DEPTH_WRITE,&clear,IID_PPV_ARGS(&depth)))||
+       !CreateTarget(color,width,height,8)){
+        if(error)*error="Output-resolution menu allocation failed; internal UI retained";return false;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};srv.Format=kColorFormat;srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;srv.Texture2D.MipLevels=1;
+    device_->CreateShaderResourceView(color.resource.Get(),&srv,Cpu(srvCpu_.Get(),7,srvStride_));
+    device_->CreateDepthStencilView(depth.Get(),nullptr,Cpu(dsv_.Get(),3,device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV)));
+    menuColor_=std::move(color);menuDepth_=depth;return true;
+}
+bool D3D12Device::ComposeMenuScene(std::string* error) {
+    if(menuReady_)return true;
+    if(!active_||!commandsOpen_||!EnsureMenuTargets(error))return false;
+    auto& source=FinalColor();
+    DrawPresentFrom(source,output_.resource?4:2,menuColor_,8,0,0,menuColor_.w,menuColor_.h,0,HudSceneGraphics(graphics_,false));
+    if(broken_){if(error)*error="Output-resolution menu composition failed; internal UI retained";return false;}
+    menuReady_=true;
+    const auto dsv=Cpu(dsv_.Get(),3,device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV));
+    list_->ClearDepthStencilView(dsv,D3D12_CLEAR_FLAG_DEPTH,0.f,0,0,nullptr);
+    BindTarget(menuColor_,8,true);return true;
+}
 bool D3D12Device::ProcessScene(std::string* error) {
+    if(menuReady_)return true;
     sceneProcessingError_.clear();
     bool okay=callback_?Interop(&sceneProcessingError_):true;
+    if(okay&&menuOverlay_)okay=ComposeMenuScene(&sceneProcessingError_);
     if(!okay&&error)*error=sceneProcessingError_;
     if(finalFrames_.Enabled()){
         auto& source=FinalColor();std::string captureError;

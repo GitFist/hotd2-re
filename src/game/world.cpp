@@ -539,6 +539,7 @@ void World::Impl::BeginFrame() {
     hudEffects.clear();
     hudSprites.clear();
     hudSubtitles.clear();
+    hud.menuScrollHints.clear();
     hudTitleSerial = 0;
     routeMapScroll = -1;
 }
@@ -1604,7 +1605,15 @@ bool World::StartNetworkGame(const WorldConfig& cfg, std::string* error) {
         w.front.modeRequest = 15;
         w.FrontApplyMode();
         w.FrontStep();
-    } else if (!fresh.StartStage(cfg, error)) return false;
+    } else {
+        // Boot has applied the shared save. Preserve those gameplay settings while
+        // retaining the requested start frame, seed, player slots and current credits.
+        WorldConfig start = cfg;
+        start.difficulty = fresh.impl_->cfg.difficulty;
+        start.livesSetting = fresh.impl_->cfg.livesSetting;
+        start.creditSetting = fresh.impl_->cfg.creditSetting;
+        if (!fresh.StartStage(start, error)) return false;
+    }
     impl_.swap(fresh.impl_);
     return true;
 }
@@ -1623,11 +1632,61 @@ void World::SetWallClock(int count) {
     if (impl_->modes) impl_->modes->clockOverride = count;
 }
 bool World::QuitRequested() const { return impl_->front.quit; }
-void World::SetPortVolumes(const int v[3]) {
-    for (int k = 0; k < 3; ++k) {
+void World::SetPortVolumes(const int v[5]) {
+    for (int k = 0; k < 5; ++k) {
         impl_->cfg.portVolumes[k] = v[k];
         if (impl_->modes && impl_->modes->optPortRows) impl_->modes->optVolume[k] = v[k];
     }
+}
+PortGameOptions World::GetPortGameOptions() const {
+    PortGameOptions result;
+    const auto& w = *impl_;
+    if (!w.modes || !w.modes->save.Valid()) return result;
+    const auto& save = w.modes->save;
+    result.difficulty = std::clamp<int>(save.U8(SaveData::kDifficulty), 0, 4);
+    result.lives = std::clamp<int>(save.U8(SaveData::kLives), 0, 4) + 1;
+    result.credits = save.S8(SaveData::kCredits) == -1 ? 0 : std::clamp<int>(save.U8(SaveData::kCredits), 1, 9);
+    for (int p = 0; p < 2; ++p)
+        result.crosshair[p] = std::clamp<int>(save.U8(SaveData::kPlayerCfg + p * 0x7C), 0, 3);
+    result.freePlayUnlocked = (save.U8(SaveData::kFlags) & 7) == 7;
+    result.editable = w.cfg.portFeatures && w.frontEnd && !w.cfg.portNetworkRoom && !RandomizerActive(w) &&
+                      (w.gameMode == 3 || w.gameMode == 4 || w.gameMode == 12);
+    return result;
+}
+bool World::SetPortGameOptions(const PortGameOptions& options) {
+    const auto current = GetPortGameOptions();
+    if (!current.editable || options.difficulty < 0 || options.difficulty > 4 || options.lives < 1 || options.lives > 5 ||
+        options.credits < 0 || options.credits > 9 || (options.credits == 0 && !current.freePlayUnlocked) ||
+        options.crosshair[0] < 0 || options.crosshair[0] > 3 || options.crosshair[1] < 0 || options.crosshair[1] > 3)
+        return false;
+    auto& w = *impl_;
+    auto& m = *w.modes;
+    m.save.SetU8(SaveData::kDifficulty, static_cast<uint8_t>(options.difficulty));
+    m.save.SetU8(SaveData::kLives, static_cast<uint8_t>(options.lives - 1));
+    m.save.SetU8(SaveData::kCredits, options.credits == 0 ? 0xFF : static_cast<uint8_t>(options.credits));
+    for (int p = 0; p < 2; ++p) {
+        m.save.SetU8(SaveData::kPlayerCfg + p * 0x7C, static_cast<uint8_t>(options.crosshair[p]));
+        m.optCross[p] = static_cast<int8_t>(options.crosshair[p]);
+    }
+    // Keep the original page's cached copies coherent for Classic/exactness tools without entering its mode.
+    m.optDifficulty = static_cast<int8_t>(options.difficulty);
+    m.optLives = static_cast<int8_t>(options.lives - 1);
+    m.optCredits = static_cast<int8_t>(options.credits);
+    m.Store(w);
+    return true;
+}
+bool World::ResetPortGameOptions() {
+    auto options = GetPortGameOptions();
+    if (!options.editable) return false;
+    // DefaultSettings also contains old device calibration. Read its defaults from a copy, then reset only the
+    // preferences this page owns so an attached gun and the player's progression are never erased by this action.
+    auto defaults = impl_->modes->save;
+    defaults.DefaultSettings(impl_->exe);
+    options.difficulty = defaults.U8(SaveData::kDifficulty);
+    options.lives = defaults.U8(SaveData::kLives) + 1;
+    options.credits = defaults.S8(SaveData::kCredits) == -1 ? 0 : defaults.U8(SaveData::kCredits);
+    for (int p = 0; p < 2; ++p) options.crosshair[p] = defaults.U8(SaveData::kPlayerCfg + p * 0x7C);
+    return SetPortGameOptions(options);
 }
 void World::SetPortModernMenu(bool on) {
     auto& w=*impl_;

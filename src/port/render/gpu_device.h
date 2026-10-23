@@ -160,6 +160,9 @@ public:
     // times); EndFrame presents (window) or finishes (off-screen).
     virtual bool BeginFrame(const float clear[4]) = 0;
     virtual void Submit(const GpuDrawList& list) = 0;
+    // Between frames: render explicit menu UI at the presentation resolution.
+    // This transient override never changes the accepted graphics settings.
+    virtual void SetMenuOverlay(bool enabled) {}
     // Optional temporal/native SDK boundary, after scene effects and before HUD.
     // Default rendering keeps the original mixed pass-1 order exactly.
     virtual bool RequiresSceneProcessing() const { return false; }

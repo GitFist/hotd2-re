@@ -1201,7 +1201,7 @@ void World::Impl::FillHud() {
     hud.flags5900 = flags5900;
     hud.paused = paused;
     hud.pausePlayer = pausePlayer;
-    for (int k = 0; k < 3; ++k) hud.portVolumes[k] = modes && modes->optPortRows ? modes->optVolume[k] : -1;  // port only
+    for (int k = 0; k < 5; ++k) hud.portVolumes[k] = modes && modes->optPortRows ? modes->optVolume[k] : -1;  // port only
     hud.portDisplayRequests = modes ? modes->optDisplayRequests : 0;
     hud.portLightgunRequests = modes ? modes->optLightgunRequests : 0;
     hud.portWiiRequests = modes ? modes->optWiiRequests : 0;

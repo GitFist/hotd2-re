@@ -6,11 +6,12 @@
 // (WorldHud::portDisplayRequests). Pure state machine (tests/pause_menu_test.cpp); the caller applies the settings
 // (notes/agents/display.md): window / fullscreen through the platform layer, the present mapping and the internal
 // resolution through the GPU device.
-//   Settings are grouped once by effect: Display, Image, Lighting, Performance, Packs, Color, Resolution, CRT and
-//   Advanced. Display Mode combines Windowed / Borderless / exclusive Fullscreen; saved settings retain their keys.
+//   A single options screen groups settings into Display, Graphics, Gameplay, Sound, Devices, CRT and Packs.
+//   Long categories scroll within a fixed viewport; tabs, Back and Hide UI remain available. Saved settings retain
+//   their existing keys and the caller applies gameplay edits through the world's persistent settings API.
 //   Keyboard: Up / Down move, Left / Right change a value, Enter / Space on a value = next value, on Back = close,
 //   Backspace = close. Pointer: aiming at a row highlights it; trigger = next value / Back, reload = previous value /
-//   close. The start button is left to the caller (the pause menu resumes with it).
+//   close. Start closes a standalone page; the pause-menu caller uses it to resume instead.
 
 #include <cstdint>
 #include <string>
@@ -18,6 +19,7 @@
 
 #include "game/exe_image.h"
 #include "game/menu_pointer.h"
+#include "game/menu_scroll.h"
 #include "game/sprite.h"
 #include "game/world.h"
 #include "port/render/graphics_options.h"
@@ -65,11 +67,18 @@ struct MenuInput {
     bool reload = false;   // the reload button went down
     bool start = false;    // the start button went down (the original's resume)
     bool preview = false;  // local H shortcut: hide/show the graphics UI without resuming the game
+    int scroll = 0;        // mouse-wheel notches: positive scrolls toward the first row
+    int pageDelta = 0;     // previous / next category (Page Up / Page Down)
 };
 
 class DisplayMenu {
    public:
-    enum Page { kDisplay = 0, kClarity, kLighting, kPerformance, kPacks, kColor, kResolution, kRetro, kTemporal, kPageCount };
+    enum Page {
+        kDisplay = 0, kGraphics, kGameplay, kSound, kDevices, kRetro, kPacks, kPageCount,
+        // Source aliases for callers that previously selected one of the separate graphics pages.
+        kClarity = kGraphics, kLighting = kGraphics, kPerformance = kDisplay, kColor = kDisplay,
+        kResolution = kGraphics, kTemporal = kGraphics
+    };
     enum Row {
         kFullscreen = 0,
         kScale,
@@ -132,8 +141,48 @@ class DisplayMenu {
         kMenuOpacity,
         kResetGraphics,
         kCrosshairs,
+        kDifficulty,
+        kLives,
+        kContinues,
+        kCrosshairP1,
+        kCrosshairP2,
+        kResetGameplay,
+        kMasterVolume,
+        kMusicVolume,
+        kGunVolume,
+        kEffectsVolume,
+        kAttractionVolume,
+        kLightguns,
+        kWiiRemotes,
         kRowCount
     };
+
+    // Cached values are supplied by the caller. Audio is local; gameplay values use the world's save file.
+    struct OptionValues {
+        int audio[5] = {5, 5, 5, 5, 5};  // music, guns, effects, master, attraction
+        int difficulty = 2, lives = 3, credits = 5, crosshair[2] = {};
+        bool freePlayUnlocked = false, gameplayEditable = true;
+        bool operator==(const OptionValues&) const = default;
+    };
+    enum class DeviceAction { None, Lightguns, WiiRemotes };
+    void SetOptionValues(const OptionValues& values) { optionValues_ = values; }
+    const OptionValues& OptionValuesState() const { return optionValues_; }
+    bool TakeOptionChange(OptionValues* values) {
+        if (!optionChanged_ || !values) return false;
+        *values = optionValues_;
+        optionChanged_ = false;
+        return true;
+    }
+    bool TakeGameplayReset() {
+        const bool reset = gameplayReset_;
+        gameplayReset_ = false;
+        return reset;
+    }
+    DeviceAction TakeDeviceAction() {
+        const auto action = deviceAction_;
+        deviceAction_ = DeviceAction::None;
+        return action;
+    }
 
     struct PackChoice {
         std::string name, path, detail;
@@ -156,8 +205,8 @@ class DisplayMenu {
         return reset;
     }
 
-    // One frame of the open page: edits d in place; sounds: SE ids to play (0xA9 cursor, 0x121A9 confirm). Returns true
-    // when the page was closed (Back / back button).
+    // One frame of the open page: edits d in place. Navigation is silent; interactions and backing out use the shared
+    // option sounds (Preview 74 and 76 respectively). Returns true when the page was closed (Back / Start / back button).
     bool Update(const MenuInput& in, DisplaySettings& d, std::vector<uint32_t>& sounds);
     // The page's sprites: the menu background, the heading, the rows with their values (red = selected).
     // overScene: over the paused game instead of the tiled background (play.exe: the settings show live): no background
@@ -168,6 +217,10 @@ class DisplayMenu {
     int Cursor() const { return cursor_; }
     Page CurrentPage() const { return page_; }
     void SetPage(Page page);
+    void FocusRow(int row);  // keyboard/test entry: scroll the real row into view
+    int ScrollOffset() const { return scroll_; }
+    game::MenuScrollHint ScrollHint() const;
+    std::vector<int> VisibleRows() const;
     void SetMonitors(std::vector<std::string> names) { monitors_ = std::move(names); }
     void SetPresentationCapabilities(bool tearing, bool lowLatency, bool hdr = false, bool taa = false, bool cmaa = false) {
         caps_.tearing = tearing;
@@ -199,13 +252,13 @@ class DisplayMenu {
     void SetStatus(const std::string& status) { status_ = status; }
 
     // Layout in cells (16 x 24 px); RowAt: the row under a pointer at game pixel (px, py), -1 = none.
-    static float RowY(int row, Page page = kDisplay);
-    static int RowAt(float px, float py, Page page = kDisplay);
+    static float RowY(int row, Page page = kDisplay, int scroll = 0);
+    static int RowAt(float px, float py, Page page = kDisplay, int scroll = 0);
     static const std::vector<int>& Rows(Page page);
     static int TabAt(float px, float py);
     static float TabLeft(int page);
     static float TabWidth(int page);
-    static bool PreviewButtonAt(float x, float y) { return x >= 478 && x < 614 && y >= 427 && y < 464; }
+    static bool PreviewButtonAt(float x, float y) { return x >= 550 && x < 630 && y >= 456 && y < 476; }
     // Confirmation choices: 1 resets, 0 cancels, -1 is outside either button.
     static int ResetChoiceAt(float x, float y);
     static const char* Label(int row);
@@ -219,9 +272,14 @@ class DisplayMenu {
     bool open_ = false;
     bool uiHidden_ = false;
     bool resetConfirm_ = false, resetYes_ = false, graphicsReset_ = false;
+    bool resetGameplayConfirm_ = false, gameplayReset_ = false, optionChanged_ = false;
+    OptionValues optionValues_;
+    DeviceAction deviceAction_ = DeviceAction::None;
     bool nightShiftActive_ = true;
     int cursor_ = kFullscreen;
     Page page_ = kDisplay;
+    int scroll_ = 0;
+    void KeepCursorVisible();
     game::MenuPointerFocus pointer_;
     std::vector<std::string> monitors_;
     std::vector<PackChoice> packs_;

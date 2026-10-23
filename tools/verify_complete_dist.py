@@ -1,6 +1,6 @@
 """Verify a complete Windows ZIP, then exercise its clients through the configured live lobby.
 
-Usage: python tools/verify_complete_dist.py build/dist-g/hotd2re-multiplayer-complete.zip
+Usage: python tools/verify_complete_dist.py build/dist-g/hotd2re-complete.zip
 Runs direct, relay-only, and direct-to-relay failover cases on this PC. It does not substitute for a
 separate-household playtest. Only test processes started here are terminated on failure.
 """

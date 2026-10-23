@@ -52,10 +52,10 @@ void Put32(std::vector<uint8_t>& p,uint32_t value) { Put16(p,value); Put16(p,val
 uint16_t U16(const uint8_t* p) { return uint16_t(p[0]) | uint16_t(p[1])<<8; }
 uint32_t U32(const uint8_t* p) { return uint32_t(U16(p)) | uint32_t(U16(p+2))<<16; }
 std::vector<uint8_t> Header(uint8_t kind,uint32_t request) {
-    std::vector<uint8_t> p{'H','2','R','K',1,kind}; Put32(p,request); return p;
+    std::vector<uint8_t> p{'H','2','R','K',2,kind}; Put32(p,request); return p;
 }
 bool Valid(const LeaderboardSubmission& e) {
-    if (e.table<0 || e.table>12 || e.name.size()!=3 || !e.score || e.score>2000000000 ||
+    if (e.table<0 || e.table>12 || e.name.empty() || e.name.size()>kLeaderboardMaxNameLength || !e.score || e.score>2000000000 ||
         e.players<1 || e.players>2 || e.difficulty>(e.table<2?6:4) ||
         (e.table!=2 && e.rounds) || (e.table==2 && !e.rounds) || (e.table>=3 && (e.players!=1 || e.score>1296000))) return false;
     bool nonblank=false;
@@ -118,7 +118,9 @@ struct LeaderboardClient::Impl {
         outgoing=Header(operation==1?2:3,request);
         Put32(outgoing,build);outgoing.push_back(static_cast<uint8_t>(table));
         if (operation==2) {
-            outgoing.insert(outgoing.end(),submission.name.begin(),submission.name.end());
+            const size_t nameOffset=outgoing.size();
+            outgoing.resize(nameOffset+kLeaderboardMaxNameLength,0);
+            std::copy(submission.name.begin(),submission.name.end(),outgoing.begin()+nameOffset);
             Put32(outgoing,submission.score);Put16(outgoing,submission.rounds);
             outgoing.push_back(submission.difficulty);outgoing.push_back(submission.players);
             outgoing.insert(outgoing.end(),run.begin(),run.end());
@@ -167,7 +169,7 @@ bool LeaderboardClient::Submit(const LeaderboardSubmission& entry,std::string* e
         old.rounds==entry.rounds && old.difficulty==entry.difficulty && old.players==entry.players;
     if(i.haveSubmission&&entry.completionToken<old.completionToken) {if(error)*error="RESULT IS FROM AN OLDER COMPLETED RUN";return false;}
     const bool sameRun=i.haveSubmission&&entry.completionToken==old.completionToken;
-    if(sameRun&&i.submissionSent&&!samePayload) {if(error)*error="RUN ALREADY SENT AS "+old.name+"; RETRY THOSE INITIALS";return false;}
+    if(sameRun&&i.submissionSent&&!samePayload) {if(error)*error="RUN ALREADY SENT AS "+old.name+"; RETRY THAT NAME";return false;}
     i.table=entry.table;i.submission=entry;
     // A manual retry after an unavailable/lost acknowledgement uses the same
     // run ID, even after acceptance. Equal scores from a newer completion are
@@ -195,18 +197,21 @@ void LeaderboardClient::Poll() {
         uint8_t packet[256];
         const int count=::recv(static_cast<SOCKET>(i.socket),reinterpret_cast<char*>(packet),sizeof(packet),0);
         if (count<=0) break;
-        if (count<10 || std::memcmp(packet,"H2RK\x01",5) || U32(packet+6)!=i.request) continue;
+        if (count<10 || std::memcmp(packet,"H2RK\x02",5) || U32(packet+6)!=i.request) continue;
         if (packet[5]==101 && count==26 && i.phase==1) { i.WithCookie(packet+10);continue; }
         if (i.phase!=2) continue;
         if (packet[5]==102 && i.operation==1 && count>=17 && U32(packet+10)==i.build && packet[14]==i.table) {
             const uint8_t status=packet[15],rows=packet[16];
-            if (rows>10 || count!=17+rows*11 || (status!=0 && status!=3 && status!=5) || (status && rows)) continue;
+            constexpr int rowBytes=int(kLeaderboardMaxNameLength)+8;
+            if (rows>10 || count!=17+rows*rowBytes || (status!=0 && status!=3 && status!=5) || (status && rows)) continue;
             std::vector<LeaderboardEntry> entries;
             bool valid=true;
             for (unsigned row=0;row<rows;++row) {
-                const uint8_t* p=packet+17+row*11;
-                LeaderboardSubmission e;e.table=i.table;e.name.assign(reinterpret_cast<const char*>(p),3);
-                e.score=U32(p+3);e.rounds=U16(p+7);e.difficulty=p[9];e.players=p[10];
+                const uint8_t* p=packet+17+row*rowBytes;
+                const uint8_t* nameEnd=std::find(p,p+kLeaderboardMaxNameLength,uint8_t(0));
+                if(std::any_of(nameEnd,p+kLeaderboardMaxNameLength,[](uint8_t c){return c!=0;})){valid=false;break;}
+                LeaderboardSubmission e;e.table=i.table;e.name.assign(reinterpret_cast<const char*>(p),size_t(nameEnd-p));
+                e.score=U32(p+12);e.rounds=U16(p+16);e.difficulty=p[18];e.players=p[19];
                 if (!Valid(e)) { valid=false;break; }
                 entries.push_back(e);
             }

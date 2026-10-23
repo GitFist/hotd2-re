@@ -64,6 +64,7 @@ bool UiFont::Init() {
 void UiFont::Append(const std::vector<game::WorldHud::MenuText>& text, std::vector<ModelRenderer::SpriteDraw>& out, float horizontalScale) const {
     if (!available_) return;
     size_t index = 0;
+    std::vector<ModelRenderer::SpriteDraw> foreground;
     for (const auto& command : text) {
         const auto& face = faces_[command.scale >= .9f ? 0 : 1];
         const float scale = command.scale * 30.0f / face.height;
@@ -85,10 +86,23 @@ void UiFont::Append(const std::vector<game::WorldHud::MenuText>& text, std::vect
                 const float u1 = u0 + w/face.image.width, v1 = v0 + h/face.image.height;
                 sprite.v[0] = {x0,y0,0,1,command.color,0,u0,v0}; sprite.v[1] = {x0,y1,0,1,command.color,0,u0,v1};
                 sprite.v[2] = {x1,y0,0,1,command.color,0,u1,v0}; sprite.v[3] = {x1,y1,0,1,command.color,0,u1,v1};
-                out.push_back(sprite);
+                // Keep every shadow behind every glyph, including on paths that draw
+                // sprites in submission order. The offset scales with the menu canvas.
+                auto shadow = sprite;
+                shadow.depth += .001f;
+                const float offset = std::clamp(command.scale * 1.75f, 1.25f, 2.75f);
+                const uint32_t shadowColor = (((command.color >> 24) * 230 / 255) << 24);
+                for (auto& vertex : shadow.v) {
+                    vertex.x += offset * horizontalScale;
+                    vertex.y += offset;
+                    vertex.diffuse = shadowColor;
+                }
+                out.push_back(shadow);
+                foreground.push_back(sprite);
             }
             x += face.advance[glyph] * scale;
         }
     }
+    out.insert(out.end(), foreground.begin(), foreground.end());
 }
 } // namespace port

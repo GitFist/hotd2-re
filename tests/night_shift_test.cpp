@@ -9,6 +9,7 @@
 #include "game/world_nightshift.h"
 #include "game/world_internal.h"
 #include "game/save_data.h"
+#include "game/menu_audio.h"
 #include "play/night_shift_menu.h"
 #include "play/local_leaderboard.h"
 static void Require(bool ok,const char* why){if(!ok){fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}}
@@ -59,6 +60,33 @@ static void BossReplay(const char* dir,const char* script) {
  Require(r.eligible&&r.sequence==1&&r.table==3&&r.score>0&&r.players==1,"actual Judgment victory records one frozen new boss time");
  w.Boot(c);Require(w.PortLeaderboardRun().sequence==r.sequence,"completion sequence and snapshot survive a frontend Boot");
 }
+static void DirectOptionsAudio(const char* dir) {
+ for(bool modern : {false,true}) {
+  game::World world;Require(world.Load(dir),"load direct Options sound flow");
+  game::WorldConfig cfg;cfg.portFeatures=true;cfg.portModernMenu=modern;
+  world.Boot(cfg);world.ForceMode(4,0x10000,0,0);
+  auto step=[&](uint32_t keys=0,bool click=false) {
+   game::WorldInput in;in.kind=click?1:0;in.x=100;in.y=359;in.fired=click;in.pressed=in.held=click?4:keys;
+   world.SetInput(0,in);world.SetInput(1,{});world.Step();
+  };
+  for(int i=0;i<3;++i)step();
+  if(!modern)for(int i=0;i<5;++i){step(0x20);step();}
+  const int requests=world.Hud().portDisplayRequests;
+  step(modern?0:8,modern);
+  const auto& sounds=world.Sounds();
+  Require(sounds.size()==1&&sounds[0].kind==game::World::kOptionFeedback&&sounds[0].id==game::kOptionSelectSound,
+          "Options entry emits exactly one protected Preview 74 in either theme");
+  Require(world.GameMode()==4&&world.Hud().portDisplayRequests==requests+1&&world.Hud().portDisplayPage==0,
+          "main Options opens the Display tab directly without entering mode12");
+  Require(world.Hud().nightShiftPage!=(5)&&!world.QuitRequested(),"Options never visits the removed intermediate hub");
+  for(const auto& item:world.Hud().menuText)Require(item.text!="GAME OPTIONS","main Options exposes no second Game Options page");
+  step();
+  Require(world.GameMode()==4&&world.Hud().portDisplayRequests==requests+1&&world.Sounds().empty(),
+          "one Options selection cannot reopen repeatedly or join a player");
+ }
+ puts("PASS direct Options entry: both themes skip the hub and mode12 with one Preview 74");
+}
+
 static void LeaderboardPresentation(const char* dir) {
  game::World w;Require(w.Load(dir),"load leaderboard presentation World");game::WorldConfig c;c.portFeatures=c.portModernMenu=true;
  // Two real blank-name encodings, plus a valid name; scores/stages are untouched.
@@ -81,99 +109,26 @@ static void LeaderboardPresentation(const char* dir) {
  step(8);step();Require(w.Hud().portLeaderboardTable==0&&values()==originalValues&&name(0)=="---"&&name(2)=="ABC","board navigation must preserve scores/stages and native initials");
  puts("PASS leaderboard presentation: one focus, distinct current board, empty initials and unchanged records");
 }
-static void ModernGameOptions(const char* dir) {
- {
-  game::World::Impl dense;Require(dense.exe.Load((std::filesystem::path(dir)/"Hod2.exe").string()),"load dense options glyph metadata");
-  std::vector<game::NightShiftOptionRow> rows(15);for(int i=0;i<15;++i){rows[i].id=i;rows[i].label=i==14?"SAVE + BACK":"Option";}
-  game::NightShiftGameOptionsFrame(dense,rows,14,"Game setting scope");
-  bool last=false;for(const auto& p:dense.hud.menuPanels)if(p.left==26&&p.top>=game::kNightShiftOptionsTop-1) {
-   Require(p.bottom<410,"maximum native option count must leave help unobstructed");
-   if(p.color==0xCC8F2026&&p.top==game::kNightShiftOptionsTop+14*game::NightShiftOptionsPitch(rows.size())-1)last=true;
-  }
-  Require(last,"maximum-density Save + Back row remains visible");
- }
- const auto temp=std::filesystem::temp_directory_path()/("hotd2-modern-options-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
- std::filesystem::create_directories(temp);
- game::World modern,classic;Require(modern.Load(dir)&&classic.Load(dir),"load paired Game Options worlds");
- auto boot=[&](game::World& w,bool nightShift,const char* name) {
-  game::WorldConfig c;c.portFeatures=true;c.portModernMenu=nightShift;c.savePath=(temp/name).string();
-  c.portVolumes[0]=8;c.portVolumes[1]=7;c.portVolumes[2]=6;
-  c.savePatch={{game::SaveData::kDifficulty,{1}},{game::SaveData::kLives,{2}},{game::SaveData::kCredits,{3}},
-               {game::SaveData::kPlayerCfg,{0}},{game::SaveData::kPlayerCfg+0x7c,{1}}};
-  w.Boot(c);w.ForceMode(4,0x10000,0,0);
- };
- auto tick=[&](game::World& w,uint32_t keys=0,uint32_t p2keys=0,int x=0,int y=0,bool fire=false,bool reload=false) {
-  game::WorldInput a,b;a.kind=b.kind=1;a.x=x;a.y=y;a.pressed=a.held=keys;a.fired=fire;a.offscreen=reload;
-  b.pressed=b.held=p2keys;w.SetInput(0,a);w.SetInput(1,b);w.Step();
- };
- auto key=[&](game::World& w,uint32_t keys,uint32_t p2keys=0){tick(w,keys,p2keys);tick(w);};
- auto click=[&](game::World& w,int x,int y){tick(w,4,0,x,y,true);tick(w);};
- boot(modern,true,"modern.bin");boot(classic,false,"classic.bin");
- for(int i=0;i<3;++i){tick(modern);tick(classic);}
- modern.SetPortHomeRooms({{12345,false,false}},"WAITING FOR A PARTNER");tick(modern);
+static void HomePresentation(const char* dir) {
+ game::World world;Require(world.Load(dir),"load Home panel presentation World");
+ game::WorldConfig cfg;cfg.portFeatures=cfg.portModernMenu=true;world.Boot(cfg);world.ForceMode(4,0x10000,0,0);
+ for(int i=0;i<3;++i){world.SetInput(0,{});world.SetInput(1,{});world.Step();}
+ world.SetPortHomeRooms({{12345,false,false}},"WAITING FOR A PARTNER");world.Step();
  bool left=false,right=false;
- for(const auto& p:modern.Hud().menuPanels) {
-  Require(!(p.left==352&&p.top==122&&p.right==624&&p.bottom==416),"Home online area must not have an enclosing dark box");
-  if(p.left==24&&p.top==200&&p.color==0x75101315)left=true;
-  if(p.left==366&&p.top==166&&p.color==0x75101315)right=true;
+ for(const auto& panel:world.Hud().menuPanels) {
+  Require(!(panel.left==352&&panel.top==122&&panel.right==624&&panel.bottom==416),"Home online area has no enclosing dark box");
+  if(panel.left==24&&panel.top==195&&panel.color==0x75101315)left=true;
+  if(panel.left==366&&panel.top==166&&panel.color==0x75101315)right=true;
  }
- Require(left&&right,"Home waiting-room card and left navigation must share their unfocused transparency");
- click(modern,100,344);Require(modern.Hud().nightShiftPage==5,"Home opens Options");
- click(modern,100,347);for(int i=0;i<3;++i)tick(modern);
- classic.ForceMode(12,0x10000,0,0);for(int i=0;i<3;++i)tick(classic);
- Require(modern.GameMode()==12&&modern.Hud().nightShiftPage==7,"Game Options routes through Night Shift presentation");
- Require(classic.GameMode()==12&&classic.Hud().nightShiftPage<0&&classic.Hud().menuPanels.empty()&&!classic.Hud().sprites.empty(),
-         "Classic Game Options retains its original sprite presentation");
- const std::vector<std::string> labels={"Difficulty","Starting Life","Continues","Crosshair Style","Wii Remotes","Sound Preview",
-  "Dialogue Preview","Music Volume","Gun Shots Volume","Effects + Dialogue","Graphics Options","Light Guns","Reset Game Settings","SAVE + BACK"};
- for(size_t i=0;i<labels.size();++i) {
-  bool found=false;for(const auto& t:modern.Hud().menuText)if(t.text==labels[i]&&t.x==34&&t.y==game::kNightShiftOptionsTop+float(i)*game::kNightShiftOptionsPitch+2)found=true;
-  Require(found,"all existing option rows need visible, ordered labels and matching hit bands");
- }
- auto value=[&](int index,float x=416.f) {for(const auto& t:modern.Hud().menuText)if(t.x==x&&t.y==game::kNightShiftOptionsTop+index*game::kNightShiftOptionsPitch+2)return t.text;return std::string{};};
- auto both=[&](uint32_t keys,uint32_t p2keys=0){key(modern,keys,p2keys);key(classic,keys,p2keys);};
- both(0x80);both(0x20);both(0x80);both(0x20);both(0x80);both(0x20);both(0x80);both(0,0x80);
- Require(value(3,420)=="P1 2"&&value(3,548)=="P2 3","both players retain independent crosshair controls");
- {
-  int sights=0;for(const auto& s:modern.Hud().sprites)if(s.id>=0xAA8&&s.id<=0xAAF) {
-   ++sights;Require(s.sx<=1&&s.sy<=1&&s.y==175&&(s.flags&15)==10,"native sight samples stay compact and centered on their modern row");
-  }
-  Require(sights==2,"both players retain their actual native sight samples");
- }
- both(0x20);both(8);Require(modern.Hud().portWiiRequests==1&&classic.Hud().portWiiRequests==1,"Wii setup action is unchanged");
- both(0x20);both(0x80);both(4);Require(value(5)=="1","sound selection and playback retain their handlers");
- both(0x20);both(0x80);both(4);Require(value(6)=="1","dialogue selection and playback retain their handlers");
- both(0x20);both(0x80);both(0x20);both(0x40);both(0x20);both(0x80);
- for(int p=0;p<3;++p)Require(modern.Hud().portVolumes[p]==classic.Hud().portVolumes[p],"same keyboard edits must retain identical volume values");
- both(0x20);both(8);Require(modern.Hud().portDisplayRequests==1&&classic.Hud().portDisplayRequests==1,"graphics shortcut action is unchanged");
- both(0x20);both(8);Require(modern.Hud().portLightgunRequests==1&&classic.Hud().portLightgunRequests==1,"light-gun shortcut action is unchanged");
- both(0x20);bool scoped=false;for(const auto& t:modern.Hud().menuText)if(t.text.find("Resets game rules")!=std::string::npos)scoped=true;
- Require(scoped,"reset explains its game settings and volume scope");
- both(0x20);both(8);for(int i=0;i<3;++i){tick(modern);tick(classic);}
- Require(modern.GameMode()==4&&modern.Hud().nightShiftPage==5,"Save + Back returns to the Options category page");
- game::SaveData modernSave,classicSave;
- Require(modernSave.LoadNative((temp/"modern.bin").string())&&classicSave.LoadNative((temp/"classic.bin").string()),"Save + Back writes isolated native settings");
- Require(modernSave.Raw()==classicSave.Raw(),"Night Shift restyle must preserve every native setting byte after identical actions");
- // Check actual pointer controls against the compact rendered bands, not legacy positions.
- modern.ForceMode(12,0x10000,0,0);for(int i=0;i<3;++i)tick(modern);
- const auto difficulty=value(0);click(modern,600,112);Require(value(0)!=difficulty,"right arrow changes the displayed modern row");
- click(modern,358,112);Require(value(0)==difficulty,"left arrow reverses the same setting");
- const int music=modern.Hud().portVolumes[0];click(modern,600,259);Require(modern.Hud().portVolumes[0]==music+1,"modern volume pointer selects its actual visible row");
- tick(modern,2,0,600,259,false,true);tick(modern);Require(modern.Hud().portVolumes[0]==music,"reload reverses a hovered volume without leaving");
- click(modern,358,217);Require(value(5)=="750","preview left arrow wraps without playing a different row");
- click(modern,600,217);Require(value(5)=="0","preview right arrow returns to recording zero");
- const auto p1=value(3,420),p2=value(3,548);click(modern,570,175);
- Require(value(3,420)==p1&&value(3,548)!=p2,"P2 pointer band changes only P2's sight");
- click(modern,100,364);for(int p=0;p<3;++p)Require(modern.Hud().portVolumes[p]==10,"reset preserves existing all-volume defaults");
- key(modern,2);for(int i=0;i<3;++i)tick(modern);Require(modern.GameMode()==4,"Escape still saves and leaves Game Options");
- std::error_code ec;std::filesystem::remove_all(temp,ec);
- puts("PASS Night Shift Game Options: matching native settings/actions, compact pointer controls, visible save/back and transparent Home rooms");
+ Require(left&&right,"Home room card and left navigation retain matching transparency");
+ puts("PASS Home panel presentation with direct tabbed Options");
 }
 int main(int argc,char** argv) {
  if(argc<2||argc>3)return 2;
  CompletionGuards();
+ DirectOptionsAudio(argv[1]);
  LeaderboardPresentation(argv[1]);
- ModernGameOptions(argv[1]);
+ HomePresentation(argv[1]);
  play::LocalHordeLeaderboard scores;
  game::HordeRunSnapshot run;run.active=true;run.rounds=3;run.score=500;run.players=1;
  Require(!scores.Observe(run),"live run is not finalized");
@@ -197,8 +152,38 @@ int main(int argc,char** argv) {
  const auto rand=live.RandState();const int frame=live.Frame();
  play::AttractPreview preview;
  Require(preview.Step(argv[1],true),preview.Error().c_str());
- Require(preview.Get()&&preview.Get()->GameMode()==5&&!preview.Get()->Draws().empty(),"real attract demo has moving world geometry");
- for(int i=0;i<4000;++i)Require(preview.Step(argv[1],true),"original attract loop advances");
+ Require(preview.Get()&&preview.Get()->GameMode()==3&&!preview.Get()->Draws().empty(),"full attract cycle starts with moving title scenery");
+ const int cycle[]={3,9,5,11,10};
+ int transition=0,previousMode=3;
+ bool seenGeometry[5]={},seenSprites[5]={};
+ for(int i=0;i<45000&&transition<15;++i) {
+  Require(preview.Step(argv[1],true),"full original attract cycle advances");
+  const auto& background=*preview.Get();
+  const int mode=background.GameMode();
+  if(mode!=previousMode) {
+   ++transition;
+   if(transition<=5)std::printf("Attract frame %d: mode %d, demo %d\n",background.Frame(),mode,background.Hud().demoIndex);
+   Require(mode==cycle[transition%5],"attract preserves title, tutorial, gameplay and both story scenes in order");
+   if(mode==5)Require(background.Hud().demoIndex==(transition/5)%3,"each full cycle advances to the next original gameplay demo");
+   previousMode=mode;
+  }
+  const int part=transition%5;
+  seenGeometry[part]|=!background.Draws().empty();
+  seenSprites[part]|=!background.Hud().sprites.empty();
+  Require(live.Hud().nightShiftPage==0&&live.GameMode()==4,"background scene changes leave the Home menu open");
+ }
+ Require(transition==15,"all three gameplay demos finish their complete attract cycles and return to title");
+ for(int part=0;part<5;++part)Require(seenGeometry[part],"every attract scene submits live world geometry");
+ Require(seenSprites[1],"how-to-play retains its instructional sprites");
+ bool wrappedDemo=false;
+ for(int i=0;i<2400&&!wrappedDemo;++i) {
+  Require(preview.Step(argv[1],true),"attract cycle continues after all demos");
+  if(preview.Get()->GameMode()==5&&preview.Get()->Hud().subState==1) {
+   Require(preview.Get()->Hud().demoIndex==0,"original demo list wraps after the third full cycle");
+   wrappedDemo=true;
+  }
+ }
+ Require(wrappedDemo,"next tutorial completes and the first demo starts again");
  Require(live.RandState()==rand&&live.Frame()==frame,"preview never advances live RNG or frame counter");
  live.Step();control.Step();Require(live.RandState()==control.RandState()&&live.Frame()==control.Frame(),"live world resumes identically after preview");
  const int previewFrame=preview.Get()->Frame();preview.Step(argv[1],false);Require(!preview.Get(),"disabled preview hidden");

@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include "game/menu_text.h"
+#include "game/menu_audio.h"
 #include "game/mstack.h"
 #include "game/shoot_camera.h"
 #include "game/world_internal.h"
@@ -150,11 +151,12 @@ void World::Impl::FrontStep() {
     hud.demoIndex = front.demoIndex;
     hud.menuCursor = front.menuCursor;
     hud.gameType = front.gameType;
-    hud.nightShiftPage = cfg.portFeatures && cfg.portModernMenu
+    hud.nightShiftPage = cfg.portFeatures && (cfg.portModernMenu || (gameMode == 4 && front.nightShiftPage == 9))
                             ? (gameMode == 4 ? front.nightShiftPage : gameMode == 12 ? 7 : -1)
                             : -1;
     hud.nightShiftRow = gameMode == 12 && modes ? modes->optCursor : front.nightShiftRow;
     hud.portLobbyRequests = front.portLobbyRequests;
+    hud.portModelViewerRequests = front.modelViewerRequests;
     hud.portLobbyAction = front.portLobbyAction;
     hud.portLobbyRoom = front.portLobbyRoom;
     hud.portLeaderboardRequests = front.portLeaderboardRequests;
@@ -163,7 +165,7 @@ void World::Impl::FrontStep() {
     hud.portLeaderboardPublishRequests = front.portLeaderboardPublishRequests;
     hud.portLeaderboardInitials = front.leaderboardInitials;
     hud.portDisplayRequests += front.nightShiftDisplayRequests;
-    hud.portDisplayPage = gameMode==4&&front.nightShiftPage==5?front.nightShiftDisplayPage:-1;
+    hud.portDisplayPage = gameMode==4?front.nightShiftDisplayPage:-1;
     if (hud.nightShiftPage < 0) {hud.menuPanels.clear();hud.menuText.clear();}
 }
 
@@ -565,24 +567,48 @@ void World::Impl::MenuFrame() {
 // 0x00496960: cursor up / down (0x005978C8 / 0x005978D0 per player 0x009A3790; the keyboard masks with 0x009A37A8 are
 // not driven), the selected entry's label visible, the logo strip, confirm (0x005978D8: trigger or start)
 void World::Impl::TaskMenu(Task& t) {
-    if (cfg.portFeatures && cfg.portModernMenu) {
+    if (cfg.portFeatures && (cfg.portModernMenu || front.nightShiftPage == 9)) {
         for (auto& s : front.screens) s.visible = false;
+        const size_t first = hudSprites.size();
         NightShiftMenuFrame(*this);
-        return;
+        if (cfg.portModernMenu || front.nightShiftPage == 9) return;
+        // Extras shares the native page, then restores the existing Classic menu in this same frame.
+        hudSprites.resize(first);
+        hud.menuPanels.clear();
+        hud.menuText.clear();
     }
+    for (size_t i = 0; i < 6 && i < front.screens.size(); ++i) front.screens[i].visible = true;
     MenuTask& m = t.As<MenuTask>();
     const uint32_t p = static_cast<uint32_t>(front.startPlayer) * 4;
-    // Port only (WorldConfig::portFeatures): a ninth entry "Scene Select" between Network and Exit (entry 7; Exit
-    // becomes 8). It has no bitmap label (the background bitmap carries the original's eight): it is drawn as text in
-    // the options screen's font (game/menu_text.h), grey like the unselected labels, white when selected.
+    // Port-only Classic entries: Extras follows Network at index 7, Scene Select is 8, and Exit is 9.
+    // Both added entries use the options font because the original menu has no bitmap labels for them.
     const bool portEntry = cfg.portFeatures;
     // Port only (WorldConfig::portModernMenu): the modern list. A gun / mouse player (WorldInput kind 1; the start
     // player's device first) moving or clicking over a row selects it, with sound only when the selection changes; the
     // keyboard / pad masks below keep working and the confirm masks are the original's. Port entries include Horde
     // Mode (8) and Randomizer (9); Exit is last.
     const bool modern = portEntry && cfg.portModernMenu;
-    const int last = modern ? kModernEntries - 1 : portEntry ? 8 : 7;
-    bool pointerMiss = false;
+    const int last = modern ? kModernEntries - 1 : portEntry ? 9 : 7;
+    bool pointerMiss = false, extrasShot = false;
+    if (portEntry && !modern) {
+        const WorldInput* pointer = nullptr;
+        for (int q = 0; q < 2; ++q) {
+            const auto& in = input[(front.startPlayer + q) & 1];
+            if (in.kind != 1) continue;
+            if (!pointer || in.fired) pointer = &in;
+            if (in.fired) break;
+        }
+        if (pointer) {
+            const bool hit = !pointer->offscreen && pointer->x >= 24 && pointer->x < 180 && pointer->y >= 365 && pointer->y < 401;
+            const bool moved = m.pointerRow == -2 || pointer->x != m.pointerX || pointer->y != m.pointerY;
+            if (hit && (moved || pointer->fired)) front.menuCursor = 7;
+            extrasShot = hit && pointer->fired;
+            pointerMiss = pointer->fired && !hit && front.menuCursor == 7;
+            if (pointerMiss) pressed &= ~0xC000C;
+            m.pointerRow = hit ? 7 : -1;
+            m.pointerX = pointer->x; m.pointerY = pointer->y;
+        }
+    }
     if (modern) {
         int row = -1;
         const WorldInput* pointer = nullptr;
@@ -624,11 +650,12 @@ void World::Impl::TaskMenu(Task& t) {
         m.anim = 8;
     }
     for (size_t i = 6; i < 0x20 && i < front.screens.size(); ++i) front.screens[i].visible = false;  // 0x0049EB30(i, 0)
-    const bool onPortEntry = portEntry && front.menuCursor == 7;
+    const bool onExtrasEntry = portEntry && !modern && front.menuCursor == 7;
+    const bool onPortEntry = portEntry && front.menuCursor == (modern ? 7 : 8);
     const bool onHordeEntry = modern && front.menuCursor == 8;
     const int label = portEntry && front.menuCursor >= 8 ? 7 : front.menuCursor;  // the bitmap label group (exit = 7)
     const size_t k = static_cast<size_t>((label + 2) * 3);
-    if (!onPortEntry && !modern)  // (modern: the highlight label tiles are never shown; the list below has the entries)
+    if (!onPortEntry && !onExtrasEntry && !modern)  // (modern: the highlight label tiles are never shown; the list below has the entries)
         for (size_t i = k; i < k + 3 && i < front.screens.size(); ++i) front.screens[i].visible = true;
     if (modern) {
         const size_t first = hudSprites.size();
@@ -639,6 +666,7 @@ void World::Impl::TaskMenu(Task& t) {
         for (size_t i = first; i < hudSprites.size(); ++i) hudSprites[i].flags |= 0x700;
     } else if (portEntry) {  // below Exit (its label tiles end at y 448), left of the copyright line: cells (13.5, 18) = (216, 432) px
         const size_t first = hudSprites.size();
+        MenuTextScaled(exe, 38, 365, "EXTRAS", onExtrasEntry ? 0u : 0x40u, .9f, hudSprites);
         MenuText(exe, 13.5f, 18.0f, "Scene Select", onPortEntry ? 0u : 0x40u, hudSprites);
         for (size_t i = first; i < hudSprites.size(); ++i) hudSprites[i].flags |= 0x700;
     }
@@ -649,11 +677,29 @@ void World::Impl::TaskMenu(Task& t) {
     d.y = 1.0f;
     d.depth = 100.0f;
     hudSprites.push_back(d);
-    if (pointerMiss || (pressed & exe.U32(0x005978D8 + p)) == 0) return;
+    if (pointerMiss || (!extrasShot && (pressed & exe.U32(0x005978D8 + p)) == 0)) return;
     const int e = front.menuCursor;
     if (e == last) {  // 0x0049E930: the game quits
         front.quit = true;
         return;
+    }
+    if (onExtrasEntry) {
+        SoundStopAll();
+        SoundCall(World::kOptionFeedback, kOptionSelectSound);
+        front.nightShiftPage = 9;
+        front.extrasPage = 0;
+        front.nightShiftRow = front.extrasColumn = front.extrasControl = 0;
+        front.extrasWheel = 0; front.extrasWheelColumn = -1;
+        for (int q = 0; q < 2; ++q) {front.extrasAimX[q] = input[q].x; front.extrasAimY[q] = input[q].y;}
+        for (auto& screen : front.screens) screen.visible = false;
+        hudSprites.clear();
+        pressed &= ~0xC000C;  // a trigger also synthesizes Start; Extras must not join a player
+        return;
+    }
+    if (portEntry && e == 5) {
+        ModesMenuConfirm(*this, 5);
+        pressed &= ~0xC000C;
+        return;  // Preserve Classic's menu screens behind the port's options overlay and on Back.
     }
     FrontScreensFree();  // 0x0049ED70, 0x00413CB0 (-> 0x0049DFD0)
     if (onPortEntry) {  // port: the Scene Select page (world_scene_select.cpp)

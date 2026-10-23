@@ -1,6 +1,5 @@
-// play.exe's pause menu (src/port/play/pause_menu.h): navigation with the pad bits and with a pointer, the volume
-// rows, the display settings page (display_menu.h), the Return to Main Menu confirmation, and the settings file round
-// trip. No game data needed.
+// Three-action pause menu, unified scrolling Options, safe resets, capability dependencies and settings persistence.
+// No game data needed; the save-backed gameplay bridge has its own integration test.
 #include "port/play/pause_menu.h"
 
 #include <algorithm>
@@ -9,8 +8,10 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "game/menu_audio.h"
 #include "port/play/display_pointer.h"
 #include "port/play/keyboard.h"
 #include "port/play/renderer_fallback.h"
@@ -119,618 +120,175 @@ play::DisplaySettings CustomizedGraphics(bool nightShift) {
     return d;
 }
 
+void Focus(play::DisplayMenu& menu, int row) {
+    for (int p = 0; p < play::DisplayMenu::kPageCount; ++p) {
+        const auto page = static_cast<play::DisplayMenu::Page>(p);
+        const auto& rows = play::DisplayMenu::Rows(page);
+        if (std::find(rows.begin(), rows.end(), row) != rows.end()) {
+            menu.SetPage(page);
+            menu.FocusRow(row);
+            return;
+        }
+    }
+    Check(false, "setting has an actual category");
+}
+float PointerY(const play::DisplayMenu& menu, int row) {
+    return play::DisplayMenu::RowY(row, menu.CurrentPage(), menu.ScrollOffset()) * 24 + 22;
+}
+
+void CheckOptionSounds() {
+    using play::DisplayMenu;
+    for (bool modern : {false, true}) {
+        PauseMenu pause;
+        pause.SetModern(modern);
+        pause.Open();
+        play::Settings settings;
+        std::vector<uint32_t> sounds;
+        auto input = [&](const PauseMenu::Input& in) {
+            sounds.clear();
+            return pause.Update(in, settings, sounds);
+        };
+        auto selected = [&] { return sounds == std::vector<uint32_t>{game::kOptionSelectSound}; };
+        auto backed = [&] { return sounds == std::vector<uint32_t>{game::kOptionBackSound}; };
+        auto y = [&](int row) { return modern ? PauseMenu::ModernRowTop(row) + 12 : PauseMenu::RowY(row) * 24 + 22; };
+        Check(PauseMenu::kRowCount == 3 && pause.Cursor() == PauseMenu::kResume, "pause opens on Resume with three actions");
+        for (int row = 0; row < PauseMenu::kRowCount; ++row) {
+            input(Pad(0x20));
+            Check(sounds.empty(), "pause keyboard navigation is silent");
+            input(Point(300, y(row)));
+            Check(pause.Cursor() == row && sounds.empty(), "pause pointer navigation matches each visible row and stays silent");
+            Check(modern ? PauseMenu::ModernRowAt(112, y(row)) == row : PauseMenu::RowAt(40, y(row)) == row,
+                  "both pause layouts retain matching visible hit targets");
+        }
+        Check(input(Point(5, 450, true)) == Action::None && !pause.Confirming(), "blank pause shot cannot choose an action");
+        input(Point(300, y(PauseMenu::kOptions), true));
+        Check(pause.DisplayOpen() && selected(), "pause Options opens the shared categories with one select cue");
+        input(Pad(2));
+        Check(!pause.DisplayOpen() && pause.IsOpen() && backed(), "Options Back returns to pause with one back cue");
+        input(Point(300, y(PauseMenu::kReturn), true));
+        Check(pause.Confirming() && !pause.ConfirmYes() && selected(), "return confirmation opens on safe Cancel");
+        input(Pad(0x40));
+        Check(pause.ConfirmYes() && sounds.empty(), "confirmation choice navigation stays silent");
+        input(Pad(2));
+        Check(!pause.Confirming() && backed(), "Back cancels the return confirmation");
+        input(Point(300, y(PauseMenu::kReturn), true));
+        input(Pad(8));
+        Check(!pause.Confirming() && backed(), "confirming safe Cancel uses the back cue");
+        input(Point(300, y(PauseMenu::kReturn), true));
+        input(Pad(0x40));
+        Check(input(Pad(8)) == Action::ReturnToTitle && selected(), "confirmed return uses existing title/lobby action");
+        pause.Open();
+        Check(input(Pad(8)) == Action::Resume && backed(), "Resume uses the back cue");
+        pause.Open();
+        Check(input(Pad(2)) == Action::Resume && backed(), "pause Back resumes");
+        pause.Open();
+        Check(input(Point(5, 450, false, true)) == Action::Resume && backed(), "pause reload resumes");
+        pause.Open();
+        input(Point(300, y(PauseMenu::kOptions), true));
+        auto preview = Pad(0); preview.preview = true;
+        input(preview);
+        const auto beforeHidden = settings;
+        input(Pad(0xA0));
+        Check(pause.Display().UiHidden() && settings == beforeHidden, "hidden shared options ignore edits");
+        auto start = Pad(0); start.start = true;
+        Check(input(start) == Action::None && !pause.Display().UiHidden() && pause.DisplayOpen() && backed(),
+              "Start first restores hidden options rather than resuming");
+        Check(input(start) == Action::Resume && !pause.DisplayOpen() && backed(), "Start resumes from visible shared options");
+        pause.Open(); pause.SetNetworkRoom(true);
+        input(Point(300, y(PauseMenu::kReturn), true));
+        game::WorldHud hud;
+        pause.ModernHud(1, settings, hud);
+        Check(std::any_of(hud.menuText.begin(), hud.menuText.end(), [](const auto& text) {
+                  return Contains(text.text, "both players") && Contains(text.text, "lobby");
+              }), "online return confirmation explains that both players return to the lobby");
+    }
+}
+
+void CheckGraphicsReset() {
+    using play::DisplayMenu;
+    Check(DisplayMenu::ResetChoiceAt(128, 278) == 1 && DisplayMenu::ResetChoiceAt(303, 315) == 1 &&
+              DisplayMenu::ResetChoiceAt(336, 278) == 0 && DisplayMenu::ResetChoiceAt(511, 315) == 0 &&
+              DisplayMenu::ResetChoiceAt(320, 295) == -1 && DisplayMenu::ResetChoiceAt(512, 295) == -1,
+          "reset/cancel targets are bounded and separated by an inert gap");
+    for (bool theme : {false, true}) {
+        DisplayMenu menu;
+        menu.SetNightShiftActive(theme);
+        menu.SetPacks({{"Original", "", "", true}, {"Custom", "custom_visual_pack", "", true}}, "custom_visual_pack");
+        play::Settings settings;
+        settings.display = CustomizedGraphics(theme);
+        settings.master = 2; settings.music = 3; settings.guns = 7; settings.sfx = 0; settings.attraction = 4;
+        settings.input = "touch"; settings.assets = "custom_visual_pack"; settings.lobby = "127.0.0.1:27910";
+        const auto before = settings;
+        std::vector<uint32_t> sounds;
+        auto input = [&](const PauseMenu::Input& in) { sounds.clear(); return menu.Update(in, settings.display, sounds); };
+        auto open = [&] { Focus(menu, DisplayMenu::kResetGraphics); input(Pad(8)); };
+        menu.Open();
+        Focus(menu, DisplayMenu::kResetGraphics);
+        input(Pad(0x40)); input(Pad(0x80));
+        Check(!menu.ResetConfirming() && settings == before, "Left/Right cannot open or apply graphics reset");
+        open();
+        Check(menu.ResetConfirming() && !menu.ResetSelected() && settings == before, "reset opens safely on Cancel");
+        input(Pad(8));
+        Check(!menu.ResetConfirming() && !menu.TakeGraphicsReset() && settings == before, "Enter on default Cancel preserves every setting");
+        for (auto cancel : {Pad(2), Pad(0)}) {
+            if (!cancel.pressed) cancel.start = true;
+            open(); input(cancel);
+            Check(!menu.ResetConfirming() && menu.IsOpen() && settings == before && !menu.TakeGraphicsReset(),
+                  "Back and Start cancel graphics reset before closing or resuming");
+        }
+        open();
+        auto preview = Pad(0); preview.preview = true;
+        input(preview);
+        auto category = Pad(0); category.pageDelta = 1;
+        input(category); input(Point(320, 295, true));
+        Check(menu.ResetConfirming() && !menu.UiHidden() && settings == before, "reset modal blocks preview, category changes and gap shots");
+        input(Pad(0x40)); input(Pad(8));
+        auto expected = play::DisplaySettings{};
+        expected.nightShift = before.display.nightShift;
+        expected.redBlood = before.display.redBlood;
+        expected.showCrosshairs = before.display.showCrosshairs;
+        Check(settings.display == expected && menu.TakeGraphicsReset() && !menu.TakeGraphicsReset(),
+              "confirmed graphics reset restores all graphics and preserves gameplay cosmetics/menu theme");
+        Check(settings.master == before.master && settings.music == before.music && settings.guns == before.guns &&
+                  settings.sfx == before.sfx && settings.attraction == before.attraction && settings.input == before.input &&
+                  settings.assets == before.assets && settings.lobby == before.lobby && menu.SelectedPackPath() == before.assets,
+              "graphics reset preserves all audio, input, pack and network preferences");
+        open(); input(Pad(0x40)); input(Pad(8));
+        Check(settings.display == expected && menu.TakeGraphicsReset(), "reset at defaults still emits a persistence request");
+        open(); menu.Close(); menu.Open();
+        Check(!menu.ResetConfirming() && !menu.UiHidden(), "closing and reopening clears pending modal/preview state");
+    }
+}
 }  // namespace
 
 int main() {
+    using play::DisplayMenu;
     play::Settings v;
     std::vector<uint32_t> snd;
-
-    // keyboard: Down through every row wraps back to Resume, Up goes to the last row
-    PauseMenu m;
-    m.Open();
-    Check(m.IsOpen() && m.Cursor() == PauseMenu::kResume, "opens on Resume");
-    for (int i = 0; i < PauseMenu::kRowCount; ++i) m.Update(Pad(0x20), v, snd);
-    Check(m.Cursor() == PauseMenu::kResume, "Down wraps");
-    m.Update(Pad(0x10), v, snd);
-    Check(m.Cursor() == PauseMenu::kReturn, "Up wraps to Return");
-    Check(snd.size() == PauseMenu::kRowCount + 1, "a cursor sound per move");
-
-    m.Open();
-    for (int i = 0; i < PauseMenu::kWii; ++i) m.Update(Pad(0x20), v, snd);
-    Check(m.Update(Pad(8), v, snd) == Action::WiiRemotes && m.IsOpen(), "Wii setup opens while the game remains paused");
-    // volumes: Right / Left on the Music row, clamped to 0..10
-    m.Open();
-    m.Update(Pad(0x20), v, snd);
-    Check(m.Cursor() == PauseMenu::kMusic, "Down to Music");
-    Check(m.Update(Pad(0x80), v, snd) == Action::None && v.music == 10, "Right at 10 stays 10");
-    m.Update(Pad(0x40), v, snd);
-    m.Update(Pad(0x40), v, snd);
-    Check(v.music == 8, "Left twice: 8");
-    for (int i = 0; i < 20; ++i) m.Update(Pad(0x40), v, snd);
-    Check(v.music == 0, "Left clamps at 0");
-    Check(v.guns == 10 && v.sfx == 10, "other volumes untouched");
-
-    // Enter on Resume; Backspace anywhere resumes
-    m.Open();
-    Check(m.Update(Pad(0x8), v, snd) == Action::Resume, "Enter on Resume resumes");
-    m.Open();
-    m.Update(Pad(0x20), v, snd);
-    Check(m.Update(Pad(0x2), v, snd) == Action::Resume, "Backspace resumes");
-
-    // Return to Main Menu: confirmation defaults to No; Enter on No returns to the menu; Yes returns to the title
-    m.Open();
-    m.Update(Pad(0x10), v, snd);  // Up from Resume = Return
-    Check(m.Update(Pad(0x4), v, snd) == Action::None && m.Confirming() && !m.ConfirmYes(), "Return asks, No selected");
-    Check(m.Update(Pad(0x8), v, snd) == Action::None && !m.Confirming(), "Enter on No goes back");
-    m.Update(Pad(0x4), v, snd);
-    m.Update(Pad(0x40), v, snd);
-    Check(m.Confirming() && m.ConfirmYes(), "Left toggles to Yes");
-    Check(m.Update(Pad(0x8), v, snd) == Action::ReturnToTitle, "Enter on Yes returns to the title");
-    m.Open();
-    m.Update(Pad(0x10), v, snd);
-    m.Update(Pad(0x4), v, snd);
-    Check(m.Update(Pad(0x2), v, snd) == Action::None && !m.Confirming() && m.IsOpen(), "Backspace cancels the confirmation");
-
-    // pointer: aiming at a row highlights it; trigger on a volume row +1, reload -1; trigger on Return asks
-    m.Open();
-    v = play::Settings{};
-    const float rowGuns = (PauseMenu::RowY(PauseMenu::kGuns) + 0.5f) * 24.0f;
-    m.Update(Point(300.0f, rowGuns), v, snd);
-    Check(m.Cursor() == PauseMenu::kGuns, "pointer highlights Gun Shots");
-    m.Update(Point(300.0f, rowGuns, false, true), v, snd);
-    Check(v.guns == 9, "reload on a volume row: -1");
-    m.Update(Point(300.0f, rowGuns, true), v, snd);
-    Check(v.guns == 10, "trigger on a volume row: +1");
-    const float rowReturn = (PauseMenu::RowY(PauseMenu::kReturn) + 0.5f) * 24.0f;
-    m.Update(Point(300.0f, rowReturn), v, snd);
-    Check(m.Update(Point(300.0f, rowReturn, true), v, snd) == Action::None && m.Confirming(), "trigger on Return asks");
-    const float rowChoice = 10.5f * 24.0f;
-    m.Update(Point(12.0f * 16.0f + 20.0f, rowChoice), v, snd);
-    Check(m.ConfirmYes(), "pointer over Yes");
-    Check(m.Update(Point(12.0f * 16.0f + 20.0f, rowChoice, true), v, snd) == Action::ReturnToTitle, "trigger on Yes");
-    Check(PauseMenu::RowAt(100.0f, 2.0f) == -1 && PauseMenu::ConfirmAt(0.0f, rowChoice) == -1, "nothing under the pointer elsewhere");
-
-    // start button = resume
-    m.Open();
-    PauseMenu::Input st;
-    st.start = true;
-    Check(m.Update(st, v, snd) == Action::Resume, "start resumes");
-
-    // the Display row opens the display page; its rows cycle their values; Back returns to the menu rows
-    using play::DisplayMenu;
-    m.Open();
-    v = play::Settings{};
-    for (int i = 0; i < 4; ++i) m.Update(Pad(0x20), v, snd);
-    Check(m.Cursor() == PauseMenu::kDisplay, "Down x4 reaches Display");
-    Check(m.Update(Pad(0x8), v, snd) == Action::None && m.DisplayOpen() && !m.MainRows(), "Enter on Display opens the page");
-    Check(m.Display().Cursor() == DisplayMenu::kFullscreen, "page opens on Display Mode");
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.fullscreen && !v.display.exclusiveFullscreen, "Display Mode: Windowed to Borderless");
-    Check(DisplayMenu::ValueText(v.display, DisplayMenu::kScale).empty(), "window scale hidden in fullscreen");
-    m.Update(Pad(0x8), v, snd);
-    Check(v.display.fullscreen && v.display.exclusiveFullscreen, "Display Mode: Borderless to Fullscreen");
-    m.Update(Pad(0x80), v, snd);
-    Check(!v.display.fullscreen && !v.display.exclusiveFullscreen, "Display Mode: Fullscreen wraps to Windowed");
-    m.Update(Pad(0x40), v, snd);
-    Check(v.display.fullscreen && v.display.exclusiveFullscreen, "Display Mode reverses from Windowed to Fullscreen");
-    m.Update(Pad(0x40), v, snd);
-    Check(v.display.fullscreen && !v.display.exclusiveFullscreen, "Display Mode reverses from Fullscreen to Borderless");
-    m.Update(Pad(0x40), v, snd);
-    Check(!v.display.fullscreen, "Display Mode reverses from Borderless to Windowed");
-    {
-        play::DisplaySettings legacy;
-        legacy.exclusiveFullscreen = true;
-        Check(DisplayMenu::ValueText(legacy, DisplayMenu::kFullscreen) == "Windowed",
-              "legacy exclusive preference does not imply an active fullscreen window");
-        DisplayMenu::Step(legacy, DisplayMenu::kFullscreen, 1);
-        Check(legacy.fullscreen && !legacy.exclusiveFullscreen, "Windowed advances to Borderless regardless of old preference");
-        Check(DisplayMenu::ValueText(play::DisplaySettings{}, DisplayMenu::kAspect) == "Fit",
-              "Image Fit does not repeat the scene aspect ratio");
-    }
-    m.Display().SetMonitors({"First monitor", "Second monitor"});
-    m.Update(Pad(0x20), v, snd);  // Monitor
-    Check(m.Display().Cursor() == DisplayMenu::kMonitor, "Display Mode is followed by the monitor choice");
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.monitor == 1, "monitor selection is available beside Display Mode");
-    m.Update(Pad(0x20), v, snd);  // Window Scale
-    Check(m.Display().Cursor() == DisplayMenu::kScale && v.display.windowScale == 2, "Window Scale starts at 2x");
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.windowScale == 3, "Right: 3x");
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.windowScale == 0 && DisplayMenu::ValueText(v.display, DisplayMenu::kScale) == "Fit", "Right: Fit");
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.windowScale == 1, "Right wraps to 1x");
-    m.Update(Pad(0x40), v, snd);
-    Check(v.display.windowScale == 0, "Left wraps back to Fit");
-    m.Update(Pad(0x20), v, snd);  // Aspect Ratio
-    m.Update(Pad(0x80), v, snd);
-    Check(m.Display().Cursor() == DisplayMenu::kViewport && v.display.viewport == 1 && !v.display.stretch,
-          "Aspect Ratio selects 16:9 without stretching");
-    m.Update(Pad(0x20), v, snd);  // Image Fit
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.stretch && v.display.viewport == 1 && DisplayMenu::ValueText(v.display, DisplayMenu::kAspect) == "Stretch",
-          "Image Fit changes presentation without changing the scene aspect ratio");
-    m.Update(Pad(0x20), v, snd);  // Integer Scaling
-    Check(m.Display().Cursor() == DisplayMenu::kInteger, "Integer Scaling is beside its aspect and fit requirements");
-    v.display.integerScale = true;
-    m.Update(Pad(0x80), v, snd);
-    Check(v.display.integerScale,
-          "incompatible aspect/fit disables integer "
-          "scaling without clearing its saved choice");
-    m.Update(Pad(0x20), v, snd);  // Menu style
-    Check(m.Display().Cursor() == DisplayMenu::kMenuStyle, "Display contains the menu-style choice");
-    m.Update(Pad(0x80), v, snd);
-    Check(!v.display.nightShift, "menu-style preference remains editable");
-    m.Update(Pad(0x20), v, snd);  // Menu Opacity
-    Check(m.Display().Cursor() == DisplayMenu::kMenuOpacity && v.display.menuOpacity == 65,
-          "menu-background opacity has a readable, scene-visible default");
-    for (int i = 0; i < 30; ++i) m.Update(Pad(0x40), v, snd);
-    Check(v.display.menuOpacity == 25, "menu opacity clamps at the readable minimum");
-    for (int i = 0; i < 30; ++i) m.Update(Pad(0x80), v, snd);
-    Check(v.display.menuOpacity == 100, "menu opacity clamps at fully opaque backgrounds");
-    m.Update(Pad(0x20), v, snd);  // Reset Graphics
-    Check(m.Display().Cursor() == DisplayMenu::kResetGraphics && DisplayMenu::ValueText(v.display, DisplayMenu::kResetGraphics).empty(),
-          "Display has a distinct Reset Graphics action before Back, not a cycling value");
-    m.Update(Pad(0x20), v, snd);  // Back
-    Check(m.Display().Cursor() == DisplayMenu::kBack, "Down reaches Back");
-    Check(m.Update(Pad(0x8), v, snd) == Action::None && !m.DisplayOpen() && m.IsOpen() && m.MainRows() && m.Cursor() == PauseMenu::kDisplay,
-          "Enter on Back closes the page, the menu stays on Display");
-    // Backspace on the page closes it too (not the whole menu); start on the page resumes
-    m.Update(Pad(0x8), v, snd);
-    Check(m.DisplayOpen(), "reopened");
-    Check(m.Update(Pad(0x2), v, snd) == Action::None && !m.DisplayOpen() && m.IsOpen(), "Backspace closes the page only");
-    m.Update(Pad(0x8), v, snd);
-    Check(m.Update(st, v, snd) == Action::Resume && !m.DisplayOpen(), "start on the page resumes");
-    // pointer on the page: aiming highlights, trigger = next value, reload = previous; trigger on Back closes
-    m.Open();
-    v = play::Settings{};
-    const float rowDisplay = (PauseMenu::RowY(PauseMenu::kDisplay) + 0.5f) * 24.0f;
-    m.Update(Point(300.0f, rowDisplay), v, snd);
-    m.Update(Point(300.0f, rowDisplay, true), v, snd);
-    Check(m.DisplayOpen(), "trigger on Display opens the page");
-    m.Display().SetPage(DisplayMenu::kResolution);
-    const float rowRender = (DisplayMenu::RowY(DisplayMenu::kRender, DisplayMenu::kResolution) + 0.5f) * 24.0f;
-    m.Update(Point(300.0f, rowRender), v, snd);
-    Check(m.Display().Cursor() == DisplayMenu::kRender, "pointer highlights Render Scale");
-    v.display.renderScale = 1;  // the stepping is checked from 1x
-    m.Update(Point(300.0f, rowRender, true), v, snd);
-    Check(v.display.renderScale == 2, "trigger: 2x");
-    m.Update(Point(300.0f, rowRender, false, true), v, snd);
-    Check(v.display.renderScale == 1, "reload: back to 1x");
-    Check(play::Settings{}.display.renderScale == 2, "default fixed render scale remains 2x");
-    v.display.renderScale = 1;
-    for (int i = 0; i < 3; ++i) m.Update(Point(620, rowRender, true), v, snd);
-    Check(v.display.renderScale == 4, "fixed render scale reaches 4x on Resolution");
-    m.Update(Point(620, rowRender, true), v, snd);
-    Check(v.display.renderScale == 1, "fixed render scale wraps to 1x");
-    m.Display().SetPage(DisplayMenu::kColor);
-    const float bloodY = DisplayMenu::RowY(DisplayMenu::kBlood, DisplayMenu::kColor) * 24 + 22;
-    m.Update(Point(620, bloodY, true), v, snd);
-    Check(v.display.redBlood, "shooting Blood Color enables red");
-    m.Update(Point(620, bloodY, false, true), v, snd);
-    Check(!v.display.redBlood, "reload toggles Blood Color to green");
-    const float rowBack = (DisplayMenu::RowY(DisplayMenu::kBack, DisplayMenu::kColor) + 0.5f) * 24.0f;
-    m.Update(Point(300.0f, rowBack), v, snd);
-    m.Update(Point(300.0f, rowBack, true), v, snd);
-    Check(!m.DisplayOpen() && m.IsOpen(), "trigger on Back closes the page");
-    Check(DisplayMenu::RowAt(100.0f, 2.0f) == -1, "nothing under the pointer at the heading");
-    // the standalone page (the Options screen's Display Settings row): Update reports the close
     DisplayMenu page;
-    page.Open();
-    Check(page.IsOpen() && !page.Update(Pad(0x20), v.display, snd) && page.Update(Pad(0x2), v.display, snd) && !page.IsOpen(),
-          "standalone page: Backspace closes");
-
-    // Visible letter bottoms used to fall in the next row's overlapping hitbox.
-    for (int p = 0; p < DisplayMenu::kPageCount; ++p)
-        for (int r : DisplayMenu::Rows(static_cast<DisplayMenu::Page>(p)))
-            for (int ink : {13, 22, 30})
-                Check(DisplayMenu::RowAt(40, DisplayMenu::RowY(r, static_cast<DisplayMenu::Page>(p)) * 24 + ink,
-                                         static_cast<DisplayMenu::Page>(p)) == r,
-                      "display hitbox covers rendered letter body on every page");
-    for (int r = 0; r < PauseMenu::kRowCount; ++r)
-        for (int ink : {13, 22, 30})
-            Check(PauseMenu::RowAt(40, PauseMenu::RowY(r) * 24 + ink) == r, "pause hitbox covers rendered letter body");
-    Check(PauseMenu::ConfirmAt(210, 10 * 24 + 30) == 1 && PauseMenu::ConfirmAt(400, 10 * 24 + 30) == 0,
-          "Yes/No hitboxes include bottom of text");
-    page.Open();
-    page.SetPage(DisplayMenu::kRetro);
-    v = play::Settings{};
-    const float crtY = DisplayMenu::RowY(DisplayMenu::kCrt, DisplayMenu::kRetro) * 24 + 22;
-    page.Update(Point(40, crtY), v.display, snd);
-    auto mixed = Point(40, crtY);
-    mixed.pressed = 0x20;
-    page.Update(mixed, v.display, snd);
-    page.Update(Point(40, crtY), v.display, snd);
-    Check(page.Cursor() == DisplayMenu::kCrtMask, "resting pointer does not undo keyboard on CRT page");
-    mixed.pressed = 8;
-    page.Update(mixed, v.display, snd);
-    Check(v.display.graphics.crtMask == 1 && v.display.crt == 0, "Enter changes the keyboard-selected CRT value");
-    page.Update(Point(41, crtY), v.display, snd);
-    Check(page.Cursor() == DisplayMenu::kCrt, "movement inside same row restores display hover");
-    page.Update(Point(360, crtY, true), v.display, snd);
-    Check(v.display.crt == 3, "shoot display left arrow steps backwards");
-    page.Update(Point(620, crtY, true), v.display, snd);
-    Check(v.display.crt == 0, "shoot display right arrow steps forwards");
-    const auto displayBeforeMiss = v.display;
-    page.Update(Point(5, 450, true), v.display, snd);
-    Check(page.IsOpen() && v.display == displayBeforeMiss, "blank-space shot does not change display settings");
-    page.SetPage(DisplayMenu::kDisplay);
-    v.display.fullscreen = true;
-    page.Update(Point(620, DisplayMenu::RowY(DisplayMenu::kScale) * 24 + 22, true), v.display, snd);
-    Check(v.display.windowScale == 2, "disabled fullscreen window scale ignores shots");
-    v.display.exclusiveFullscreen = true;
-    page.Update(Point(620, DisplayMenu::RowY(DisplayMenu::kScale) * 24 + 22, true), v.display, snd);
-    Check(v.display.windowScale == 2, "exclusive fullscreen also disables window scale");
-    page.Update(Point(620, DisplayMenu::RowY(DisplayMenu::kFullscreen) * 24 + 22, true), v.display, snd);
-    page.Update(Point(620, DisplayMenu::RowY(DisplayMenu::kScale) * 24 + 22, true), v.display, snd);
-    Check(!v.display.fullscreen && v.display.windowScale == 3, "returning to Windowed restores window-scale editing");
-    m.Open();
-    v.music = 5;
-    const float musicY = PauseMenu::RowY(PauseMenu::kMusic) * 24 + 22;
-    m.Update(Point(520, musicY, true), v, snd);
-    Check(v.music == 4, "shoot pause left arrow decreases volume");
-    m.Update(Point(620, musicY, true), v, snd);
-    Check(v.music == 5, "shoot pause right arrow increases volume");
-    mixed = Point(620, musicY);
-    mixed.pressed = 0x20;
-    m.Update(mixed, v, snd);
-    m.Update(Point(620, musicY), v, snd);
-    Check(m.Cursor() == PauseMenu::kGuns, "resting pointer does not undo keyboard in pause menu");
-    Check(m.Update(Point(5, 450, true), v, snd) == Action::None && !m.Confirming(), "blank shot leaves pause menu alone");
-
+    Check(v.master == 5 && v.music == 5 && v.guns == 5 && v.sfx == 5 && v.attraction == 5,
+          "all five audio levels default to five");
     for (bool inGame : {false, true})
         for (bool activePlayer : {false, true}) {
-            const uint32_t regularKeys = 0xF8u | play::kEscapeKey;  // arrows, Enter and Escape
+            const uint32_t regularKeys = 0xF8u | play::kEscapeKey;
             const auto baseline = play::WorldKeyboardBits(regularKeys, inGame, activePlayer);
             Check(play::WorldKeyboardBits(regularKeys | play::kPreviewKey, inGame, activePlayer) == baseline &&
                       play::WorldKeyboardBits(play::kPreviewKey, inGame, activePlayer) == 0,
-                  "local preview key never reaches gameplay input or changes normal controls in any player/menu state");
+                  "preview shortcut never reaches gameplay input");
         }
-
-    // Night Shift keeps the scene visible and uses its own panel rectangles for both drawing and interaction.
-    {
-        PauseMenu modern;
-        modern.SetModern(true);
-        modern.Open();
-        play::Settings themed;
-        themed.music = 5;
-        themed.display.nightShift = false;  // A next-launch preference must not change this session's pointer layout.
-        Check(modern.IsModern() && modern.Cursor() == PauseMenu::kResume, "launch-selected Night Shift pause remains active");
-        for (int row = 0; row < PauseMenu::kRowCount; ++row) {
-            const float top = PauseMenu::ModernRowTop(row);
-            Check(PauseMenu::ModernRowAt(112, top) == row && PauseMenu::ModernRowAt(530, top + 24) == row,
-                  "Night Shift pause hit targets cover each rendered row without overlapping its neighbor");
-        }
-        Check(PauseMenu::ModernRowAt(620, PauseMenu::ModernRowTop(PauseMenu::kMusic)) == -1 &&
-                  PauseMenu::ModernRowAt(112, 65) == -1,
-              "Classic pointer bounds and the Night Shift heading do not activate modern pause rows");
-        const float modernMusicY = PauseMenu::ModernRowTop(PauseMenu::kMusic) + 12;
-        modern.Update(Point(432, modernMusicY, true), themed, snd);
-        Check(themed.music == 4 && modern.Cursor() == PauseMenu::kMusic, "modern volume left arrow lowers the selected volume");
-        modern.Update(Point(518, modernMusicY, true), themed, snd);
-        Check(themed.music == 5, "modern volume right arrow raises the selected volume");
-        game::WorldHud themedHud;
-        modern.ModernHud(1, themed, themedHud);
-        Check(!themedHud.menuPanels.empty() &&
-                  std::any_of(themedHud.menuText.begin(), themedHud.menuText.end(), [](const auto& t) { return t.text == "50%"; }),
-              "Night Shift pause renders scene-visible panels and volume percentages");
-        Check(std::any_of(themedHud.menuText.begin(), themedHud.menuText.end(), [](const auto& t) { return Contains(t.text, "player 2"); }),
-              "modern pause identifies the player who paused");
-        auto restingModern = Point(518, modernMusicY);
-        restingModern.pressed = 0x20;
-        modern.Update(restingModern, themed, snd);
-        modern.Update(Point(518, modernMusicY), themed, snd);
-        Check(modern.Cursor() == PauseMenu::kGuns, "resting pointer does not undo keyboard navigation in Night Shift pause");
-        const auto beforeOutside = themed;
-        modern.Update(Point(620, modernMusicY, true), themed, snd);
-        Check(themed == beforeOutside, "shots outside the modern panel do not edit volume values");
-        const float modernDisplayY = PauseMenu::ModernRowTop(PauseMenu::kDisplay) + 12;
-        modern.Update(Point(200, modernDisplayY, true), themed, snd);
-        Check(modern.DisplayOpen(), "modern graphics row opens the shared options page");
-        modern.ModernHud(0, themed, themedHud);
-        Check(std::any_of(themedHud.menuText.begin(), themedHud.menuText.end(), [](const auto& t) { return t.text == "OPTIONS"; }),
-              "modern pause delegates its options view to the same Night Shift page");
-        auto preview = Pad(0);
-        preview.preview = true;
-        const auto beforePreview = themed.display;
-        const int previewCursor = modern.Display().Cursor();
-        modern.Update(preview, themed, snd);
-        Check(modern.Display().UiHidden(), "options preview hides the UI while the pause menu stays open");
-        modern.Update(Pad(0xA0), themed, snd);  // Down + Right would normally navigate or edit.
-        modern.Update(Point(620, 150, true), themed, snd);
-        Check(modern.Display().UiHidden() && themed.display == beforePreview && modern.Display().Cursor() == previewCursor,
-              "hidden options ignore navigation and value changes without losing their saved cursor");
-        Check(modern.Update(st, themed, snd) == Action::None && modern.IsOpen() && modern.DisplayOpen() &&
-                  !modern.Display().UiHidden(),
-              "Start restores hidden options without resuming the game");
-        Check(modern.Display().Cursor() == previewCursor, "restoring options returns to the exact selected row");
-        modern.Update(preview, themed, snd);
-        modern.Update(Pad(2), themed, snd);
-        Check(modern.DisplayOpen() && !modern.Display().UiHidden(), "Back restores hidden options before it can leave the page");
-        modern.Update(preview, themed, snd);
-        Check(modern.Update(Pad(8), themed, snd) == Action::None && modern.DisplayOpen() && !modern.Display().UiHidden(),
-              "Enter restores hidden options without activating the selected setting");
-        modern.Update(preview, themed, snd);
-        modern.Update(preview, themed, snd);
-        Check(modern.DisplayOpen() && !modern.Display().UiHidden() && themed.display == beforePreview,
-              "the preview shortcut also restores the UI without changing settings");
-        modern.Update(Pad(2), themed, snd);
-        Check(!modern.DisplayOpen() && modern.IsOpen(), "Back on visible options returns to modern pause");
-
-        const float modernReturnY = PauseMenu::ModernRowTop(PauseMenu::kReturn) + 12;
-        modern.Update(Point(200, modernReturnY, true), themed, snd);
-        Check(modern.Confirming() && !modern.ConfirmYes(), "modern return confirmation starts on safe Cancel");
-        Check(PauseMenu::ModernConfirmAt(200, 292) == 1 && PauseMenu::ModernConfirmAt(400, 292) == 0 &&
-                  PauseMenu::ModernConfirmAt(320, 292) == -1,
-              "modern confirmation hit targets match Return, Cancel and their gap");
-        Check(modern.Update(Point(320, 292, true), themed, snd) == Action::None && modern.Confirming() && !modern.ConfirmYes(),
-              "shooting the gap between confirmation buttons cannot leave the run");
-        Check(modern.Update(Point(400, 292, true), themed, snd) == Action::None && !modern.Confirming(),
-              "modern Cancel returns to pause without leaving the run");
-        modern.SetNetworkRoom(true);
-        modern.Update(Point(200, modernReturnY, true), themed, snd);
-        modern.ModernHud(1, themed, themedHud);
-        Check(std::any_of(themedHud.menuText.begin(), themedHud.menuText.end(), [](const auto& t) { return Contains(t.text, "online co-op"); }) &&
-                  std::any_of(themedHud.menuText.begin(), themedHud.menuText.end(), [](const auto& t) {
-                      return Contains(t.text, "both players") && Contains(t.text, "lobby");
-                  }),
-              "online pause explains that returning to the lobby affects both players");
-        Check(modern.Update(Point(200, 292, true), themed, snd) == Action::ReturnToTitle,
-              "modern confirmed Return uses the existing return-to-title/lobby action");
-    }
-    {
-        DisplayMenu focus;
-        focus.Open();
-        play::DisplaySettings focusedSettings;
-        auto stationaryPointer = Point(300, DisplayMenu::RowY(DisplayMenu::kFullscreen) * 24 + 22);
-        focus.Update(stationaryPointer, focusedSettings, snd);
-        auto keyboardMove = stationaryPointer;
-        keyboardMove.pressed = 0x20;
-        focus.Update(keyboardMove, focusedSettings, snd);
-        const int keyboardCursor = focus.Cursor();
-        auto togglePreview = stationaryPointer;
-        togglePreview.preview = true;
-        focus.Update(togglePreview, focusedSettings, snd);
-        focus.Update(stationaryPointer, focusedSettings, snd);
-        focus.Update(togglePreview, focusedSettings, snd);
-        focus.Update(stationaryPointer, focusedSettings, snd);
-        Check(!focus.UiHidden() && keyboardCursor == DisplayMenu::kMonitor && focus.Cursor() == keyboardCursor,
-              "a stationary pointer cannot steal keyboard selection on the first visible frame after preview restoration");
-    }
-
-    // Gameplay sights are a local visibility preference, independent of renderer
-    // capabilities and of menu/calibration pointer visibility.
-    {
-        DisplayMenu sights;
-        play::DisplaySettings d;
-        Check(d.showCrosshairs && DisplayMenu::ValueText(d, DisplayMenu::kCrosshairs) == "On",
-              "gameplay crosshairs remain visible by default for existing players");
-        sights.Open();
-        sights.SetPage(DisplayMenu::kClarity);
-        const auto& imageRows = DisplayMenu::Rows(DisplayMenu::kClarity);
-        const auto sightRow = std::find(imageRows.begin(), imageRows.end(), DisplayMenu::kCrosshairs);
-        Check(imageRows.size() == 10 && sightRow != imageRows.end() && sightRow != imageRows.begin() &&
-                  *(sightRow - 1) == DisplayMenu::kIndependentUi,
-              "Image contains Gameplay Crosshairs once, directly after Sharp HUD");
-        for (size_t i = 0; i < imageRows.size() && sights.Cursor() != DisplayMenu::kCrosshairs; ++i)
-            sights.Update(Pad(0x20), d, snd);
-        Check(sights.Cursor() == DisplayMenu::kCrosshairs, "keyboard navigation reaches the gameplay crosshair row");
-        sights.Update(Pad(0x80), d, snd);
-        Check(!d.showCrosshairs && DisplayMenu::ValueText(d, DisplayMenu::kCrosshairs) == "Off" && sights.IsOpen(),
-              "Right hides gameplay sights immediately without closing options or requiring a renderer capability");
-        sights.Update(Pad(0x40), d, snd);
-        Check(d.showCrosshairs, "Left restores gameplay crosshairs");
-        sights.Update(Pad(8), d, snd);
-        Check(!d.showCrosshairs, "Enter toggles gameplay sight visibility");
-        const float sightY = DisplayMenu::RowY(DisplayMenu::kCrosshairs, DisplayMenu::kClarity) * 24 + 22;
-        sights.Update(Point(620, sightY, true), d, snd);
-        Check(d.showCrosshairs && sights.Cursor() == DisplayMenu::kCrosshairs,
-              "a lightgun trigger on the displayed row restores gameplay sights");
-        sights.Update(Point(620, sightY, false, true), d, snd);
-        Check(!d.showCrosshairs && sights.IsOpen(), "reload on the row hides sights without exiting the page");
-        const auto beforeHidden = d;
-        auto preview = Pad(0);
-        preview.preview = true;
-        sights.Update(preview, d, snd);
-        sights.Update(Pad(0x80), d, snd);
-        sights.Update(Point(620, sightY, true), d, snd);
-        Check(sights.UiHidden() && d == beforeHidden && sights.Cursor() == DisplayMenu::kCrosshairs,
-              "Hide UI ignores hidden sight adjustments and preserves the selected row");
-        sights.Update(preview, d, snd);
-        Check(!sights.UiHidden() && !d.showCrosshairs, "Show UI preserves the gameplay sight preference");
-        game::WorldHud sightHud;
-        sights.ModernHud(d, sightHud);
-        Check(std::any_of(sightHud.menuText.begin(), sightHud.menuText.end(), [](const auto& t) {
-                  return t.text == "Gameplay Crosshairs" && t.color == 0xFFECE7DC;
-              }),
-              "crosshair control is enabled even when renderer capabilities are absent");
-        const auto help = sights.RowHelp(d, DisplayMenu::kCrosshairs);
-        Check(Contains(help, "both players") && Contains(help, "this computer") && Contains(help, "menu and calibration") &&
-                  Contains(help, "aiming and shooting") && !Contains(help, "restart"),
-              "sight help explains local scope, immediate behavior and visible setup pointers");
-        for (int preset = 0; preset < 3; ++preset) {
-            DisplayMenu::ApplyPreset(d, preset);
-            Check(!d.showCrosshairs, "Original, Clean and Enhanced image presets preserve hidden gameplay sights");
-        }
-    }
-
-    // A complete graphics reset is a confirmed action, separate from Image presets.
-    // All checks use isolated settings and temporary files; no game data is needed.
-    {
-        Check(DisplayMenu::ResetChoiceAt(128, 278) == 1 && DisplayMenu::ResetChoiceAt(303, 315) == 1 &&
-                  DisplayMenu::ResetChoiceAt(336, 278) == 0 && DisplayMenu::ResetChoiceAt(511, 315) == 0 &&
-                  DisplayMenu::ResetChoiceAt(304, 295) == -1 && DisplayMenu::ResetChoiceAt(320, 295) == -1 &&
-                  DisplayMenu::ResetChoiceAt(512, 295) == -1 && DisplayMenu::ResetChoiceAt(200, 316) == -1,
-              "reset and cancel have separate bounded hit targets with an inert gap");
-        const std::string resetPath = std::string(getenv("TEMP") ? getenv("TEMP") : ".") + "\\hotd2re_graphics_reset_test.ini";
-        for (bool nextLaunchTheme : {false, true}) {
-            DisplayMenu resetPage;
-            resetPage.SetPacks({{"Original", "", "", true}, {"Custom visuals", "custom_visual_pack", "", true}}, "custom_visual_pack");
-            play::Settings custom;
-            custom.display = CustomizedGraphics(nextLaunchTheme);
-            custom.music = 3;
-            custom.guns = 7;
-            custom.sfx = 0;
-            custom.input = "touch";
-            custom.assets = "custom_visual_pack";
-            custom.lobby = "127.0.0.1:27910";
-            const auto before = custom;
-            resetPage.Open();
-            resetPage.Update(Pad(0x10), custom.display, snd);  // Wrap to Back.
-            resetPage.Update(Pad(0x10), custom.display, snd);  // Reset Graphics.
-            Check(resetPage.Cursor() == DisplayMenu::kResetGraphics && !resetPage.ResetConfirming() && !resetPage.TakeGraphicsReset(),
-                  "keyboard can reach Reset Graphics without opening or applying it");
-            resetPage.Update(Pad(0x40), custom.display, snd);
-            resetPage.Update(Pad(0x80), custom.display, snd);
-            DisplayMenu::Step(custom.display, DisplayMenu::kResetGraphics, 1);
-            DisplayMenu::Step(custom.display, DisplayMenu::kResetGraphics, -1);
-            Check(!resetPage.ResetConfirming() && custom.display == before.display,
-                  "Left and Right cannot reset graphics or open the action's confirmation");
-            resetPage.Update(Pad(8), custom.display, snd);
-            Check(resetPage.IsOpen() && resetPage.ResetConfirming() && !resetPage.ResetSelected() && custom.display == before.display,
-                  "Enter opens a safe Cancel confirmation without changing any graphics choice");
-            resetPage.Update(Pad(8), custom.display, snd);
-            Check(resetPage.IsOpen() && !resetPage.ResetConfirming() && custom.display == before.display && !resetPage.TakeGraphicsReset(),
-                  "Enter again on default Cancel leaves every graphics choice untouched");
-            // The pointer can rest over the future Reset button while keyboard
-            // navigation reaches the action; revealing a modal must not select it.
-            auto restingResetPointer = Point(200, 295);
-            resetPage.Update(restingResetPointer, custom.display, snd);
-            for (size_t row = 0; row < DisplayMenu::Rows(DisplayMenu::kDisplay).size() &&
-                                 resetPage.Cursor() != DisplayMenu::kResetGraphics; ++row) {
-                restingResetPointer.pressed = 0x20;
-                resetPage.Update(restingResetPointer, custom.display, snd);
-            }
-            restingResetPointer.pressed = 8;
-            resetPage.Update(restingResetPointer, custom.display, snd);
-            restingResetPointer.pressed = 0;
-            resetPage.Update(restingResetPointer, custom.display, snd);
-            Check(resetPage.ResetConfirming() && !resetPage.ResetSelected() && custom.display == before.display,
-                  "a stationary pointer over the new Reset button cannot steal the modal's safe Cancel default");
-            restingResetPointer.pressed = 8;
-            resetPage.Update(restingResetPointer, custom.display, snd);
-            Check(!resetPage.ResetConfirming() && custom.display == before.display && !resetPage.TakeGraphicsReset(),
-                  "keyboard confirmation with that stationary pointer still cancels safely");
-            const float resetY = DisplayMenu::RowY(DisplayMenu::kResetGraphics) * 24 + 22;
-            resetPage.Update(Point(620, resetY, true), custom.display, snd);
-            Check(resetPage.ResetConfirming() && !resetPage.ResetSelected() && custom.display == before.display,
-                  "shooting the Reset Graphics row opens confirmation without click-through");
-            auto hideAttempt = Pad(0);
-            hideAttempt.preview = true;
-            resetPage.Update(hideAttempt, custom.display, snd);
-            resetPage.Update(Point(500, 443, true), custom.display, snd);
-            resetPage.Update(Point(DisplayMenu::TabLeft(DisplayMenu::kColor) + 8, 90, true), custom.display, snd);
-            resetPage.Update(Point(320, 295, true), custom.display, snd);
-            Check(resetPage.ResetConfirming() && !resetPage.UiHidden() && resetPage.CurrentPage() == DisplayMenu::kDisplay &&
-                      custom.display == before.display && !resetPage.TakeGraphicsReset(),
-                  "confirmation blocks Hide UI, category clicks and blank-space shots without changing settings");
-            resetPage.Update(Point(400, 295, true), custom.display, snd);
-            Check(!resetPage.ResetConfirming() && resetPage.IsOpen() && custom.display == before.display,
-                  "pointer Cancel returns to the graphics page with its exact choices");
-            for (int cancellation : {0, 1, 2}) {
-                resetPage.Update(Pad(4), custom.display, snd);
-                auto cancel = Pad(cancellation == 0 ? 2 : 0);
-                cancel.start = cancellation == 1;
-                cancel.reload = cancellation == 2;
-                Check(!resetPage.Update(cancel, custom.display, snd) && resetPage.IsOpen() && !resetPage.ResetConfirming() &&
-                          custom.display == before.display && !resetPage.TakeGraphicsReset(),
-                      "Back, Start and reload each cancel reset without leaving graphics or mutating saved choices");
-            }
-            resetPage.Update(Pad(8), custom.display, snd);
-            game::WorldHud resetHud;
-            resetPage.ModernHud(custom.display, resetHud);
-            Check(!resetHud.menuPanels.empty() &&
-                      std::any_of(resetHud.menuText.begin(), resetHud.menuText.end(),
-                                  [](const auto& t) { return Contains(t.text, "reset"); }) &&
-                      std::any_of(resetHud.menuText.begin(), resetHud.menuText.end(),
-                                  [](const auto& t) { return Contains(t.text, "cancel"); }) &&
-                      std::none_of(resetHud.menuText.begin(), resetHud.menuText.end(),
-                                   [](const auto& t) { return Contains(t.text, "hide ui"); }),
-                  "Night Shift confirmation displays its reset/cancel choices and removes the conflicting Hide UI control");
-            game::ExeImage noData;
-            std::vector<game::SpriteDef> resetSprites;
-            resetPage.Sprites(noData, custom.display, resetSprites, true);
-            Check(!resetSprites.empty() && std::all_of(resetSprites.begin(), resetSprites.end(),
-                                                       [](const auto& sprite) {
-                                                           return sprite.depth == .0002f && (sprite.flags & 0x700) == 0x700 &&
-                                                                  sprite.id != 0xAFF;
-                                                       }),
-                  "Classic reset confirmation renders in front of the paused scene without value-adjustment arrows");
-            resetPage.Update(Pad(0x40), custom.display, snd);
-            Check(resetPage.ResetSelected() && custom.display == before.display, "choosing Reset does not apply it until confirmed");
-            resetPage.Update(Pad(4), custom.display, snd);
-            auto defaults = play::DisplaySettings{};
-            defaults.nightShift = nextLaunchTheme;
-            Check(!resetPage.ResetConfirming() && resetPage.IsOpen() && resetPage.Cursor() == DisplayMenu::kResetGraphics &&
-                      custom.display == defaults,
-                  "confirmed reset restores every graphics/display default while retaining the next-launch menu theme");
-            std::string unexpectedPackChange;
-            Check(custom.music == before.music && custom.guns == before.guns && custom.sfx == before.sfx && custom.input == before.input &&
-                      custom.assets == before.assets && custom.lobby == before.lobby && resetPage.SelectedPackPath() == before.assets &&
-                      !resetPage.TakePackChange(&unexpectedPackChange),
-                  "graphics reset preserves volumes, input, selected visual pack and lobby address");
-            Check(custom.display.renderer == 0 && custom.display.temporalUpscaler == 0 && custom.display.frameGeneration == 0 &&
-                      !custom.display.rayShadows && !custom.display.dynamicResolution && custom.display.renderScale == 2 &&
-                      custom.display.frameCap == 60 && custom.display.menuOpacity == 65 && custom.display.showCrosshairs,
-                  "reset clears renderer/upscaling/frame-generation/ray requests and restores 2x/60 FPS with visible gameplay sights");
-            Check(resetPage.TakeGraphicsReset() && !resetPage.TakeGraphicsReset(), "confirmed reset is acknowledged exactly once");
-            play::Settings reloaded;
-            Check(custom.Save(resetPath) && reloaded.Load(resetPath) && reloaded.display == defaults && reloaded.music == before.music &&
-                      reloaded.guns == before.guns && reloaded.sfx == before.sfx && reloaded.input == before.input &&
-                      reloaded.assets == before.assets && reloaded.lobby == before.lobby,
-                  "all reset defaults and preserved non-graphics choices survive the next-launch settings round trip");
-            resetPage.Update(Pad(8), custom.display, snd);
-            resetPage.Update(Point(200, 295, true), custom.display, snd);
-            Check(custom.display == defaults && resetPage.TakeGraphicsReset() && !resetPage.TakeGraphicsReset(),
-                  "resetting already-default graphics is harmless and still produces one save/apply acknowledgment");
-            resetPage.Update(Pad(8), custom.display, snd);
-            resetPage.Close();
-            Check(!resetPage.IsOpen() && !resetPage.ResetConfirming(), "Close clears an unconfirmed reset modal");
-            resetPage.Open();
-            Check(!resetPage.ResetConfirming() && !resetPage.UiHidden() && resetPage.Cursor() == DisplayMenu::kFullscreen,
-                  "Open cannot revive a stale reset confirmation");
-            resetPage.Update(Pad(0x10), custom.display, snd);
-            resetPage.Update(Pad(0x10), custom.display, snd);
-            resetPage.Update(Pad(8), custom.display, snd);
-            resetPage.SetPage(DisplayMenu::kColor);
-            Check(!resetPage.ResetConfirming() && custom.display == defaults,
-                  "changing the graphics category explicitly clears unconfirmed reset state");
-        }
-        remove(resetPath.c_str());
-        for (bool modernLayout : {false, true}) {
-            PauseMenu nested;
-            nested.SetModern(modernLayout);
-            nested.Open();
-            play::Settings running;
-            running.display = CustomizedGraphics(!modernLayout);
-            const auto runningBefore = running.display;
-            for (int row = 0; row < PauseMenu::kDisplay; ++row) nested.Update(Pad(0x20), running, snd);
-            nested.Update(Pad(8), running, snd);
-            nested.Update(Pad(0x10), running, snd);
-            nested.Update(Pad(0x10), running, snd);
-            nested.Update(Pad(8), running, snd);
-            Check(nested.DisplayOpen() && nested.Display().ResetConfirming(),
-                  "graphics reset confirmation opens inside both Classic and Night Shift pause layouts");
-            Check(nested.Update(st, running, snd) == Action::None && nested.IsOpen() && nested.DisplayOpen() &&
-                      !nested.Display().ResetConfirming() && running.display == runningBefore,
-                  "Start inside reset confirmation cancels it without resuming the paused game");
-            nested.Update(Pad(8), running, snd);
-            Check(nested.Update(Pad(2), running, snd) == Action::None && nested.IsOpen() && nested.DisplayOpen() &&
-                      !nested.Display().ResetConfirming(),
-                  "Back inside reset confirmation returns to graphics instead of closing the nested page");
-            nested.Update(Pad(8), running, snd);
-            nested.Update(Pad(0x80), running, snd);
-            auto expected = play::DisplaySettings{};
-            expected.nightShift = runningBefore.nightShift;
-            Check(nested.Update(Pad(8), running, snd) == Action::None && nested.IsOpen() && nested.DisplayOpen() &&
-                      running.display == expected && nested.Display().TakeGraphicsReset() && !nested.Display().TakeGraphicsReset(),
-                  "confirming a nested graphics reset keeps gameplay paused and exposes one persistence event to the caller");
-        }
-    }
-
+    CheckGraphicsReset();
     // settings file round trip (volumes, input, display)
     const std::string path = std::string(getenv("TEMP") ? getenv("TEMP") : ".") + "\\hotd2re_settings_test.ini";
+    {
+        play::Settings defaults, restored;
+        restored.master = restored.music = restored.guns = restored.sfx = restored.attraction = 10;
+        Check(defaults.Save(path) && restored.Load(path) && restored.master == 5 && restored.music == 5 &&
+                  restored.guns == 5 && restored.sfx == 5 && restored.attraction == 5,
+              "all five audio defaults survive saving and reopening settings");
+    }
     play::Settings a;
+    a.master = 8;
+    a.attraction = 4;
     a.music = 3;
     a.guns = 7;
     a.sfx = 0;
@@ -796,10 +354,35 @@ int main() {
     Check(!c.Load(path + ".missing") && c == play::Settings{}, "missing file keeps the defaults");
     {  // an old file without display keys keeps the display defaults
         FILE* f = fopen(path.c_str(), "w");
-        fputs("music=5\nguns=5\nsfx=5\n", f);
+        fputs("music=3\nguns=7\nsfx=0\n", f);
         fclose(f);
         play::Settings d;
-        Check(d.Load(path) && d.music == 5 && d.display == play::DisplaySettings{}, "old settings file: display defaults");
+        Check(d.Load(path) && d.music == 3 && d.guns == 7 && d.sfx == 0 && d.master == 5 && d.attraction == 5 &&
+                  d.display == play::DisplaySettings{},
+              "old settings file keeps saved categories and defaults missing master and attraction to five");
+    }
+    {
+        FILE* f = fopen(path.c_str(), "w");
+        fputs("master=99\nattraction=-3\n", f);
+        fclose(f);
+        play::Settings audio;
+        Check(audio.Load(path) && audio.master == 10 && audio.attraction == 0, "added settings clamp numeric values to zero through ten");
+        for (const char* invalid : {"", "invalid", "1junk", "2.0"}) {
+            f = fopen(path.c_str(), "w");
+            fprintf(f, "master=%s\nattraction=%s\n", invalid, invalid);
+            fclose(f);
+            audio.master = 7;
+            audio.attraction = 2;
+            Check(audio.Load(path) && audio.master == 7 && audio.attraction == 2,
+                  "malformed audio settings preserve current master and attraction preferences");
+        }
+        for (int level : {0, 2, 10}) {
+            audio.master = level;
+            audio.attraction = level;
+            play::Settings loaded;
+            Check(audio.Save(path) && loaded.Load(path) && loaded.master == level && loaded.attraction == level,
+                  "master and attraction levels survive saving and reopening settings");
+        }
     }
     {
         FILE* f = fopen(path.c_str(), "w");
@@ -864,16 +447,18 @@ int main() {
             }
         }
         FILE* f = fopen(path.c_str(), "w");
-        fputs("music=5\n", f);
+        fputs("music=7\n", f);
         fclose(f);
         play::Settings legacy;
-        Check(legacy.Load(path) && legacy.display.showCrosshairs,
-              "loading a legacy settings file without crosshairs keeps the default visible");
+        Check(legacy.Load(path) && legacy.display.showCrosshairs && legacy.music == 7 && legacy.master == 5 &&
+                  legacy.guns == 5 && legacy.sfx == 5 && legacy.attraction == 5,
+              "legacy files preserve present values and default every missing audio level to five");
     }
     remove(path.c_str());
 
     page.Open();
-    page.SetPage(DisplayMenu::kClarity);
+    page.SetPage(DisplayMenu::kGraphics);
+    page.FocusRow(DisplayMenu::kPreset);
     port::GraphicsCapabilities fullCaps;
     fullCaps.msaa2 = fullCaps.msaa4 = fullCaps.smaa = fullCaps.cmaa2 = fullCaps.temporalAA = true;
     fullCaps.outputResolutionHud = fullCaps.hdrOutput = fullCaps.tearing = fullCaps.lowLatency = true;
@@ -933,13 +518,22 @@ int main() {
         previousTabRight = left + width;
         Check(DisplayMenu::TabAt(left + width * .5f, 90) == tab, "every visible category tab has its matching target");
         const auto& rows = DisplayMenu::Rows(static_cast<DisplayMenu::Page>(tab));
-        Check(rows.size() <= 10 && DisplayMenu::RowY(rows.back(), static_cast<DisplayMenu::Page>(tab)) * 24 + 30 < 381,
-              "each category's last rendered row stays above the help area, including Display with reset");
+        page.SetPage(static_cast<DisplayMenu::Page>(tab));
+        for (int row : rows) {
+            page.FocusRow(row);
+            const auto visible = page.VisibleRows();
+            Check(std::find(visible.begin(), visible.end(), row) != visible.end(), "every category row can scroll fully into view");
+            const float y = PointerY(page, row);
+            Check(DisplayMenu::RowAt(40, y, page.CurrentPage(), page.ScrollOffset()) == row,
+                  "scrolling keeps visible setting text and pointer targets aligned");
+        }
         for (int row : rows)
             if (row != DisplayMenu::kBack) ++rowOccurrences[row];
     }
-    Check(std::all_of(rowOccurrences.begin(), rowOccurrences.end(), [](int n) { return n <= 1; }),
-          "each setting appears on only one options page");
+    bool eachSettingOnce = true;
+    for (int row = 0; row < DisplayMenu::kRowCount; ++row)
+        if (row != DisplayMenu::kBack && rowOccurrences[row] != 1) eachSettingOnce = false;
+    Check(eachSettingOnce, "every setting appears on exactly one options page");
     auto onPage = [](int row, DisplayMenu::Page tab) {
         const auto& rows = DisplayMenu::Rows(tab);
         return std::find(rows.begin(), rows.end(), row) != rows.end();
@@ -952,17 +546,16 @@ int main() {
           "render size, spatial upscaling, scanlines and calibration each have "
           "one logical home");
     Check(onPage(DisplayMenu::kRayShadows, DisplayMenu::kLighting) && onPage(DisplayMenu::kMaterialMaps, DisplayMenu::kPacks) &&
-              onPage(DisplayMenu::kBlood, DisplayMenu::kColor) && onPage(DisplayMenu::kRenderInterpolation, DisplayMenu::kTemporal),
+              onPage(DisplayMenu::kBlood, DisplayMenu::kGameplay) && onPage(DisplayMenu::kRenderInterpolation, DisplayMenu::kTemporal),
           "lighting, pack, color and motion settings are grouped by their effect");
-    auto adjust = [&](DisplayMenu::Page tab, int row, bool reverse = false) {
-        page.SetPage(tab);
-        page.Update(Point(620, DisplayMenu::RowY(row, tab) * 24 + 22, !reverse, reverse), v.display, snd);
+    auto adjust = [&](DisplayMenu::Page, int row, bool reverse = false) {
+        Focus(page, row);
+        page.Update(Point(600, PointerY(page, row), !reverse, reverse), v.display, snd);
     };
     page.SetGraphicsCapabilities({});
     page.SetPage(DisplayMenu::kResolution);
     v = {};
-    page.Update(Pad(0x20), v.display, snd);
-    page.Update(Pad(0x20), v.display, snd);
+    page.FocusRow(DisplayMenu::kDynamicResolution);
     page.Update(Pad(8), v.display, snd);
     Check(!v.display.dynamicResolution, "unsupported GPU timing cannot enable dynamic resolution");
     port::GraphicsCapabilities timedCaps;
@@ -1048,7 +641,7 @@ int main() {
           "overwriting the normal frame cap");
     game::WorldHud optionsHud;
     page.ModernHud(v.display, optionsHud);
-    const float capTop = DisplayMenu::RowY(DisplayMenu::kFrameCap, DisplayMenu::kPerformance) * 24 + 10;
+    const float capTop = DisplayMenu::RowY(DisplayMenu::kFrameCap, page.CurrentPage(), page.ScrollOffset()) * 24 + 10;
     Check(std::any_of(optionsHud.menuText.begin(), optionsHud.menuText.end(),
                       [&](const auto& text) { return text.x == 402 && text.y == capTop && Contains(text.text, "60"); }),
           "frame-cap row displays actual frame-generation pacing instead of its "
@@ -1108,28 +701,30 @@ int main() {
 
     v = {};
     page.SetPage(DisplayMenu::kLighting);
-    const float rayY = DisplayMenu::RowY(DisplayMenu::kRayShadows, DisplayMenu::kLighting) * 24 + 22;
+    page.FocusRow(DisplayMenu::kRayShadows);
+    const float rayY = PointerY(page, DisplayMenu::kRayShadows);
     page.SetRaytracingAvailable(false);
-    page.Update(Point(620, rayY, true), v.display, snd);
+    page.Update(Point(600, rayY, true), v.display, snd);
     Check(!v.display.rayShadows, "missing native ray capability cannot enable shadows");
     v.display.rayShadows = true;
-    page.Update(Point(620, rayY, true), v.display, snd);
+    page.Update(Point(600, rayY, true), v.display, snd);
     Check(!v.display.rayShadows, "unsupported saved ray request can be cleared after native renderer fallback");
     page.SetRaytracingAvailable(true);
-    page.Update(Point(620, rayY, true), v.display, snd);
+    page.Update(Point(600, rayY, true), v.display, snd);
     Check(v.display.rayShadows && v.display.renderer == 2, "available ray shadows select the native renderer");
-    page.Update(Point(620, rayY, true), v.display, snd);
+    page.Update(Point(600, rayY, true), v.display, snd);
     Check(!v.display.rayShadows, "ray shadows can be disabled again");
     v.display.graphics.crtCurvature = 2;
     page.SetPage(DisplayMenu::kTemporal);
-    const float fgY = DisplayMenu::RowY(DisplayMenu::kFrameGeneration, DisplayMenu::kTemporal) * 24 + 22;
-    page.Update(Point(620, fgY, true), v.display, snd);
+    page.FocusRow(DisplayMenu::kFrameGeneration);
+    const float fgY = PointerY(page, DisplayMenu::kFrameGeneration);
+    page.Update(Point(600, fgY, true), v.display, snd);
     Check(v.display.frameGeneration == 1 && v.display.graphics.crtCurvature == 2,
           "pending DLSS frame generation preserves curvature until the provider actually starts");
-    page.Update(Point(620, fgY, true), v.display, snd);
+    page.Update(Point(600, fgY, true), v.display, snd);
     Check(v.display.frameGeneration == 2 && v.display.graphics.crtCurvature == 2,
           "pending AMD frame generation preserves the active image's curvature too");
-    page.Update(Point(620, fgY, true), v.display, snd);
+    page.Update(Point(600, fgY, true), v.display, snd);
     Check(v.display.frameGeneration == 0 && v.display.graphics.crtCurvature == 2,
           "cancelling a pending frame-generation choice leaves curvature unchanged");
     adjust(DisplayMenu::kColor, DisplayMenu::kCalibration);
@@ -1185,6 +780,7 @@ int main() {
     Check(!device && !fallbackUsed && factoryError.find("optional unavailable") != std::string::npos &&
               factoryError.find("native unavailable") != std::string::npos,
           "dual device failure reports both original and fallback errors");
+    CheckOptionSounds();
     printf("%d / %d checks passed\n", g_checks - g_failed, g_checks);
     return g_failed == 0 ? 0 : 1;
 }

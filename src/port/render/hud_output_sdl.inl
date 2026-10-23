@@ -47,8 +47,8 @@ bool SdlGpuDevice::ComposeHudScene(std::string* error) {
 bool SdlGpuDevice::ProcessScene(std::string* error) {
     if(hudReady_)return true;
     std::string diagnostic;bool okay=ProcessSceneEffects(&diagnostic);
-    if(okay&&graphics_.outputResolutionHud)okay=ComposeHudScene(&diagnostic);
+    if(okay&&(graphics_.outputResolutionHud||menuOverlay_))okay=ComposeHudScene(&diagnostic);
     if(!okay){if(error)*error=diagnostic;
-        if(graphics_.outputResolutionHud)hudError_=diagnostic.empty()?"Output-resolution HUD unavailable; internal HUD retained":diagnostic;}
+        if(graphics_.outputResolutionHud||menuOverlay_)hudError_=diagnostic.empty()?"Output-resolution HUD unavailable; internal HUD retained":diagnostic;}
     return okay;
 }

@@ -5,15 +5,16 @@
 // 0x004011F0, which also applies them: 0x0040AB50) - into the port's own save file. Calibration (0x004882D0) and the
 // controller screen (0x00485F90) are not ported. Verified against build\scene_capture_modes_options.txt
 // (notes/agents/modes.md section 5).
-// Port only (play.exe, WorldConfig::portVolumes >= 0; off in the exactness tests): rows 11..13 (volumes) and 14
+// Port only (play.exe, WorldConfig::portVolumes >= 0; off in the exactness tests): rows 11..13 / 15..16 (volumes) and 14
 // (Display Settings, whose page play.exe draws itself: ModesState::optDisplayRequests -> WorldHud::portDisplayRequests)
-// between the sound tests and the controller line.
+// after Wii Remotes in the port menu; audio previews live in Extras.
 
 #include <algorithm>
 #include <cstring>
 
 #include "game/menu_text.h"
 #include "game/menu_pointer.h"
+#include "game/menu_audio.h"
 #include "game/world_modes.h"
 #include "game/world_nightshift.h"
 
@@ -71,6 +72,11 @@ std::string ItemText(const ExeImage& exe, int i) { return exe.CStr(exe.U32(exe.U
 // 0x00488200(mask): a pad bit pressed (the keyboard 0x009A37A8 is not driven)
 bool Pressed(World::Impl& w, uint32_t mask) { return (w.pressed & mask) != 0; }
 
+void OptionSound(World::Impl& w, uint32_t original, uint32_t feedback = kOptionSelectSound) {
+    if (w.cfg.portFeatures) w.SoundCall(World::kOptionFeedback, feedback);
+    else w.Sound(original);
+}
+
 struct OptTask : WTask {
     MenuPointerFocus pointer;
     int pointerPlayer = -1;
@@ -80,24 +86,31 @@ struct OptTask : WTask {
 struct Allow {
     bool controller = false;  // item 8 shown: a gun player whose device mode is not 6
     bool calibrate = false;   // item 5 bright: a player without a gun
+    bool previews = true;     // original sound tests; the native port moves them to Extras
 };
 Allow Permissions(World::Impl& w) {
     Allow a;
-    if (w.cfg.portFeatures) { a.calibrate = a.controller = true; return a; } // the calibration row opens native Wii Remote setup
+    if (w.cfg.portFeatures) { a.calibrate = a.controller = true; a.previews = false; return a; } // the calibration row opens native Wii Remote setup
     const int m0 = w.input[0].deviceMode, m1 = w.input[1].deviceMode;
     if ((w.player[0].inputKind == 1 && m0 != 6) || (w.player[1].inputKind == 1 && m1 != 6)) a.controller = true;
     if (w.player[0].inputKind == 0 || w.player[1].inputKind == 0) a.calibrate = true;
     return a;
 }
 
-// The lines in their visual order: the original's 0..10, with the port's rows 11..14 (three volumes, Display Settings)
+// The lines in their visual order: the original's 0..10, with five volume rows and Display Settings
 // between the sound tests and the controller line when play.exe enables them (ModesState::optPortRows).
-constexpr int kPortRows = 4;  // 11..13 volumes, 14 display settings
+constexpr int kPortRows = 6;
+constexpr int kPortRowOrder[kPortRows] = {15, 11, 12, 13, 16, 14};  // master, categories, attraction, graphics
+int VolumeIndex(int row) { return row >= 11 && row <= 13 ? row - 11 : row == 15 ? 3 : row == 16 ? 4 : -1; }
+int PortRowPosition(int row) {
+    for (int p = 0; p < kPortRows; ++p) if (kPortRowOrder[p] == row) return p;
+    return -1;
+}
 int OptRows(const ModesState& m, int out[11 + kPortRows]) {
     int n = 0;
     for (int i = 0; i < 8; ++i) out[n++] = i;
     if (m.optPortRows)
-        for (int i = 11; i < 11 + kPortRows; ++i) out[n++] = i;
+        for (int i : kPortRowOrder) out[n++] = i;
     for (int i = 8; i < 11; ++i) out[n++] = i;
     return n;
 }
@@ -105,7 +118,8 @@ int OptRows(const ModesState& m, int out[11 + kPortRows]) {
 // Lines the cursor skips: 3 (hidden colour) unless 0x007DD030, 8 (controller) without a gun controller, 5
 // (calibration) without a pad player.
 bool OptSkipped(const ModesState& m, const Allow& a, int i) {
-    return (i == 3 && m.optHidden == 0) || (i == 8 && !a.controller) || (i == 5 && !a.calibrate);
+    return (i == 3 && m.optHidden == 0) || (i == 8 && !a.controller) || (i == 5 && !a.calibrate) ||
+           ((i == 6 || i == 7) && !a.previews);
 }
 
 bool ModernOptions(const World::Impl& w) { return w.cfg.portFeatures && w.cfg.portModernMenu; }
@@ -119,9 +133,10 @@ std::vector<int> ModernOptionIds(const World::Impl& w,const Allow& a) {
 
 float OptRowY(const World::Impl& w, const Allow& a, int i) {
     const ModesState& m = *w.modes;
-    if (i >= 11) return static_cast<float>(ItemY(w.exe, 8) + m.optScroll + i - 11);
-    if (i == 9) return static_cast<float>(ItemY(w.exe, a.controller ? 9 : 8) + m.optScroll + (m.optPortRows ? kPortRows : 0));
-    return static_cast<float>(ItemY(w.exe, i) + (i < 4 ? 0 : m.optScroll) + (i == 8 && m.optPortRows ? kPortRows : 0));
+    const int previewRows = w.cfg.portFeatures && i >= 8 && i != 10 ? 2 : 0;
+    if (i >= 11) return static_cast<float>(ItemY(w.exe, 8) + m.optScroll + PortRowPosition(i) - previewRows);
+    if (i == 9) return static_cast<float>(ItemY(w.exe, a.controller ? 9 : 8) + m.optScroll + (m.optPortRows ? kPortRows : 0) - previewRows);
+    return static_cast<float>(ItemY(w.exe, i) + (i < 4 ? 0 : m.optScroll) + (i == 8 && m.optPortRows ? kPortRows : 0) - previewRows);
 }
 
 int OptRowAt(const World::Impl& w, const Allow& a, int x, int y) {
@@ -145,7 +160,7 @@ int OptRowAt(const World::Impl& w, const Allow& a, int x, int y) {
     return -1;
 }
 
-bool OptValue(int i) { return i <= 3 || (i >= 11 && i <= 13); }
+bool OptValue(int i) { return i <= 3 || VolumeIndex(i) >= 0; }
 float OptPreviousX(const World::Impl& w,int i) { return ModernOptions(w)?360.f:i == 6 || i == 7 ? 484.0f : 440.0f; }
 
 // Translate pointer actions to the same input edges as the original handlers. Consume the gun's trigger/start
@@ -167,7 +182,6 @@ void OptPointer(World::Impl& w, OptTask& task, const Allow& a) {
     const bool reload = in.offscreen && (in.pressed & 2) != 0;
     const int row = OptRowAt(w, a, in.x, in.y);
     if (task.pointer.Update(true, float(in.x), float(in.y), in.fired || reload || p != task.pointerPlayer) && row >= 0) {
-        if (m.optCursor != row) w.Sound(0xA9);
         m.optCursor = static_cast<int8_t>(row);
     }
     task.pointerPlayer = p;
@@ -206,37 +220,38 @@ void TaskOptCursor(Task& task) {
     const Allow a = Permissions(w);
     if (w.cfg.portFeatures) OptPointer(w, task.As<OptTask>(), a);
     if (Pressed(w, 0x100010)) {
-        w.Sound(0xA9);
+        if (!w.cfg.portFeatures) w.Sound(0xA9);
         OptMove(m, a, -1);
     }
     if (Pressed(w, 0x200020)) {
-        w.Sound(0xA9);
+        if (!w.cfg.portFeatures) w.Sound(0xA9);
         OptMove(m, a, 1);
     }
-    if (m.optCursor != was && 5 < was && was < 8) {  // left the sound / voice test: sounds stopped
-        w.Sound(0x80000000);
-        w.Sound(0x80000002);
-        w.Sound(0x80000001);
-        w.Sound(0xA9);
-    }
-    if (w.cfg.portFeatures && OptValue(m.optCursor) && Pressed(w, 0xC000C)) w.pressed |= 0x80;
     if (w.cfg.portFeatures && Pressed(w, 0x20002)) {  // keyboard Back / Escape saves just like the Exit button
         m.optCursor = 10;
         w.pressed |= 4;
     }
+    if (!w.cfg.portFeatures && m.optCursor != was && 5 < was && was < 8) {  // left the sound / voice test: sounds stopped
+        w.Sound(0x80000000);
+        w.Sound(0x80000002);
+        w.Sound(0x80000001);
+        if (!w.cfg.portFeatures) w.Sound(0xA9);
+    }
+    if (w.cfg.portFeatures && OptValue(m.optCursor) && Pressed(w, 0xC000C)) w.pressed |= 0x80;
 }
 
-// a value line: R +1, L -1 (sound 0xA9)
-int Step(World::Impl& w) {
+// A value line: R +1, L -1. Port menus use the option-select cue; original exactness keeps 0xA9.
+int Step(World::Impl& w, bool feedback = true) {
     int d = 0;
     if (Pressed(w, 0x800080)) {
-        w.Sound(0xA9);
+        if (!w.cfg.portFeatures) w.Sound(0xA9);
         ++d;
     }
     if (Pressed(w, 0x400040)) {
-        w.Sound(0xA9);
+        if (!w.cfg.portFeatures) w.Sound(0xA9);
         --d;
     }
+    if (w.cfg.portFeatures && feedback && d != 0) w.SoundCall(World::kOptionFeedback, kOptionSelectSound);
     return d;
 }
 
@@ -312,21 +327,21 @@ void Handler(World::Impl& w, int i) {
         if (m.optCursor != 4) return;
         if (p1) {
             if (Pressed(w, 0x80)) {
-                w.Sound(0xA9);
+                OptionSound(w, 0xA9);
                 ++m.optCross[0];
             }
             if (Pressed(w, 0x40)) {
-                w.Sound(0xA9);
+                OptionSound(w, 0xA9);
                 --m.optCross[0];
             }
         }
         if (p2) {
             if (Pressed(w, 0x800000)) {
-                w.Sound(0xA9);
+                OptionSound(w, 0xA9);
                 ++m.optCross[1];
             }
             if (Pressed(w, 0x400000)) {
-                w.Sound(0xA9);
+                OptionSound(w, 0xA9);
                 --m.optCross[1];
             }
         }
@@ -340,12 +355,13 @@ void Handler(World::Impl& w, int i) {
     }
     case 5:  // 0x004878E0 calibration (0x004882D0)
         if (m.optCursor == 5 && Pressed(w, 0xC000C)) {
-            w.Sound(0x3016A9);
+            OptionSound(w, 0x3016A9);
             if (w.cfg.portFeatures) ++m.optWiiRequests;
             else w.Note("options: gun calibration screen (0x004882D0) not ported");
         }
         return;
     case 6: case 7: {  // 0x00487910 sound test (0..0x2EE, 0x00569798 {id, bgm}) / 0x00487A50 voice test (0..0x12, 0x005970C4)
+        if (w.cfg.portFeatures) return;  // native previews are available only on Extras
         const float y = static_cast<float>(m.optScroll + ItemY(exe, i));
         Text(w, 32.0f, y, exe.CStr(0x00597204), 1);
         Num(w, 35.0f, y, i == 6 ? m.optBgm : m.optVoice);
@@ -354,6 +370,7 @@ void Handler(World::Impl& w, int i) {
         int d = 0;
         if (Pressed(w, 0x800080) || m.optRepeat == 0x1E) ++d;
         if (Pressed(w, 0x400040) || m.optRepeat == -0x1E) --d;
+        if (w.cfg.portFeatures && d != 0) w.SoundCall(World::kOptionFeedback, kOptionSelectSound);
         if (i == 6) {
             m.optBgm = static_cast<int16_t>(m.optBgm + d);
             if (m.optBgm < 0x2EF) {
@@ -380,29 +397,35 @@ void Handler(World::Impl& w, int i) {
     }
     case 8:  // 0x00487B50 controller setup (0x00485F90)
         if (m.optCursor == 8 && Pressed(w, 0xC000C)) {
-            w.Sound(0x3016A9);
+            OptionSound(w, 0x3016A9);
             if (w.cfg.portFeatures) ++m.optLightgunRequests;
             else w.Note("options: controller screen (0x00485F90) not ported");
         }
         return;
-    case 11: case 12: case 13: {  // port only: Music / Gun Shots / Sound Effects volume 0..10 (L / R), in the controller line's slot
+    case 11: case 12: case 13: case 15: case 16: {  // port only: volume 0..10 (L / R)
         if (!m.optPortRows) return;
-        const float y = static_cast<float>(m.optScroll + ItemY(exe, 8) + (i - 11));
-        Num(w, 35.0f, y, m.optVolume[i - 11]);
+        const int index = VolumeIndex(i);
+        const float y = OptRowY(w, Permissions(w), i);
+        Num(w, 35.0f, y, m.optVolume[index]);
         if (m.optCursor != i) return;
-        m.optVolume[i - 11] = std::clamp(m.optVolume[i - 11] + Step(w), 0, 10);
+        const int previous = m.optVolume[index];
+        m.optVolume[index] = std::clamp(previous + Step(w, false), 0, 10);
+        if (w.cfg.portFeatures && m.optVolume[index] != previous)
+            w.SoundCall(World::kOptionFeedback, kOptionSelectSound);
         return;
     }
     case 14:  // port only: Display Settings - play.exe shows its own page (the sub-screen sound of items 5 / 8)
         if (m.optPortRows && m.optCursor == 14 && Pressed(w, 0xC000C)) {
-            w.Sound(0x3016A9);
+            OptionSound(w, 0x3016A9);
             ++m.optDisplayRequests;
         }
         return;
     case 9:  // 0x00487B80 default: 0x00401130, the copies reloaded
         if (m.optCursor == 9 && Pressed(w, 0x4000C)) {
-            if (m.optPortRows)
-                for (int& v : m.optVolume) v = 10;  // port: the volume rows too
+            if (w.cfg.portFeatures) w.SoundCall(World::kOptionFeedback, kOptionSelectSound);
+            if (m.optPortRows) {
+                for (int& v : m.optVolume) v = 5;
+            }
             s.DefaultSettings(exe);
             m.optDifficulty = static_cast<int8_t>(s.U8(SaveData::kDifficulty));
             m.optLives = static_cast<int8_t>(s.U8(SaveData::kLives));
@@ -413,7 +436,7 @@ void Handler(World::Impl& w, int i) {
         return;
     case 10:  // 0x00487C00 exit: sound, Game_Save 0x004011F0 (applies the settings, 0x0040AB50), sub-state 2
         if (m.optCursor == 10 && Pressed(w, 0xC000C)) {
-            w.Sound(0x121A9);
+            OptionSound(w, 0x121A9, kOptionBackSound);
             m.Store(w);
             w.subState = 2;
         }
@@ -442,7 +465,7 @@ void ModernOptionsList(World::Impl& w,const Allow& a) {
         }
         case 5: row.label="Wii Remotes";row.value="Open";break;
         case 6: row.label="Sound Preview";row.value=std::to_string(m.optBgm);break;
-        case 7: row.label="Dialogue Preview";row.value=std::to_string(m.optVoice);break;
+        case 7: row.label="Music Preview";row.value=std::to_string(m.optVoice);break;
         case 8: row.label="Light Guns";row.value="Open";break;
         case 9: row.label="Reset Game Settings";row.value="Reset";break;
         case 10: row.label="SAVE + BACK";break;
@@ -450,6 +473,8 @@ void ModernOptionsList(World::Impl& w,const Allow& a) {
         case 12: row.label="Gun Shots Volume";row.value=std::to_string(m.optVolume[1])+" / 10";break;
         case 13: row.label="Effects + Dialogue";row.value=std::to_string(m.optVolume[2])+" / 10";break;
         case 14: row.label="Graphics Options";row.value="Open";break;
+        case 15: row.label="Master Volume";row.value=std::to_string(m.optVolume[3])+" / 10";break;
+        case 16: row.label="Attraction Volume";row.value=std::to_string(m.optVolume[4])+" / 10";break;
         }
         rows.push_back(std::move(row));
     }
@@ -462,12 +487,14 @@ void ModernOptionsList(World::Impl& w,const Allow& a) {
     case 5:help="Open the existing Wii Remote assignment, calibration and button setup.";break;
     case 6:case 7:help="Left/right chooses a recording. Space or shooting its name plays it; arrows choose without playback.";break;
     case 8:help="Open the existing light-gun assignment, calibration and button setup.";break;
-    case 9:help="Resets game rules, original crosshair/controller settings and all three volumes. Graphics settings stay separate.";break;
+    case 9:help="Resets game rules, crosshair/controller settings and all volumes. All volumes return to 5.";break;
     case 10:help="Save the existing game settings and return to the previous menu.";break;
-    case 11:help="Music playback volume, from 0 to 10.";break;
-    case 12:help="Gunshot sample volume, from 0 to 10.";break;
-    case 13:help="Effects and recorded dialogue share this existing volume, from 0 to 10.";break;
+    case 11:help="Music playback volume, from 0 to 10. Default: 4.";break;
+    case 12:help="Gunshot sample volume, from 0 to 10. Default: 4.";break;
+    case 13:help="Effects and recorded dialogue share this volume, from 0 to 10. Default: 4.";break;
     case 14:help="Open display, image clarity, lighting and the other graphics categories.";break;
+    case 15:help="Overall volume for gameplay, menus, previews and the attraction loop, from 0 to 10. Default: 1.";break;
+    case 16:help="Background attraction-loop volume, from 0 to 10. Default: 4. Master Volume also applies.";break;
     }
     NightShiftGameOptionsFrame(w,rows,m.optCursor,help);
     // Keep the original sight art visible beside the modern per-player labels.
@@ -507,19 +534,26 @@ void TaskOptList(Task&) {
         d.flags = 6;
         w.hudSprites.push_back(d);
     }
-    const float sc = static_cast<float>(m.optScroll);
-    // port: the volume / display rows take the controller line's slot; the controller / default lines move down four cells
-    const float shift = m.optPortRows ? static_cast<float>(kPortRows) : 0.0f;
-    static const char* const kPortLabels[kPortRows] = { "Music Volume", "Gun Shots Volume", "Effects + Dialogue", "Graphics Options" };
+    static const char* const kPortLabels[kPortRows] = { "Music Volume", "Gun Shots Volume", "Effects + Dialogue", "Graphics Options", "Master Volume", "Attraction Volume" };
+    auto portRows = [&] {
+        if (!m.optPortRows) return;
+        for (int r = 11; r < 11 + kPortRows; ++r) {
+            Text(w, static_cast<float>(ItemX(exe, 8)), OptRowY(w, a, r), kPortLabels[r - 11],
+                 m.optCursor == r ? 0x111 : 1);
+            Handler(w, r);
+        }
+    };
     for (int i = 0; i < 11; ++i) {
+        if (w.cfg.portFeatures && (i == 6 || i == 7)) {
+            if (i == 7) portRows();
+            continue;
+        }
         if (i < 10) {
             const float x = static_cast<float>(ItemX(exe, i));
-            const float y = static_cast<float>(ItemY(exe, i)) + (i < 3 ? 0.0f : sc) + (i == 8 || i == 9 ? shift : 0.0f);
+            const float y = OptRowY(w, a, i);
             std::string label = ItemText(exe, i);
             if (w.cfg.portFeatures) {
                 if (i == 5) label = "Wii Remotes";
-                else if (i == 6) label = "Sound Preview";
-                else if (i == 7) label = "Dialogue Preview";
                 else if (i == 8) label = "Light Guns";
                 else if (i == 9) label = "Reset Game Settings";
             }
@@ -527,7 +561,7 @@ void TaskOptList(Task&) {
                 if (i == 3) {
                     if (m.optHidden != 0) Text(w, x, static_cast<float>(ItemY(exe, 3)), label, 0x111);
                 } else if (i == 9) {
-                    Text(w, x, static_cast<float>(a.controller ? ItemY(exe, 9) : ItemY(exe, 8)) + sc + shift, label, 0x111);
+                    Text(w, x, OptRowY(w, a, 9), label, 0x111);
                 } else {
                     Text(w, x, y, label, 0x111);
                 }
@@ -540,17 +574,11 @@ void TaskOptList(Task&) {
                 case 8:
                     if (a.controller) Text(w, x, y, label, 1);
                     break;
-                case 9: Text(w, x, static_cast<float>(a.controller ? ItemY(exe, 9) : ItemY(exe, 8)) + sc + shift, label, 1); break;
+                case 9: Text(w, x, OptRowY(w, a, 9), label, 1); break;
                 default: Text(w, x, y, label, 1); break;
                 }
             }
-            if (i == 7 && m.optPortRows) {  // port: the volume rows and Display Settings after the sound tests
-                for (int r = 11; r < 11 + kPortRows; ++r) {
-                    Text(w, static_cast<float>(ItemX(exe, 8)), static_cast<float>(ItemY(exe, 8)) + sc + static_cast<float>(r - 11), kPortLabels[r - 11],
-                         m.optCursor == r ? 0x111 : 1);
-                    Handler(w, r);
-                }
-            }
+            if (i == 7) portRows();
         } else {
             SpriteDef d;  // the exit sign, red when selected
             d.id = 0x803;
@@ -566,11 +594,12 @@ void TaskOptList(Task&) {
         Handler(w, i);
     }
     if (w.cfg.portFeatures) {
-        if (OptValue(m.optCursor) || m.optCursor == 6 || m.optCursor == 7)
+        if (OptValue(m.optCursor))
             MenuAdjustArrows(OptPreviousX(w,m.optCursor), 620, OptRowY(w, a, m.optCursor) * 24 + 22, w.hudSprites);
-        const char* hint = m.optCursor == 6 || m.optCursor == 7 ? "Shoot arrows to choose   Name to play" :
-                           m.optCursor == 4 ? "Shoot a player sight to change it" : "Click or shoot   Reload to reverse";
-        MenuTextScaled(exe, 32, 380, hint, 0, 0.8f, w.hudSprites);
+        if (!m.optPortRows) {
+            const char* hint = m.optCursor == 4 ? "Shoot a player sight to change it" : "Click or shoot   Reload to reverse";
+            MenuTextScaled(exe, 32, 380, hint, 0, 0.8f, w.hudSprites);
+        }
     }
     if(ModernOptions(w)) {
         // Retain the exact original handler order, sounds and save writes above;
@@ -609,7 +638,7 @@ void OptionsFrame(World::Impl& w) {
         m.optRepeat = 0;
         m.optHidden = 0;
         m.optPortRows = w.cfg.portVolumes[0] >= 0;  // port: the volume / display rows (play.exe), from the current settings
-        for (int k = 0; k < 3; ++k) m.optVolume[k] = std::clamp(w.cfg.portVolumes[k], 0, 10);
+        for (int k = 0; k < 5; ++k) m.optVolume[k] = std::clamp(w.cfg.portVolumes[k], 0, 10);
         m.optDisplayRequests = 0;
         m.optWiiRequests = 0;
         m.optLightgunRequests = 0;

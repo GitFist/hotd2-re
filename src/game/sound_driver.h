@@ -59,6 +59,15 @@ public:
     // WM_ACTIVATEAPP handling in Game_WndProcHook 0x0049E780.
     void OnActivate(bool active);
 
+    // Port Extras: recordings always play once. Selecting a row restarts it; the Play button resumes a paused
+    // recording or starts a finished/new one. Pause/Reset only affect the requested music, never another row.
+    bool PreviewMusic(const SoundTable& table, uint32_t id, bool restart);
+    void PausePreviewMusic(uint32_t id);
+    void ResetPreviewMusic(uint32_t id);
+    bool PreviewEffect(const SoundTable& table, uint32_t id);
+    void StopPreviews();
+    static constexpr int kPreviewEffectChannel = 19;  // independent of BGM, gameplay SE and option feedback
+
     uint32_t CurrentBgm() const { return curBgm_; }  // 0x009C8FB8
 
     // The port's volume settings (not in the original): a gain 0..1 per category, applied through SoundBackend::SetGain
@@ -89,6 +98,9 @@ private:
     uint32_t curBgm_ = 0;    // 0x009C8FB8
     int slotBgm_ = 0;        // 0x009C90A8 (set to 0 by 0x0040AD70)
     int slotVoice_ = 1;      // 0x009C90AC (set to 1 by 0x0040AD70)
+    uint32_t previewMusicId_ = 0;
+    bool previewMusicPaused_ = false;
+    bool previewResumeOnActivate_ = false;
     // port volume settings
     void ApplyGain(int ch) { b_.SetGain(ch, vol_.gain[cat_[ch]]); }
     Volumes vol_;

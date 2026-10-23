@@ -25,12 +25,31 @@ with tempfile.TemporaryDirectory(prefix="hotd2-rank-client-") as tmp:
             while not stop.is_set():
                 try: packet,address=server.sock.recvfrom(65536)
                 except socket.timeout: continue
-                if packet[:6]==b"H2RK\x01\x01" and len(packet)==10:
+                ranking_header=packet[:5] in (b"H2RK\x01",b"H2RK\x02")
+                if ranking_header and packet[5:6]==b"\x01" and len(packet)==10:
+                    # This fixture exercises independent names/runs in one burst;
+                    # rate limiting has separate service tests.
+                    server.rankings.budgets.clear()
                     wrong_request=struct.pack("<I",(struct.unpack_from("<I",packet,6)[0]+1)&0xffffffff)
-                    server.send(b"H2RK\x01\x65"+wrong_request+bytes(16),address)
-                if packet[:6]==b"H2RK\x01\x02" and len(packet)==31:
+                    server.send(packet[:5]+b"\x65"+wrong_request+bytes(16),address)
+                    if packet[4]==2:
+                        server.send(b"H2RK\x01\x65"+packet[6:10]+bytes(16),address)
+                if ranking_header and packet[5:6]==b"\x02" and len(packet)==31:
                     # Matching request/build but impossible row count must be ignored.
-                    server.send(b"H2RK\x01\x66"+packet[6:15]+bytes([0,255]),address)
+                    server.send(packet[:5]+b"\x66"+packet[6:15]+bytes([0,255]),address)
+                    if packet[4]==2:
+                        result_header=packet[:5]+b"\x66"+packet[6:15]
+                        # A terminator followed by nonzero bytes is not canonical name padding.
+                        malformed=struct.pack("<12sIHBB",b"OK\x00BAD",123,0,1,1)
+                        server.send(result_header+bytes([0,1])+malformed,address)
+                        # A v1-width row is not a valid v2 response.
+                        server.send(result_header+bytes([0,1])+struct.pack("<3sIHBB",b"OLD",123,0,1,1),address)
+                        if packet[14]==9:
+                            # Exercise all 217 bytes of the largest valid response on
+                            # this local test socket. Other boards use the real service.
+                            rows=b"".join(struct.pack("<12sIHBB",f"LONG_NAME-{index:02}".encode(),100+index,0,1,1) for index in range(10))
+                            server.send(result_header+bytes([0,10])+rows,address)
+                            continue
                 server.handle(packet,address)
         except BaseException as error:
             errors.append(error);ready.set()

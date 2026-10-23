@@ -23,14 +23,31 @@ static game::WorldConfig Config() {
     return c;
 }
 static void Open(game::World& w, int row) {
-    w.Boot(Config()); Wait(w, 650); Step(w, 639, 0, false, 0, 8); Wait(w, 4);
+    auto c = Config();
+    if (row == 4) c.portModernMenu = false;  // the original ranking carousel belongs to Classic
+    w.Boot(c); Wait(w, 650); Step(w, 639, 0, false, 0, 8); Wait(w, 4);
     Check(w.GameMode() == 4, "main menu opens");
-    Step(w, 40, int(175.5 + row * 27), true); Wait(w, 600);
+    if (row == 4) {
+        for (int i = 0; i < 4; ++i) { Step(w, 639, 0, false, 0, 0x20); Step(w); }
+        Step(w, 639, 0, false, 0, 8);
+    } else {
+        Step(w, 40, row == 2 || row == 7 ? 211 : 175, true); Wait(w, 2);  // Practice or Play category
+        const int y = row == 1 ? 201 : row == 3 ? 246 : row == 2 ? 162 : row == 7 ? 214 : 156;
+        Step(w, 40, y, true);
+    }
+    Wait(w, 600);
 }
 static bool Sprite(const game::World& w, int id, float x = -1, float y = -1) {
     for (const auto& s : w.Hud().sprites)
         if (s.id == id && (x < 0 || s.x == x) && (y < 0 || s.y == y)) return true;
     return false;
+}
+static void InventoryScroll(const game::World& w, bool above, bool below) {
+    Check(w.Hud().menuScrollHints.size() == 1, "inventory supplies one current scroll cue");
+    const auto& hint = w.Hud().menuScrollHints[0];
+    Check(hint.left == 40 && hint.top == 74 && hint.right == 308 && hint.bottom == 294,
+          "inventory scroll cue stays within the stock list");
+    Check(hint.above == above && hint.below == below, "inventory scroll cue matches reachable stock rows");
 }
 static void Room(game::World& w, int choice, int stock = 3) {
     auto c = Config(); c.portNetworkRoom = true; c.gameMode = 6; c.gameOver = true;
@@ -62,13 +79,21 @@ int main(int argc, char** argv) {
     Check(!Sprite(w, 0x5E2), "shoot End starts Original game");
 
     Open(w, 1);
+    InventoryScroll(w, false, true);
     Step(w, 180, 304, true);
     const int scrolledItem = exe.S16(0x0059721C + 2);
     Check(Sprite(w, scrolledItem, 43, 78), "down arrow scrolls inventory without equipping");
+    InventoryScroll(w, true, true);
     Step(w, 180, 50, true);
     Check(Sprite(w, firstItem, 43, 78), "up arrow scrolls inventory back");
+    InventoryScroll(w, false, true);
+    for (int i = 0; i < 40; ++i) Step(w, 180, 304, true);
+    InventoryScroll(w, true, false);
+    Step(w, 180, 304, true);
+    InventoryScroll(w, true, false);
     Step(w, 50, 458, true); Wait(w, 3);
     Check(w.GameMode() == 4, "item Back button returns to main menu");
+    Check(w.Hud().menuScrollHints.empty(), "inventory scroll cue clears when leaving selection");
 
     Room(w, 1);
     Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5, "both players enter item select");

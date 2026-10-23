@@ -1,4 +1,5 @@
 # Complete LOCAL package from the user's own installation and extraction manifest.
+# Writes hotd2re-complete.zip and its .sha256 sidecar in the selected output directory.
 # Example: -GameDir R:/game -GameManifest R:/original/game-manifest.json
 # No input game files are changed. Existing output directories are always refused.
 [CmdletBinding()]

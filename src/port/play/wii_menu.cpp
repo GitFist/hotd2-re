@@ -1,4 +1,5 @@
 #include "wii_menu.h"
+#include "game/menu_audio.h"
 #include "game/menu_text.h"
 #include "play/device_menu_hud.h"
 #include <algorithm>
@@ -38,20 +39,22 @@ void ModernLines(game::WorldHud& hud, float x, float y, const std::string& value
     }
 }
 }
-bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes){
+bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes,std::vector<uint32_t>* sounds){
     if(!open_)return false;
+    auto sound=[&](uint32_t id){if(sounds)sounds->push_back(id);};
     bool back=in.start || (in.pressed&2) || in.reload;
     if(calibration_>=0){
         const auto& r=remotes.Status().player[player_];
         // B always captures a calibration target, even when rebound to Reload or Pause.
         const bool cancel=(in.pressed&2) || ((in.start || in.reload) && !(r.pressed&input::wii::B));
-        if(cancel){calibration_=-1;notice_="Calibration cancelled";return false;}
+        if(cancel){calibration_=-1;notice_="Calibration cancelled";sound(game::kOptionBackSound);return false;}
         if(!r.connected){calibration_=-1;notice_="Remote disconnected - connect and retry";return false;}
         if(!(r.buttons&input::wii::B))waitRelease_=false;
         if(!waitRelease_ && (r.pressed&input::wii::B)){
             waitRelease_=true;
             if(!r.tracking){notice_="Both sensor lights must be visible";return false;}
             samples_[calibration_++]=r.raw;notice_.clear();
+            sound(game::kOptionSelectSound);
             if(calibration_==4){
                 bool ok=remotes.settings.player[player_].calibration.Fit(samples_);calibration_=-1;
                 notice_=ok?"Calibration saved - test your aim":"Calibration failed - keep still and retry";
@@ -60,7 +63,7 @@ bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes){
         }
         return false;
     }
-    if(back){if(player_>=0){player_=-1;cursor_=0;pointer_={};}else Close();return false;}
+    if(back){if(player_>=0){player_=-1;cursor_=0;pointer_={};}else Close();sound(game::kOptionBackSound);return false;}
     int rows=player_<0?7:9,under=-1;
     if(in.pointer && in.px>=24 && in.px<616)for(int i=0;i<rows;++i)if(in.py>=RowY(i)+8 && in.py<RowY(i)+35)under=i;
     if(pointer_.Update(in.pointer,in.px,in.py,in.trigger) && under>=0)cursor_=under;
@@ -69,6 +72,8 @@ bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes){
     bool choose=(in.pressed&0xc) || (in.trigger && under==cursor_);
     int delta=(in.pressed&0x40)?-1:((in.pressed&0x80)||choose)?1:0;
     if(!delta)return false;
+    const bool valueRow=player_<0?(cursor_==0||cursor_==2):(cursor_>=1&&cursor_<=5);
+    if(valueRow||choose)sound((player_<0&&cursor_==6)||(player_>=0&&cursor_==8)?game::kOptionBackSound:game::kOptionSelectSound);
     notice_.clear();
     if(player_<0){
         switch(cursor_){

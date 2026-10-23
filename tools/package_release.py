@@ -273,7 +273,7 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     if kind == "public":
         (package_dir / "game/PUT_YOUR_GAME_FILES_HERE.txt").write_text("Copy your own House of the Dead 2 installation here: Hod2.exe and its data folders.\n", encoding="ascii")
     else:
-        (package_dir / "hotd2re_settings.ini").write_text("music=7\nguns=7\nsfx=7\ninput=mouse\nfullscreen=0\nscale=1\naspect=4:3\ncrt=0\nrender=1\nlobby=64.23.186.88:27020\n", encoding="ascii")
+        (package_dir / "hotd2re_settings.ini").write_text("master=5\nmusic=5\nguns=5\nsfx=5\nattraction=5\ninput=mouse\nfullscreen=0\nscale=1\naspect=4:3\ncrt=0\nrender=1\nlobby=64.23.186.88:27020\n", encoding="ascii")
     (package_dir / "README.txt").write_text(readme.replace("{{BUILD_LABEL}}", info["buildLabel"]).replace("{{ARCHITECTURE}}", architecture), encoding="utf-8")
     (package_dir / "BUILD.txt").write_text(f"Native Windows {architecture} / {info['peFormat']} ({info['machine']})\nBuild label: {info['buildLabel']}\nSource base revision: {revision['baseRevision']} ({revision['status']})\nhotd2.exe SHA256: {info['sha256']}\nPackage kind: {kind}; original game data included: {kind == 'complete'}\n", encoding="ascii")
     (package_dir / "CREDITS.txt").write_text("Native code, SDL and shader notices are retained in LICENSE-native-code.txt (when supplied), LICENSE-SDL.txt and THIRD_PARTY_NOTICES.txt.\nOptional runtime license/notice trees accompany their DLLs.\nOriginal game data retains its respective rights and is not covered by the native code license.\n", encoding="ascii")
@@ -282,7 +282,7 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
                     thirdPartyBuildPathExceptions=runtime_exceptions, game=game_metadata)
     write_manifest(package_dir, metadata)
     privacy_check(package_dir)
-    name = f"hotd2re-win-{architecture}{'-complete-local' if kind == 'complete' else ''}.zip"
+    name = "hotd2re-complete.zip" if kind == "complete" else f"hotd2re-win-{architecture}.zip"
     archive_path = out / name
     with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(package_dir.rglob("*")):

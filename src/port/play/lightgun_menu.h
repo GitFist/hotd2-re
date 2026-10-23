@@ -10,7 +10,7 @@ public:
     void Close(input::Lightguns& guns){open_=false;guns.CancelAssign();guns.ReleaseButtons();}
     bool IsOpen()const{return open_;}
     bool Capturing()const{return calibration_>=0||binding_>=0;}
-    Action Update(const MenuInput& in,input::Lightguns& guns,bool gunMode);
+    Action Update(const MenuInput& in,input::Lightguns& guns,bool gunMode,std::vector<uint32_t>* sounds=nullptr);
     void Sprites(const game::ExeImage& exe,const input::Lightguns& guns,bool gunMode,std::vector<game::SpriteDef>& out)const;
     void ModernHud(const input::Lightguns& guns,bool gunMode,game::WorldHud& hud)const;
     void Notice(const std::string& text){notice_=text;}

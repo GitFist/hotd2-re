@@ -268,6 +268,37 @@ bool Platform::Init(const Options& o, std::string* error) {
     return true;
 }
 
+bool Platform::ShowWindow(std::string* error) {
+    if (!impl_->window) return true;  // headless: do not initialize video or affect another window
+#ifdef _WIN32
+    const auto flags = SDL_GetWindowFlags(impl_->window);
+    const bool pendingFullscreen = (flags & SDL_WINDOW_HIDDEN) && (flags & SDL_WINDOW_FULLSCREEN);
+    // SDL temporarily uses its borderless-windowed style before applying pending fullscreen. Its Windows defaults
+    // retain WS_CAPTION/WS_THICKFRAME there, which can flash before the first GPU present. Suppress them only during
+    // this reveal; ordinary windowed mode keeps its decorations and the caller's effective hints are restored.
+    const char* hints[] = {"SDL_BORDERLESS_WINDOWED_STYLE", "SDL_BORDERLESS_RESIZABLE_STYLE"};
+    std::string previous[2];
+    bool hadPrevious[2] = {};
+    if (pendingFullscreen) for (int i = 0; i < 2; ++i) {
+        const char* value = SDL_GetHint(hints[i]);
+        hadPrevious[i] = value != nullptr;
+        if (value) previous[i] = value;
+        SDL_SetHintWithPriority(hints[i], "0", SDL_HINT_OVERRIDE);
+    }
+#endif
+    const bool shown = SDL_ShowWindow(impl_->window) && SDL_SyncWindow(impl_->window);
+    if (!shown && error) *error = std::string("Show window: ") + SDL_GetError();
+#ifdef _WIN32
+    if (pendingFullscreen) for (int i = 0; i < 2; ++i) {
+        SDL_ResetHint(hints[i]);
+        if (hadPrevious[i] && !SDL_SetHint(hints[i], previous[i].c_str()) &&
+            previous[i] != (SDL_GetHint(hints[i]) ? SDL_GetHint(hints[i]) : ""))
+            SDL_SetHintWithPriority(hints[i], previous[i].c_str(), SDL_HINT_OVERRIDE);
+    }
+#endif
+    return shown;
+}
+
 bool Platform::PollEvent(Event* e) {
     Impl& m = *impl_;
     if (!m.sdlVideo) return false;

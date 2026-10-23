@@ -50,10 +50,10 @@ struct ModesState {
     int8_t optHidden = 0;           // 0x007DD030 (item 3 shown)
     int16_t optScroll = -1;         // 0x007DD028
     int optKind[2] = {};            // 0x007DD01C / 0x007DD020 (players' input kinds when the screen opened)
-    // port only (play.exe, WorldConfig::portVolumes >= 0): the volume rows 11..13 (Music, Gun Shots, Sound Effects) of
+    // port only (play.exe, WorldConfig::portVolumes >= 0): Music, Gun Shots, Sound Effects, Master and Attraction volumes of
     // the options screen, 0..10; off in the exactness tests
     bool optPortRows = false;
-    int optVolume[3] = { 10, 10, 10 };
+    int optVolume[5] = { 5, 5, 5, 5, 5 };
     int optLightgunRequests = 0;
     int optWiiRequests = 0;
     int optDisplayRequests = 0;     // port only: times the "Display Settings" row (14) was confirmed; play.exe opens its

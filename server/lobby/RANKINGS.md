@@ -1,7 +1,8 @@
 # Optional shared leaderboards
 
-Shared results are **client-reported and unverified**. Three-letter initials are display
-names, not unique accounts. The server does not verify gameplay, ownership of initials,
+Shared results are **client-reported and unverified**. Online display names contain 1–12
+characters and are not unique accounts. Original local records still use three-character
+initials. The server does not verify gameplay, ownership of names,
 cheat-free runs or accuracy of client metadata. Do not label these trusted or competitive
 anti-cheat rankings. The client never uploads save history automatically; publishing a
 qualifying new result is an explicit player action.
@@ -20,7 +21,11 @@ python lobby_server.py --bind 127.0.0.1 --port 27020 --rankings-db records.sqlit
 Without `--rankings-db` or `RANKINGS_DB`, the ranking service reports disabled. Room/relay
 behavior is unchanged. A configured database is SQLite with transactional writes, WAL and
 FULL synchronous durability. Board storage is bounded to 1000 results per board/build and
-32 build values; operators can archive/reset a season by choosing a new database. The game
+32 build values; operators can archive/reset a season by choosing a new database. On startup,
+the server transactionally widens an existing three-byte `name` constraint to 1–12 bytes,
+preserving the `rankings_v1` table name, run IDs, scores, metadata and timestamps. The table
+rename, copy and index restoration commit together; failure leaves the old table intact.
+No manual data rewrite is required. The game
 partitions results by compatibility build ID. Different scoring/rules builds do not mix.
 
 For a deliberate Docker deployment, the optional overlay adds a persistent named volume:
@@ -50,26 +55,35 @@ tables, following the original presentation; a later explicit design can add sep
 difficulty/player filters. Score must be positive and fit within 2,000,000,000. Boss times
 are bounded to six hours; Horde completed rounds are 1..65535. Other boards use zero rounds.
 
-## UDP protocol, version 1
+## UDP protocol, versions 1 and 2
 
-All packets begin with `H2RK`, version byte 1, type byte, request ID u32 little-endian.
+All packets begin with `H2RK`, version byte 1 or 2, type byte, request ID u32 little-endian.
 Exact payload lengths are required. Unknown/oversized packets are ignored; the maximum
-ranking request is 128 bytes and maximum response is 127 bytes.
+ranking request is 128 bytes. Maximum responses are 127 bytes for v1 and 217 for v2.
+Replies use the request's version. Both versions share the same board/build records.
 
 | Type | Direction | Payload after request ID |
 |---|---|---|
 | 1 | Client hello | Empty |
 | 101 | Cookie | 16 bytes |
 | 2 | Query | build u32, board u8, cookie 16 bytes |
-| 102 | Results | build u32, board u8, status u8, count u8, count × 11-byte row |
-| 3 | Submit | build u32, board u8, initials 3 bytes, score u32, rounds u16, metadata u8, players u8, run ID 16 bytes, cookie 16 bytes |
+| 102 | Results | build u32, board u8, status u8, count u8, count × row (11 bytes v1 / 20 bytes v2) |
+| 3 | Submit | build u32, board u8, name (3 bytes v1 / 12 bytes v2), score u32, rounds u16, metadata u8, players u8, run ID 16 bytes, cookie 16 bytes |
 | 103 | Acknowledgement | status u8 |
 
-A row is initials 3 bytes, score/time u32, rounds u16, metadata u8 and players u8. At most
-ten rows are returned. Result status is 0 enabled, 3 disabled or 5 busy. Submit status is 0 stored,
+A row is a name field, score/time u32, rounds u16, metadata u8 and players u8. V1 retains
+its fixed three-character initials. V2 uses 12 bytes: shorter names have trailing NUL
+padding, while a 12-character name has no terminator. Embedded NUL or nonzero data after
+padding is invalid. The submit packet is 58 bytes in v1 and 67 bytes in v2; queries remain
+31 bytes. A v1 query abbreviates longer stored names to their first three characters and
+space-pads shorter names. If the first three characters are all spaces, it skips leading
+spaces so old clients still receive a nonblank name. Stored names are never shortened.
+
+At most ten rows are returned. Result status is 0 enabled, 3 disabled or 5 busy. Submit status is 0 stored,
 1 exact duplicate, 2 invalid/conflicting run ID, 3 disabled, 4 outside retained table, or
-5 busy/rate limited. Initials allow uppercase ASCII letters, digits, space, period,
-underscore and hyphen; an all-space name is rejected.
+5 busy/rate limited. Names allow uppercase ASCII letters, digits, space, period,
+underscore and hyphen; empty, all-space, non-ASCII and overlength names are rejected.
+Existing three-character names remain valid in both versions.
 
 The HMAC cookie binds the source address and UDP port to a five-minute bucket, accepting
 the current/previous bucket. It proves receipt at that endpoint, reducing spoofed requests
@@ -84,7 +98,7 @@ The client receives a positive monotonic `completionToken` for each new live run
 token is local bookkeeping and is never transmitted. Equal-valued independent runs get
 distinct run IDs; retrying the same completion, including after acceptance, keeps its
 original ID. An older completion cannot be republished. Once a submission payload has
-actually been sent, changing its initials is rejected with the original initials shown
+actually been sent, changing its name is rejected with the original name shown
 so an uncertain acknowledgement cannot create a duplicate. DNS or hello-only failures
 leave the unsent candidate editable.
 

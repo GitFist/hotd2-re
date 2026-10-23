@@ -12,7 +12,9 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 - **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
 - **Online co-op:** two-player rooms, public lobbies, private room codes, and reconnect support.
 - **Flexible controls:** mouse, touchpad, touch, in-game light-gun setup for two players, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
-- **Night Shift menus:** moving standby background, Home lobby preview, Play/Practice pages, leaderboards, graphics options, pause and device setup. Classic menus remain selectable.
+- **Night Shift menus:** the full original attract cycle plays behind the menus, including the title flythrough, how-to-play demonstration, gameplay demos and story scenes. Includes Home lobby preview, Play/Practice pages, leaderboards, graphics options, pause and device setup. Classic menus remain selectable.
+- **Extras audio library:** all 38 music tracks with descriptive names and Standard/Alternate version labels on the left, effects and dialogue on the right. Browse independently while recordings play once, with Play, Pause and Reset controls for each song.
+- **Extras model viewer:** browse game models and animations, rotate and zoom the view, and preview available character sound variations.
 - **Graphics options:** fullscreen/windowed display, AA and texture filtering, render scaling, optional lighting effects, CRT, red/green blood and separate optional 2× textures. Supported x64 hardware can use vendor upscaling/frame generation and experimental ray shadows.
 - Graphics reset, menu opacity, Hide UI for live inspection, and saved gameplay crosshair visibility. The system mouse cursor hides during play; manual pause remains available while switching windows keeps the game and sound running.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
@@ -22,13 +24,13 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device for the main download. Optional Direct3D 12/vendor features require compatible hardware; the separate x86 build has fewer advanced graphics features.
 
-1. Download **hotd2re-multiplayer-complete.zip** from the [latest release](https://github.com/GitFist/hotd2-re/releases/latest).
+1. Download **hotd2re-complete.zip** from the [latest release](https://github.com/GitFist/hotd2-re/releases/latest).
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-Build A adds Night Shift menus and optional modern graphics, room cancellation fixes, graphics reset, crosshair/cursor controls and updated Wii/light-gun pages. It also fixes sound on launches with custom game paths or options. The creature, Emperor, smoke, scenery and skipped-dialogue corrections from Build Z remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+Build E adds automatic online-name entry after completed runs, working shared leaderboards with 12-character names, all 38 named music tracks, the Extras model viewer and audio library, master and attraction volume controls, visible scroll hints, and host-controlled online difficulty. Menus stay sharp independently of gameplay render scale, and the startup window stays hidden until its first frame is ready. Earlier Night Shift features and the creature, Emperor, smoke, scenery and skipped-dialogue corrections remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
@@ -51,7 +53,7 @@ Use **Pause → Return to Lobby** to choose another mode together. After a disco
 
 Connections use a direct route when available, with an automatic server relay fallback.
 
-Home's **Leaderboard** page offers local Arcade, Original, Horde and individual Boss Mode records. Shared records are unverified and publishing a new run is manual. The public rankings service update is pending deployment, so shared queries/publishing may be unavailable until the matching service is installed. Local records work offline.
+Home's **Leaderboard** page offers local Arcade, Original, Horde and individual Boss Mode records. After an eligible run's results and local initials screens finish, an online-name prompt appears automatically in both menu styles. Enter up to 12 characters using typing or the on-screen keyboard, then **Publish** or **Skip**. The prompt shows submission success or an error with a retry; opening it never uploads a score. Local initials remain three characters. Online names allow letters, numbers, spaces, periods, underscores and hyphens. Shared records are unverified and stored persistently; **Publish New Run** remains available as a manual fallback. Local records work offline.
 
 ## Controls
 
@@ -68,6 +70,18 @@ Home's **Leaderboard** page offers local Arcade, Original, Horde and individual 
 | Quit | Main menu **Exit** or close the window |
 
 Open **Options > Game Options > Light Guns** or **Pause > Light Guns** to switch between mouse/touchpad input and light guns, assign Player 1 and Player 2, remap buttons, calibrate aim, and test both guns. Classic menus retain **Options > Light Guns**. See the [light-gun setup guide](docs/LIGHT-GUNS.md).
+
+Open **Extras** below **Online** on Home to preview the audio library (Classic also has an Extras entry). All **38 music tracks** retain their original preview numbers and have descriptive names. **Standard** and **Alternate** distinguish the two recordings of a theme; for example, 01 and 17 are the two Chapter 1 versions. Click or shoot a recording, or select it with the arrows and press Enter, to play it once. Wheel scrolling and the Prev/Next buttons browse each list without stopping playback. Each song has **Play** to start/resume, **Pause**, and **Reset** to rewind and stop; selecting its name restarts it. Left/right moves between music controls and the effects list. Effect names come from the game's audio files. Escape, reload or **Back** stops previews and returns to the main menu. Audio volumes remain in Game Options.
+
+**Master Volume** controls all game, menu, Extras and attraction audio. Its logarithmic scale starts at -45 dB for 1 and rises in even 5 dB steps to full volume at 10; 0 is an exact mute. **Attraction Volume** controls the Modern menu's background demo music, voices and effects independently of the gameplay category sliders. All five volume controls default to **5 / 10**. Existing saved choices are retained. Both controls are in **Game Options** and **Pause**, update immediately, and persist in the settings file. The attraction loop falls silent in Extras and when you start playing.
+
+**Extras > Model Viewer** contains Agents, Civilians, 35 enemy and creature appearances, and Bosses, including Goldman. Creatures include both Murrer appearances, the Kageo J half-body crawler, bats, owls, fish and the ambient moth. Drag the model list's scrollbar to browse; clicking the scrollbar track moves a page. Select a character to view it against black. Click the animation name to open a clip list with its own draggable scrollbar; the wheel scrolls that list while the current clip keeps playing. Left-drag rotates/tilts; middle-drag raises/lowers the camera. A/D or Left/Right rotate, W/S or Up/Down adjust height, and the wheel outside the clip list or Q/E zoom. R restores the camera. Page Up/Down selects an animation; Enter/Space toggles playback, with Play/Pause/Reset buttons also available. Animations loop with their authored motion sound cues. Escape, reload or Back closes the clip list, returns to the model list, then Extras.
+
+Every Model Viewer clip starts centered above the controls and remains centered as its pose changes. Selecting a clip or pressing Reset clears vertical panning while retaining your rotation and zoom. The **Mute / Unmute** button or **M** silences viewer sounds immediately without pausing animation or changing game volume settings; the choice stays active while browsing models. Native attack, reaction, civilian, weapon and boss cues use their original timing. Held one-frame poses play their cue once, and sustained effects stop on pause, mute, clip changes and exit.
+
+Zombie previews randomly select their original attack and impact variants for each occurrence, using the correct voice group. Choices are independent, as in gameplay, so an occasional repeat is possible. The approach groan is the original shared recording.
+
+Scrollable lists in Options, the audio previews, the model browser and the Original-mode inventory show a soft edge fade and arrow wherever more items remain. Each cue disappears at that end of the list; short lists show neither cue. Existing scroll buttons, wheel and keyboard navigation remain available.
 
 Choose **Blood Color: Green / Red** on the graphics menu's **Color** page. The change applies immediately and is saved locally; online players can choose independently.
 

@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "game/anim.h"          // Mat4
+#include "game/menu_scroll.h"
 #include "game/stage_results.h"
 #include "game/event_runner.h"  // EventRunner::Exec
 #include "game/sprite.h"        // SpriteDef
@@ -186,6 +187,7 @@ struct PortHomeRoom {
     uint32_t id = 0;
     bool privateRoom = false, unlimited = true;
     uint32_t build = 0;
+    int difficulty = -1;  // 0..4; older directory advertisements do not supply a difficulty
 };
 
 struct WorldHud {
@@ -194,14 +196,15 @@ struct WorldHud {
     std::vector<MenuPanel> menuPanels;
     struct MenuText { float x, y; std::string text; float scale; uint32_t color; };
     std::vector<MenuText> menuText;
-    int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 Publish initials, 5 Options, 6 Online, 7 Game Options, 8 Pause
+    std::vector<MenuScrollHint> menuScrollHints;
+    int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 Publish online name, 5 Options, 6 Online, 7 Game Options, 8 Pause, 9 Extras
     int nightShiftRow = 0;
     int portLobbyRequests = 0, portLobbyAction = 0;  // existing network pages: 1 Create, 2 Browse, 3 Peer
     uint32_t portLobbyRoom = 0;  // action 4: a real waiting room selected on Home
     int portLeaderboardRequests = 0, portLeaderboardTable = 0;
     bool portLeaderboardShared = false;
     int portLeaderboardPublishRequests = 0;
-    std::string portLeaderboardInitials = "AMS";
+    std::string portLeaderboardInitials;  // online display name, 1..12 characters; native save initials stay separate
     int letterbox = 0;        // 0x009CA0F4 after the letterbox task (2 open; 1 opening; 4 bars)
     bool canShoot = false;    // 0x009C8E00 (letterbox open: shots count, ammo / reload HUD shown)
     int letterboxCounter = 0; // letterbox task +0x50 (0..40 while opening / closing)
@@ -220,7 +223,7 @@ struct WorldHud {
     bool paused = false;      // 0x009A1A00: start pressed by a playing player (0x0040E500); no task ran this frame.
                               // The original draws a dark overlay (model 0x93E, alpha 0.5) and "PAUSE" 0x8E7 / 0x8E8
     int pausePlayer = 0;      // 0x007C1792: who paused (sprite 0x8E7 at x 160 for P1, 0x8E8 at x 480 for P2, y 240)
-    int portVolumes[3] = { -1, -1, -1 };  // port only: the options screen's volume rows (WorldConfig::portVolumes), -1 = none
+    int portVolumes[5] = { -1, -1, -1, -1, -1 };  // port only: Music, Guns, Effects, Master, Attraction; -1 = none
     int netState = 0;         // game mode 15 (the network lobby, world_modes_net.cpp): its state (1 menu, 3 create, 4 join ...)
     StageResults stageResults;
     uint32_t randomizerSeed = 0, randomizerHash = 0;  // port-only lockstep/recovery checks
@@ -228,6 +231,7 @@ struct WorldHud {
     int portLightgunRequests = 0; // opens the local light-gun setup page
     int portDisplayPage = -1;  // Night Shift: 0 Display, 1 Image, 2 Lighting, 3 System, 4 Packs
     int portWiiRequests = 0; // opens the local native Wii Remote setup page
+    int portModelViewerRequests = 0; // Extras opens the local model gallery
     int portDisplayRequests = 0;  // port only: the options screen's "Display Settings" row confirmed that many times (play.exe
                                   // shows its display page over the screen while the row count grows)
     int credits = 0;          // 0x009C8E60 (shared credits; a join / continue without free play takes coinsStart /
@@ -416,9 +420,9 @@ struct WorldConfig {
     // Test setup: bytes written into the loaded save block (original addresses 0x009C9120..) before Boot copies it out;
     // the counterpart of the capture hook's HOTD2_POKE (e.g. training grades 0x009C9F29)
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> savePatch;
-    // Port only (play.exe): the options screen (game mode 12) gets three volume rows, Music / Gun Shots / Sound Effects
+    // Port only (play.exe): the options screen (game mode 12) gets Music / Gun Shots / Sound Effects / Master / Attraction
     // 0..10, starting from these values; -1 = no such rows (the original's screen, as the exactness tests expect).
-    int portVolumes[3] = { -1, -1, -1 };
+    int portVolumes[5] = { -1, -1, -1, 5, 5 };
     // Port only (play.exe): behaviour the original lacks, off in the exactness tests: a back button (the selects' back
     // mask 0x00589170: reload / Backspace) on the original-mode item select, back to the mode select; the mode select's
     // "Scene Select" entry (before Exit) and its page, an arcade game started at a chosen chapter
@@ -427,12 +431,23 @@ struct WorldConfig {
     bool portFeatures = false;
     // Port only, with portFeatures: Night Shift Home / Play / Practice / Leaderboard,
     // using the original logo and glyphs with full-row mouse/gun and keyboard input.
-    // play.exe renders a separate silent original attract World behind this menu.
+    // play.exe renders a separate original attract World behind this menu, with its own volume.
     // false preserves the original bitmap menu and exactness-test behavior.
     bool portModernMenu = false;
     // A connected online room: host-owned mode selection, retained between games and during rejoin replay.
     bool portNetworkRoom = false;
     bool portStageResults = false;  // chapter totals and a skippable results page; off in original-exactness tests
+};
+
+// Save-backed gameplay controls exposed to the port's unified Options tabs. Lives are the visible 1..5 value;
+// credits == 0 means the existing unlock-gated Free Play choice. Availability is output-only metadata.
+struct PortGameOptions {
+    int difficulty = 2;
+    int lives = 3;
+    int credits = 5;
+    int crosshair[2] = {0, 0};
+    bool freePlayUnlocked = false;
+    bool editable = false;
 };
 
 class World {
@@ -468,7 +483,12 @@ public:
     void RequestTitle();
     // Port only: the current volume settings (0..10 each) for the options screen's volume rows (WorldConfig::portVolumes),
     // e.g. after the pause menu changed them.
-    void SetPortVolumes(const int v[3]);
+    void SetPortVolumes(const int v[5]);
+    // These touch only gameplay preference bytes in the existing save; scores, unlocks and device calibration stay
+    // intact. Edits are available in idle local front-end menus, and apply to the next game. False = blocked/invalid.
+    PortGameOptions GetPortGameOptions() const;
+    bool SetPortGameOptions(const PortGameOptions& options);
+    bool ResetPortGameOptions();
     // Port only: WorldConfig::portModernMenu after Boot (the display settings page changed it); the mode select's
     // task reads it every frame.
     void SetPortModernMenu(bool on);
@@ -476,10 +496,12 @@ public:
     HordeRunSnapshot PortHordeRun() const;
     void SetPortSharedLeaderboard(int table, const std::vector<SharedLeaderboardEntry>& entries, const std::string& status);
     void SetPortLeaderboardPublishable(bool on, const std::string& status = "");
+    void EditPortLeaderboardName(const std::string& text, bool backspace = false);  // active online name dialog only
     void SetPortLeaderboardRecording(bool on);  // port disables this for scripts, replay and debug runs
     LeaderboardRunSnapshot PortLeaderboardRun() const;
     // The port supplies only compatible real waiting rooms; at most two are displayed.
     void SetPortHomeRooms(const std::vector<PortHomeRoom>& rooms, const std::string& status);
+    void ScrollPortExtras(int rows, int column = -1);  // local wheel input; consumed once by the Extras page
     // Test hook (frontend_test --resync): commit game mode `mode` now, as Game_ApplyState would at the end of this
     // frame, with the task serial counter, CRT rand state and demo index the capture shows, so that a mode can be
     // compared on its own after an earlier mode drifted.
@@ -571,6 +593,13 @@ public:
         kStopAll = 1,    // Snd_StopAll 0x0041D350 (mode / scene changes)
         kCommand = 2,    // Snd_Command 0x004ABF80(_, id, _) (pause, civilian scream)
         kStopSlot = 3,   // Snd_StopSlot 0x0041D4F0(id) (pause)
+        kOptionFeedback = 4,  // Port-only UI feedback; survives menu scene changes, separate from sound previews.
+        kPreviewMusicStart = 5,
+        kPreviewMusicPlay = 6,
+        kPreviewMusicPause = 7,
+        kPreviewMusicReset = 8,
+        kPreviewEffect = 9,
+        kPreviewStop = 10,
     };
     struct SoundEvent {
         uint32_t id;

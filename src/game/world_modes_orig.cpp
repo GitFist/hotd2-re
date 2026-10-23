@@ -168,6 +168,8 @@ void ItemPointer(World::Impl& w, ItemSelect& s) {
 void Draw2D(World::Impl& w, ItemSelect& s) {
     ModesState& m = *w.modes;
     const ExeImage& exe = w.exe;
+    if (w.cfg.portFeatures)
+        w.hud.menuScrollHints.push_back({40, 74, 308, 294, s.scroll > 0, s.scroll < LastItemScroll(m)});
     Spr(w, 0x5E6, 320.0f, 374.0f, 1.0f, 1, 1, 0, 10);
     Spr(w, 0x5E2, 126.0f, 24.0f, 1.0f);
     Spr(w, 0x5F3, 32.0f, 56.0f, 3.0f, Bits(0x3F99999A), 1.0f);

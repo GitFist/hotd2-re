@@ -432,7 +432,9 @@ static std::vector<uint8_t> LobbyHeader(uint8_t type) {
     return p;
 }
 
-void Session::LobbyCreate(uint8_t flags) {
+void Session::LobbyCreate(uint8_t flags, int difficulty) {
+    if (difficulty != -1)
+        flags = static_cast<uint8_t>((flags & ~kRoomDifficultyMask) | RoomDifficultyFlags(difficulty));
     flags |= kRoomRelay | kRoomRejoin;
     lobbyFlags_ = flags;
     lobbyHosting_ = true;
@@ -713,7 +715,7 @@ void Session::SendWelcome() {
     Put32(p, static_cast<uint32_t>(config_.credits));
     Put32(p, config_.seed);
     Put32(p, config_.firstSerial);
-    for (int k = 0; k < 3; ++k) Put32(p, static_cast<uint32_t>(config_.portVolumes[k]));
+    for (int volume : config_.portVolumes) Put32(p, static_cast<uint32_t>(volume));
     Put8(p, config_.flags);
     Put8(p, config_.delay);
     Put32(p, config_.startFrame);
@@ -898,20 +900,20 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
         break;
     case kKeepalive: break;
     case kWelcome: {
-        if (host_ || n < 4 + 4 * 6 + 2 + 4 + 2) break;
+        if (host_ || n < 4 + 4 * 8 + 2 + 4 + 2) break;
         remoteBuild_ = Get32(d);
         d += 4;
         SessionConfig c;
         c.credits = static_cast<int32_t>(Get32(d));
         c.seed = Get32(d + 4);
         c.firstSerial = Get32(d + 8);
-        for (int k = 0; k < 3; ++k) c.portVolumes[k] = static_cast<int32_t>(Get32(d + 12 + 4 * k));
-        c.flags = d[24];
-        c.delay = d[25];
-        c.startFrame = Get32(d + 26);
-        const size_t saveLen = Get16(d + 30);
-        if (32 + saveLen > n - 4) break;
-        c.save.assign(d + 32, d + 32 + saveLen);
+        for (int k = 0; k < 5; ++k) c.portVolumes[k] = static_cast<int32_t>(Get32(d + 12 + 4 * k));
+        c.flags = d[32];
+        c.delay = d[33];
+        c.startFrame = Get32(d + 34);
+        const size_t saveLen = Get16(d + 38);
+        if (40 + saveLen > n - 4) break;
+        c.save.assign(d + 40, d + 40 + saveLen);
         if (BuildMismatch()) break;  // never connected: the lobby says why
         if (!connected_) {
             config_ = c;  // the first welcome decides (repeats are identical)
@@ -1161,17 +1163,17 @@ void Session::Reset() {
 namespace {
 void PutConfig(std::vector<uint8_t>& p, const SessionConfig& c) {
     Put32(p, static_cast<uint32_t>(c.credits)); Put32(p, c.seed); Put32(p, c.firstSerial);
-    for (int k = 0; k < 3; ++k) Put32(p, static_cast<uint32_t>(c.portVolumes[k]));
+    for (int volume : c.portVolumes) Put32(p, static_cast<uint32_t>(volume));
     Put8(p, c.flags); Put8(p, c.delay); Put32(p, c.startFrame);
     Put16(p, static_cast<uint32_t>(c.save.size())); p.insert(p.end(), c.save.begin(), c.save.end());
 }
 bool ReadConfig(const uint8_t* d, size_t n, SessionConfig& c) {
-    if (n < 32 || Get16(d + 30) > 60000 || n != 32 + Get16(d + 30) || d[25] < 1 || d[25] > 10) return false;
+    if (n < 40 || Get16(d + 38) > 60000 || n != 40 + Get16(d + 38) || d[33] < 1 || d[33] > 10) return false;
     c.credits = static_cast<int32_t>(Get32(d)); c.seed = Get32(d + 4); c.firstSerial = Get32(d + 8);
-    for (int k = 0; k < 3; ++k) c.portVolumes[k] = static_cast<int32_t>(Get32(d + 12 + 4 * k));
-    c.flags = d[24]; c.delay = d[25]; c.startFrame = Get32(d + 26);
+    for (int k = 0; k < 5; ++k) c.portVolumes[k] = static_cast<int32_t>(Get32(d + 12 + 4 * k));
+    c.flags = d[32]; c.delay = d[33]; c.startFrame = Get32(d + 34);
     if (c.startFrame > 1000000) return false;
-    c.save.assign(d + 32, d + n);
+    c.save.assign(d + 40, d + n);
     return true;
 }
 std::vector<uint8_t> ReadTicket(const std::string& path, uint32_t build) {
@@ -1333,7 +1335,7 @@ void Session::OnRecoveryPacket(uint8_t type, const uint8_t* d, size_t n) {
     if (n < 4 || Get32(d) != recoveryNonce_) return;
     if (type == 8 && CatchingUp() && waitingInfo_) {
         SessionConfig c;
-        if (n < 48 || Get32(d + 4) != build_ || !ReadConfig(d + 16, n - 16, c)) return;
+        if (n < 56 || Get32(d + 4) != build_ || !ReadConfig(d + 16, n - 16, c)) return;
         const uint32_t end = Get32(d + 12);
         if (end < c.startFrame || end - c.startFrame > kMaxHistory) return;
         config_ = c; initialHash_ = Get32(d + 8); advertisedEnd_ = end;

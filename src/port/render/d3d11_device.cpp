@@ -84,7 +84,8 @@ public:
     bool ReadLinearPresentation(int width,int height,std::vector<float>* rgba) override;
     bool ReadMotionPixels(std::vector<float>* rgba) override;
     bool NeedsShadowCasters() const override {return graphics_.shadowMaps>0||graphics_.volumetricFog>0;}
-    bool RequiresSceneProcessing() const override {return graphics_.temporalAA||SceneEffectsEnabled(graphics_)||graphics_.outputResolutionHud;}
+    void SetMenuOverlay(bool enabled) override {menuOverlay_=enabled;}
+    bool RequiresSceneProcessing() const override {return graphics_.temporalAA||SceneEffectsEnabled(graphics_)||graphics_.outputResolutionHud||menuOverlay_;}
     bool ProcessScene(std::string* error=nullptr) override;
     bool SetGpuTimingEnabled(bool enabled,std::string* error=nullptr) override;
     bool PollGpuTiming(GpuTimingSample* sample) override;
@@ -242,7 +243,7 @@ private:
     PostTarget hudColor_;
     ComPtr<ID3D11Texture2D> hudDepth_;
     ComPtr<ID3D11DepthStencilView> hudDsv_;
-    bool hudReady_=false;
+    bool hudReady_=false,menuOverlay_=false;
     std::string hudError_;
     bool EnsureSceneEffects(std::string* error=nullptr);
     void DrawReflectionSurface(const GpuDrawList&);

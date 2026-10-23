@@ -1077,6 +1077,14 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         bool randomizerStart = false;  // Original mode with a randomized campaign
         int nightShiftPage = 0, nightShiftRow = 0, nightShiftTable = 0;
         int nightShiftAimX = -1, nightShiftAimY = -1;
+        struct Recording { uint32_t id; std::string name; };
+        std::vector<Recording> extrasMusic, extrasEffects;
+        bool extrasLoaded = false;
+        int modelViewerRequests = 0;
+        int extrasPage = 0;  // 0 hub, 1 Music Player, 2 Sound Effects; Model Viewer is a separate port modal.
+        int extrasColumn = 0, extrasControl = 0, extrasRow[2] = {}, extrasTop[2] = {};
+        int extrasWheel = 0, extrasWheelColumn = -1;
+        int extrasAimX[2] = {-1,-1}, extrasAimY[2] = {-1,-1};
         int portLobbyRequests = 0, portLobbyAction = 0;
         uint32_t portLobbyRoom = 0;
         std::vector<PortHomeRoom> homeRooms;
@@ -1089,7 +1097,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         int portLeaderboardPublishRequests = 0, publishCursor = 0;
         bool leaderboardPublishable = false;
         std::string leaderboardPublishStatus;
-        std::string leaderboardInitials = "AMS";
+        std::string leaderboardInitials;  // online name; never stored in the original three-letter save fields
         int nightShiftDisplayRequests = 0, nightShiftDisplayPage = 0, nightShiftReturnPage = 0;
         // how-to-play (mode 9, 0x004996C0)
         int tutEnd = 0;                // 0x007DD164 (camera tick > 0xE6: end the mode)

@@ -15,21 +15,27 @@ launches with a custom game-folder path or command-line options.
 NIGHT SHIFT MENUS
 Home uses the game's moving standby preview. Play contains Arcade, Original, Boss Mode
 (time attack), Horde and Randomizer. Practice contains Training and Scene Select.
-Home also offers Leaderboard, Online, Options and Exit. Host Online, Browse Lobby and
+Home also offers Leaderboard, Online, Extras, Options and Exit. Host Online, Browse Lobby and
 Peer to Peer are directly accessible beside the waiting-room preview.
 Options > Game Options contains game rules, sound controls and Wii Remote / Light Gun setup.
 The graphics menu's Display > Menu Style selects Night Shift or Classic for the next launch.
 Classic changes menu appearance while retaining the same supported graphics settings.
+Menus stay sharp at display resolution independently of gameplay render scale. Faded edges
+and scroll indicators show when more list items are available above or below.
+Extras includes all 38 named music tracks, effects/dialogue previews, and a model viewer.
+Master volume has a gradual scale with quieter low levels. Attraction volume controls the
+background menu loop separately from gameplay music, gunfire and effects.
 
 ONLINE TWO-PLAYER
 Both players should use this same package.
 1. Use Home > Host Online to host, or Online to open all network choices.
    With Classic menus, choose Network from mode select.
-2. The host chooses Unlimited Continues and Private Room, then Start.
+2. The host chooses difficulty, Unlimited Continues and Private Room, then Start.
 3. The other player selects BROWSE LOBBY and picks the host's room.
 4. Public rooms need no code. Private rooms appear in the list but require the host's 5-digit code.
 5. Both players enter the shared lobby. The creator (player 1) chooses ARCADE, ORIGINAL,
    SCENE SELECTION, BOSS MODE, HORDE MODE, or RANDOMIZER. Chapter and boss selections are controlled by the host.
+   The host can change difficulty in the shared lobby; both players use that setting.
 6. Pause > Return to Lobby brings BOTH players back to that room to choose another mode.
    The room and player slots stay connected. Leave Room (or Esc in the lobby) ends the room.
 
@@ -63,10 +69,13 @@ LEADERBOARD
 Home > Leaderboard contains Arcade, Original, Horde and individual Boss Mode tables.
 Source: Local shows your own records. Source: Online queries the shared service.
 Shared records are unverified, client-reported results, not anti-cheat rankings.
-Publishing is manual: finish an eligible new run, choose Publish New Run, enter initials
-and confirm. Opening the page does not automatically publish existing saves.
-The public rankings service update is pending deployment; shared queries and publishing
-may remain unavailable until the matching service is installed. Local records work offline.
+After an eligible run's results and local initials screens, the online name prompt opens
+automatically. Enter a name of 1-12 characters, then Publish or Skip. Failed submissions can
+be retried in the prompt; Publish New Run remains a fallback. Type or use the on-screen
+keyboard. Letters, numbers, spaces, periods, underscores and hyphens are supported.
+Local initials stay three characters.
+Opening the page never publishes your save automatically. The public service stores shared
+records persistently; older clients display abbreviated names. Local records work offline.
 
 UPDATES AND EXISTING SAVES
 Normal launches check the official GitHub release page once in the background. A newer

@@ -81,12 +81,19 @@ static std::vector<EvtSound> ScanEvt(const SoundTable& t, const fs::path& dir) {
 
 // Fake DirectSound layer with the rules of 0x004A3EF0 / 0x004A4BE0 / 0x004A34B0 / ...
 struct FakeBackend : SoundBackend {
-    struct Ch { bool buffer = false, streamed = false, playing = false, loop = false; std::string path; };
+    struct Ch {
+        bool buffer = false, streamed = false, playing = false, loop = false;
+        std::string path;
+        int position = 0;
+        bool paused = false;
+    };
     Ch ch[kSndChannels];
     std::set<std::string> missing;
     int opens = 0, dups = 0;
+    float gains[kSndChannels] = {};
     bool Open(int c, const std::string& p, bool s) override {
-        if (ch[c].buffer || missing.count(p) || IsOffName(p)) return false;
+        // Missing files are fixture data, not a naming rule: DRIVE_OFF_22.wav is a real playable recording.
+        if (ch[c].buffer || missing.count(p)) return false;
         ch[c] = {true, s, false, false, p};
         ++opens;
         return true;
@@ -100,19 +107,157 @@ struct FakeBackend : SoundBackend {
     }
     bool Play(int c, bool loop) override {
         if (!ch[c].buffer) return false;
+        if (!ch[c].paused || ch[c].loop != loop) ch[c].position = 0;
         ch[c].playing = true;
         ch[c].loop = loop;
+        ch[c].paused = false;
         return true;
     }
-    void Pause(int c) override { ch[c].playing = false; }
-    void Stop(int c) override { ch[c].playing = false; }
+    void Pause(int c) override { ch[c].paused = ch[c].playing; ch[c].playing = false; }
+    void Stop(int c) override { ch[c].playing = ch[c].paused = false; ch[c].position = 0; }
     void Release(int c) override { ch[c] = {}; }
     bool IsPlaying(int c) override { return ch[c].playing; }
+    void SetGain(int c, float gain) override { gains[c] = gain; }
     void FinishAll() {  // one-shots end
         for (Ch& x : ch)
-            if (!x.loop) x.playing = false;
+            if (!x.loop) x.playing = x.paused = false;
     }
 };
+
+static void OptionFeedbackScenarios(const ExeImage& exe, const SoundTable& table) {
+    CHECK(exe.U32(0x00569798 + 74 * 8) == kOptionSelectSound);
+    CHECK(exe.U32(0x00569798 + 76 * 8) == kOptionBackSound);
+    FakeBackend backend;
+    SoundDriver driver(backend);
+    SoundDriver::Volumes volume;
+    volume.gain[SoundDriver::kSfx] = 0.4f;
+    driver.SetVolumes(volume);
+    PlaySoundEvent(driver, table, {kOptionSelectSound, 0, World::kOptionFeedback, 12, 0});
+    CHECK(backend.ch[kOptionSoundChannel].playing);
+    CHECK(backend.ch[kOptionSoundChannel].path == "Sound\\SE\\DC_SE\\OK1_22.wav");
+    CHECK(!backend.ch[kOptionSoundChannel].loop && backend.gains[kOptionSoundChannel] == 0.4f);
+    // Entering/leaving a real Options mode stops ordinary scene sounds on the following tick.
+    PlaySoundEvent(driver, table, {0, 0, World::kStopAll, 12, 0});
+    CHECK(backend.ch[kOptionSoundChannel].playing);
+    // Previewing these same recordings is still a regular SE, with normal preview-stop behavior.
+    PlaySoundEvent(driver, table, {kOptionSelectSound, 0, World::kPlayGameSound, 12, 0});
+    bool previewPlaying = false;
+    for (int ch = 0; ch < kSndSeChannels; ++ch)
+        previewPlaying |= backend.ch[ch].playing && backend.ch[ch].path == "Sound\\SE\\DC_SE\\OK1_22.wav";
+    CHECK(previewPlaying);
+    driver.PlayGameSound(table, 0x80000001);
+    for (int ch = 0; ch < kSndSeChannels; ++ch) CHECK(!backend.ch[ch].playing);
+    CHECK(backend.ch[kOptionSoundChannel].playing);
+    PlaySoundEvent(driver, table, {kOptionBackSound, 0, World::kOptionFeedback, 12, 0});
+    CHECK(backend.ch[kOptionSoundChannel].playing);
+    CHECK(backend.ch[kOptionSoundChannel].path == "Sound\\SE\\DC_SE\\RET_OPTION_22.wav");
+    CHECK(backend.opens == 3 && backend.dups == 0);
+    volume.gain[SoundDriver::kSfx] = 0;
+    driver.SetVolumes(volume);
+    CHECK(backend.gains[kOptionSoundChannel] == 0);
+    const int opens = backend.opens;
+    PlayOptionSound(driver, table, 0x10000001);
+    CHECK(backend.opens == opens);  // Only the two requested feedback commands use this channel.
+}
+
+static void PreviewScenarios(const ExeImage& exe, const SoundTable& table) {
+    FakeBackend backend;
+    SoundDriver driver(backend);
+    constexpr uint32_t first = 0x10000001, second = 0x10000000;
+    auto event = [&](int kind, uint32_t id = 0) { PlaySoundEvent(driver, table, {id, 0, kind, 4, 0}); };
+    auto& music = backend.ch[kSndBgmChannel];
+    auto& effect = backend.ch[SoundDriver::kPreviewEffectChannel];
+    SoundDriver::Volumes volume;
+    volume.gain[SoundDriver::kMusic] = 0.6f;
+    volume.gain[SoundDriver::kSfx] = 0.4f;
+    driver.SetVolumes(volume);
+
+    event(World::kPreviewMusicStart, first);
+    CHECK(music.playing && music.streamed && !music.loop && music.path == "Sound\\BGM\\ST1_AR.WAV");
+    CHECK(backend.gains[kSndBgmChannel] == 0.6f);
+    music.position = 123;
+    event(World::kPreviewMusicPlay, first);
+    CHECK(music.playing && music.position == 123);  // Play on an already-playing song does not restart it.
+    event(World::kPreviewMusicPause, second);
+    event(World::kPreviewMusicReset, second);
+    CHECK(music.playing && music.position == 123);  // Controls on another row leave this recording alone.
+    event(World::kPreviewMusicPause, first);
+    CHECK(!music.playing && music.paused && music.position == 123);
+    const int opens = backend.opens;
+    driver.OnActivate(false);
+    driver.OnActivate(true);
+    CHECK(!music.playing && music.paused);  // Modal suspension cannot undo the user's Pause.
+    event(World::kPreviewMusicPlay, first);
+    CHECK(music.playing && !music.loop && music.position == 123 && backend.opens == opens);
+    driver.OnActivate(false);
+    driver.OnActivate(true);
+    CHECK(music.playing && !music.loop && music.position == 123);
+
+    event(World::kPreviewEffect, 0x002118A9);  // Normally-looping rain effect still plays only once in Extras.
+    CHECK(effect.playing && !effect.loop && effect.path == "Sound\\SE\\STAGE1_SE\\RAIN3ST_44.wav");
+    CHECK(backend.gains[SoundDriver::kPreviewEffectChannel] == 0.4f);
+    CHECK(music.playing && music.position == 123);
+    event(World::kPreviewEffect, 0x2000009D);  // Voice previews share the effects column without interrupting BGM.
+    CHECK(effect.playing && !effect.loop && effect.path == "Sound\\Voice\\ST2\\67_YNG_M.WAV");
+    CHECK(music.playing && music.position == 123);
+    const int opened = backend.opens;
+    for (uint32_t invalid : {0u, 0x80000000u, 0x80000001u, 0x002218A9u, first})
+        event(World::kPreviewEffect, invalid);
+    CHECK(backend.opens == opened && music.playing && effect.playing);
+
+    event(World::kPreviewMusicReset, first);
+    CHECK(!music.playing && !music.paused && music.position == 0 && effect.playing);
+    event(World::kPreviewMusicPlay, first);
+    CHECK(music.playing && !music.loop && music.position == 0 && backend.opens == opened);
+    music.position = 222;
+    event(World::kPreviewMusicStart, first);
+    CHECK(music.playing && !music.loop && music.position == 0);  // Clicking the row always restarts once.
+    music.position = 333;
+    backend.FinishAll();
+    CHECK(!music.playing && !effect.playing);
+    event(World::kPreviewMusicPause, first);
+    event(World::kPreviewMusicPlay, first);
+    CHECK(music.playing && !music.loop && music.position == 0);  // Finished tracks can be played again.
+    event(World::kPreviewMusicPlay, second);
+    CHECK(music.playing && music.path == "Sound\\BGM\\ST2_AR.WAV" && !music.loop);
+
+    // All original playable preview slots are exposed by Extras. Slot zero is a stop command; every remaining
+    // slot must resolve and play once, even if its normal in-game request would loop or use the voice/coin channel.
+    CHECK(exe.U32(0x00569798) == 0x80000000);
+    music.position = 345;
+    for (int i = 1; i < 751; ++i) {
+        const uint32_t id = exe.U32(0x00569798 + i * 8);
+        const auto request = ResolveSound(table, id);
+        CHECK(request.action == SoundAction::PlayFile && request.channel != kSndBgmChannel && !request.stopLoopedSe);
+        const int previousOpens = backend.opens;
+        event(World::kPreviewEffect, id);
+        CHECK(backend.opens == previousOpens + 1 && effect.playing && !effect.loop && effect.position == 0);
+        CHECK(effect.path == request.path);
+        CHECK(music.playing && music.position == 345);
+    }
+
+    // Every available BGM, including the usually-looped stage and boss recordings, is one-shot.
+    for (size_t i = 0; i < table.BgmA().size(); ++i) {
+        if (table.BgmA()[i].empty()) continue;
+        event(World::kPreviewMusicStart, 0x10000000u | static_cast<uint32_t>(i));
+        CHECK(music.playing && !music.loop);
+        backend.FinishAll();
+        CHECK(!music.playing);
+    }
+    event(World::kPreviewMusicStart, first);
+    event(World::kPreviewEffect, kOptionSelectSound);
+    event(World::kOptionFeedback, kOptionBackSound);
+    event(World::kPreviewStop);
+    CHECK(!music.buffer && !effect.buffer && driver.CurrentBgm() == 0);
+    CHECK(backend.ch[kOptionSoundChannel].playing);
+    event(World::kPreviewMusicPlay, first);
+    event(World::kPreviewEffect, kOptionSelectSound);
+    event(World::kStopAll);
+    CHECK(!music.buffer && !effect.buffer);
+    event(World::kPreviewMusicPlay, first);
+    CHECK(music.playing && !music.loop && music.position == 0);
+    puts("Extras previews: one-shot music/effects, independent channels, pause/resume/reset and cleanup checked");
+}
 
 static void DriverScenarios(const SoundTable& t) {
     // 1) one-shot SE: auto channel 1 (channel 0 starts out cached: the ring is zero-initialised); replaying the
@@ -133,6 +278,7 @@ static void DriverScenarios(const SoundTable& t) {
     // 2) looped SE and its "_OFF" id: RAIN3ST_44 loops; RAIN3ST_44_OFF stops every looped SE (file is absent).
     {
         FakeBackend b;
+        b.missing.insert(ResolveSound(t, 0x002218A9).path);
         SoundDriver d(b);
         d.PlayGameSound(t, 0x002118A9);
         CHECK(b.ch[1].playing && b.ch[1].loop && d.LoopCount() == 1);
@@ -387,6 +533,8 @@ int main(int argc, char** argv) {
         CHECK(found);
     }
 
+    OptionFeedbackScenarios(exe, t);
+    PreviewScenarios(exe, t);
     DriverScenarios(t);
     CutsceneSkipScenarios();
     for (int i = 2; i + 4 < argc; ++i)
