@@ -87,6 +87,24 @@ constexpr uint32_t kTrig = 0x00597B94, kStart = 0x00597B9C, kBack = 0x00597BA4;
 
 int8_t& Grade(ModesState& m, int lesson) { return m.trainGrades[lesson < 0 || lesson > 9 ? 0 : lesson]; }
 
+// Names follow the original select/instruction captions at 0x00570AE8 / 0x00570B60.
+// Keep the lesson indices unchanged: they also identify the saved grades and scene scripts.
+constexpr const char* kChallengeNames[] = {
+    "CIVILIAN RESCUE", "30-SHOT CLEAR", "BARREL BLITZ", "ONE-SHOT FROG", "RAPID-FIRE BOSS",
+    "ENEMY SWEEP", "DISTANT TARGETS", "CAR DEFENSE", "FRIEND OR FOE", "COIN JUGGLE"
+};
+
+void CenteredTitle(World::Impl& w, const char* text, float y, float scale) {
+    const float x = 320.0f - static_cast<float>(std::strlen(text)) * MenuTextAdvance(w.exe, scale) * 0.5f;
+    const size_t first = w.hudSprites.size();
+    MenuTextScaled(w.exe, x, y, text, 1, scale, w.hudSprites);
+    MenuLoadSprites(w, first);
+}
+
+void ChallengeName(World::Impl& w, int lesson) {
+    if (lesson >= 0 && lesson < 10) CenteredTitle(w, kChallengeNames[lesson], 78.0f, 0.85f);
+}
+
 void SetFlag(World::Impl& w, int i, int v) { w.runner->flags[i & 0xFF] = static_cast<uint8_t>(v); }
 int Kill2234(World::Impl& w) { return static_cast<int16_t>(w.GlobalInt(0x009A2234, 0) & 0xFFFF); }
 void SetKill2234(World::Impl& w, int v) { w.runner->globals[0x009A2234] = static_cast<uint32_t>(static_cast<int16_t>(v)); }
@@ -148,7 +166,8 @@ void SelectDraw(World::Impl& w, TrainTask& b) {
     int id = 0xADB;
     for (int y = 0; id < 0xAEF; y += 0x80)
         for (int x = 0; x < 0x280; x += 0x80) Spr(w, 0x00498090, id++, static_cast<float>(x), static_cast<float>(y), 200.0f);
-    Spr(w, 0x00498090, 0xB38, 320.0f, 54.0f, 1.0f, 1, 1, 0, 10);
+    if (w.cfg.portFeatures) CenteredTitle(w, "CHALLENGE MODE", 30.0f, 1.25f);
+    else Spr(w, 0x00498090, 0xB38, 320.0f, 54.0f, 1.0f, 1, 1, 0, 10);
     if (m.trainAnim == 1 || m.trainAnim == 2) {
         ++m.trainAnimCount;
         const float da = F32(exe, 0x0055CC44), dx = F32(exe, 0x0055CC40);
@@ -176,8 +195,11 @@ void SelectDraw(World::Impl& w, TrainTask& b) {
         Spr(w, 0x00498090, 0xAEF, 322.0f, 194.0f, Bits(0x42006666), sc, sc, 0, 0x200A, tint);
     }
     if (b.sel <= b.count) {
-        Spr(w, 0x00498090, 0xAFE, 260.0f, 84.0f, 65.0f);
-        Spr(w, 0x00498090, b.sel + 0xAB7, 365.0f, 84.0f, 65.0f);
+        if (w.cfg.portFeatures) ChallengeName(w, b.sel);
+        else {
+            Spr(w, 0x00498090, 0xAFE, 260.0f, 84.0f, 65.0f);
+            Spr(w, 0x00498090, b.sel + 0xAB7, 365.0f, 84.0f, 65.0f);
+        }
     }
     const uint32_t u = w.seedCounter % 0x3C;
     if (u < 0x2D) {
@@ -259,6 +281,10 @@ void Caption(World::Impl& w, TrainTask& b) {
 void LessonCard(World::Impl& w, TrainTask& b, uint32_t src, bool name) {
     Spr(w, src, 0xAF1, 216.0f, 90.0f, 50.0f);
     Spr(w, src, static_cast<int>(w.exe.U32(0x00570A8C + static_cast<uint32_t>(b.sel) * 4)), 216.0f, 90.0f, 40.0f);
+    if (w.cfg.portFeatures) {
+        ChallengeName(w, b.sel);
+        return;
+    }
     if (!name) return;
     Spr(w, src, 0xAFE, 260.0f, 80.0f, 2.0f);
     Spr(w, src, b.sel + 0xAB7, 365.0f, 80.0f, 2.0f);

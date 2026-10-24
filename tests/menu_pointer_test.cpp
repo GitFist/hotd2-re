@@ -14,6 +14,10 @@ static void Menu(game::World& w,bool modern=true) {
  Require(w.GameMode()==4,"enter mode select");
 }
 static void Click(game::World& w,int x,int y) {Step(w,x,y,4,true);Step(w,x,y);}
+static bool Text(const game::World& w,const char* text) {
+ for(const auto& line:w.Hud().menuText)if(line.text==text)return true;
+ return false;
+}
 static void ClassicExtras(game::World& w) {
  Menu(w,false);Step(w,80,382);
  Require(w.Hud().menuCursor==7&&w.Hud().nightShiftPage<0,"Classic Extras is selectable below Network");
@@ -61,9 +65,22 @@ int main(int argc,char** argv) {
  Require(w.Hud().nightShiftRow==1,"stationary aim preserves keyboard movement");
  Step(w,101,165);Require(w.Hud().nightShiftRow==0,"moving aim reselects row");
  Click(w,100,180);Require(w.Hud().nightShiftPage==1&&w.GameMode()==4,"Play is a category");
- Click(w,100,245);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==3,"Boss time attack starts from Play");
+ Step(w);
+ Require(Text(w,"CHALLENGES")&&!Text(w,"TRAINING"),"Play displays Challenges");
+ Step(w,100,235);Require(w.Hud().nightShiftRow==2,"Challenges is directly below Original");
+ Click(w,100,235);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==2,"Challenges starts from Play");
+ Menu(w);Click(w,100,180);Step(w);Click(w,100,275);Step(w);
+ Require(w.GameMode()==6&&w.Hud().gameType==3,"Boss time attack still starts from Play");
+ Menu(w);Click(w,100,180);Step(w);Step(w,630,465,0x20);Step(w);Step(w,630,465,0x20);Step(w);
+ Require(w.Hud().nightShiftRow==2,"keyboard reaches Challenges after Original");
+ Step(w,630,465,8);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==2,"keyboard starts Challenges");
+ Menu(w);Click(w,100,180);Step(w);Click(w,100,393);Step(w);
+ Require(w.Hud().nightShiftPage==0,"Play Back remains reachable beneath seven entries");
  Menu(w);Click(w,100,218);Require(w.Hud().nightShiftPage==2,"Practice category");
- Click(w,100,160);Step(w);Require(w.GameMode()==6&&w.Hud().gameType==2,"Training starts from Practice");
+ Step(w);Require(Text(w,"SCENE SELECT")&&!Text(w,"CHALLENGES")&&!Text(w,"TRAINING"),"Practice only offers Scene Select and Back");
+ Click(w,100,214);Step(w);Require(w.Hud().nightShiftPage==0,"Practice Back remains reachable");
+ Menu(w);Click(w,100,218);Step(w);Click(w,100,160);Step(w);
+ Require(w.GameMode()==6&&w.Hud().gameType==3,"Scene Select still starts from Practice");
  Menu(w);Click(w,100,248);Require(w.Hud().nightShiftPage==3,"Leaderboard category");
  Click(w,80,150);Require(w.Hud().portLeaderboardShared&&w.Hud().portLeaderboardRequests==1,"online source requests shared records");
  Click(w,80,320);Require(w.Hud().portLeaderboardTable==3,"per-boss leaderboard");
@@ -93,5 +110,5 @@ int main(int argc,char** argv) {
  w.SetPortModernMenu(true);Step(w);Require(w.Hud().nightShiftPage==0&&w.Hud().screens.empty(),"Classic to Night Shift switch");
  w.SetPortModernMenu(false);Step(w);Require(w.Hud().nightShiftPage<0&&!w.Hud().screens.empty(),"Night Shift to Classic restores tiles");
  ClassicExtras(w);
- puts("PASS: Classic Extras pointer/keyboard routing and restoration; Night Shift routes, Boss time attack, Training, shared/boss leaderboard, existing network navigation, mixed input and Classic switching");
+ puts("PASS: Classic Extras pointer/keyboard routing and restoration; Night Shift routes, Challenges in Play, Boss time attack, Scene Select in Practice, shared/boss leaderboard, existing network navigation, mixed input and Classic switching");
 }

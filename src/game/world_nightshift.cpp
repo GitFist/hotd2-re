@@ -17,8 +17,8 @@ enum { kPlay=100, kPractice, kLeaderboard, kOnline, kOptions, kExit, kHome, kHor
        kHomeRoom, kExtras };
 constexpr Row kHomeRows[]={{"PLAY",kPlay},{"PRACTICE",kPractice},{"LEADERBOARD",kLeaderboard},{"ONLINE",kOnline},{"EXTRAS",kExtras},{"OPTIONS",kOptions},{"EXIT",kExit}};
 constexpr int kHomeCount = int(std::size(kHomeRows));
-constexpr Row kPlayRows[]={{"ARCADE",0},{"ORIGINAL",1},{"BOSS MODE",3},{"HORDE MODE",kHorde},{"RANDOMIZER",kRandomizer},{"BACK",kHome}};
-constexpr Row kPracticeRows[]={{"TRAINING",2},{"SCENE SELECT",kScene},{"BACK",kHome}};
+constexpr Row kPlayRows[]={{"ARCADE",0},{"ORIGINAL",1},{"CHALLENGES",2},{"BOSS MODE",3},{"HORDE MODE",kHorde},{"RANDOMIZER",kRandomizer},{"BACK",kHome}};
+constexpr Row kPracticeRows[]={{"SCENE SELECT",kScene},{"BACK",kHome}};
 constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"PUBLISH NEW RUN",kPublish},{"BACK",kHome}};
 constexpr const char* kBoss[] = {"JUDGMENT","HIEROPHANT A","HIEROPHANT B","TOWER A","TOWER B","STRENGTH A","STRENGTH B","MAGICIAN","EMPEROR","BOSS RUSH"};
 constexpr char kOnlineNameKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-";
@@ -228,7 +228,7 @@ void ExtrasCatalog(World::Impl& w) {
         "Boss Battle (Alternate)","Chapter 5 Boss 1 (Alternate)","Chapter 5 Boss 2 (Alternate)",
         "Chapter 6 Boss 1 (Alternate)","Chapter 6 Boss 2 (Alternate)","Chapter Clear (Alternate)",
         "Long Ending (Alternate)","Short Ending (Alternate)","Name Entry (Alternate)","Attract Mode",
-        "Boss Mode","Rankings","Training","Item Selection","Clear Jingle","House of the Dead 1 Intro"
+        "Boss Mode","Rankings","Challenges","Item Selection","Clear Jingle","House of the Dead 1 Intro"
     };
     for(size_t i=0;i<std::size(musicNames);++i) {
         const uint32_t id=w.exe.U32(0x005970C4+4*uint32_t(i+1));
@@ -486,17 +486,16 @@ void NightShiftMenuFrame(World::Impl& w) {
     w.hud.menuPanels.clear();
     w.hud.menuText.clear();
     const size_t spriteStart=w.hudSprites.size();
-    // Subtle continuous shading keeps the original attract scenes visible behind the UI.
+    // Subtle uniform shading keeps the original attract scenes visible behind the UI.
     Panel(w,0,0,640,480,0x3503090B);
-    for(int x=0;x<400;x+=16)Panel(w,float(x),0,float(x+16),480,(uint32_t(std::max(0,190-x/3))<<24)|0x05090B);
     Panel(w,0,440,640,480,0xC8090D10);
     Logo(w,f.nightShiftPage!=0);
     if(f.nightShiftPage==4) {PublishPage(w);LoadSprites(w,spriteStart);return;}
     if(f.nightShiftPage==9) {ExtrasPage(w);LoadSprites(w,spriteStart);return;}
     const Row* rows=kHomeRows; int count=kHomeCount;
     float left=24,right=322,top=158,pitch=37,height=32,scale=1.05f;
-    if(f.nightShiftPage==1) {rows=kPlayRows;count=6;Text(w,26,83,"PLAY",1.45f);top=136;pitch=45;height=40;}
-    else if(f.nightShiftPage==2) {rows=kPracticeRows;count=3;Text(w,26,83,"PRACTICE",1.45f);top=140;pitch=52;height=44;}
+    if(f.nightShiftPage==1) {rows=kPlayRows;count=int(std::size(kPlayRows));Text(w,26,83,"PLAY",1.45f);top=136;pitch=40;height=35;}
+    else if(f.nightShiftPage==2) {rows=kPracticeRows;count=int(std::size(kPracticeRows));Text(w,26,83,"PRACTICE",1.45f);top=140;pitch=52;height=44;}
     else if(f.nightShiftPage==3) {rows=kBoardRows;count=7;Text(w,26,78,"LEADERBOARD",.81f);top=130;pitch=40;height=35;right=187;scale=.60f;}
     const int roomCount=f.nightShiftPage==0?int(f.homeRooms.size()):0;
     const int total=count+(f.nightShiftPage==0?3+roomCount:0);
@@ -570,9 +569,9 @@ void NightShiftMenuFrame(World::Impl& w) {
         const char* names[]={"HOST ONLINE","BROWSE LOBBY","PEER TO PEER"};
         for(int i=0;i<3;++i)Button(w,366,282+i*40,612,317+i*40,names[i],f.nightShiftRow==count+roomCount+i,.73f);
     } else if(f.nightShiftPage==1) {
-        const char* help[]={"THE ORIGINAL ARCADE CAMPAIGN","CAMPAIGN WITH ITEMS AND LOADOUTS","TIME ATTACK AGAINST EACH BOSS","SURVIVE WAVES AND UPGRADE BETWEEN ROUNDS","A RANDOMIZED ORIGINAL MODE RUN","RETURN TO THE MAIN MENU"};
+        const char* help[]={"THE ORIGINAL ARCADE CAMPAIGN","CAMPAIGN WITH ITEMS AND LOADOUTS","TEN AIM AND SURVIVAL CHALLENGES","TIME ATTACK AGAINST EACH BOSS","SURVIVE WAVES AND UPGRADE BETWEEN ROUNDS","A RANDOMIZED ORIGINAL MODE RUN","RETURN TO THE MAIN MENU"};
         Text(w,350,198,"SELECT MODE",.64f,0xFFBBAA91);
-        std::string description=help[std::clamp(f.nightShiftRow,0,5)];
+        std::string description=help[std::clamp(f.nightShiftRow,0,int(std::size(help))-1)];
         // Wrap at whole words within the right column, using the real menu font's advance.
         size_t start=0;int line=0;
         while(start<description.size()) {
@@ -582,8 +581,8 @@ void NightShiftMenuFrame(World::Impl& w) {
             start=end;while(start<description.size()&&description[start]==' ')++start;++line;
         }
     } else if(f.nightShiftPage==2) {
-        Text(w,350,203,"TRAINING LESSONS",.64f,0xFFBBAA91);
-        Text(w,350,239,"OR CHOOSE A CHAPTER",.65f);
+        Text(w,350,203,"SCENE SELECT",.64f,0xFFBBAA91);
+        Text(w,350,239,"REPLAY A CHAPTER",.65f);
     } else if(f.nightShiftPage==3) {
         Leaderboard(w);
         if(f.nightShiftRow==5)Text(w,24,421,(f.leaderboardPublishStatus.empty()?"COMPLETE A NEW RUN FIRST":f.leaderboardPublishStatus).substr(0,50),.45f,0xFFB9AA91);

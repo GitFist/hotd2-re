@@ -4,6 +4,7 @@
 #include <filesystem>
 #include "game/world.h"
 #include "game/exe_image.h"
+#include "game/menu_text.h"
 #include "game/save_data.h"
 
 static void Check(bool ok, const char* why) { if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); } }
@@ -31,8 +32,8 @@ static void Open(game::World& w, int row) {
         for (int i = 0; i < 4; ++i) { Step(w, 639, 0, false, 0, 0x20); Step(w); }
         Step(w, 639, 0, false, 0, 8);
     } else {
-        Step(w, 40, row == 2 || row == 7 ? 211 : 175, true); Wait(w, 2);  // Practice or Play category
-        const int y = row == 1 ? 201 : row == 3 ? 246 : row == 2 ? 162 : row == 7 ? 214 : 156;
+        Step(w, 40, row == 7 ? 211 : 175, true); Wait(w, 2);  // Practice or Play category
+        const int y = row == 1 ? 193 : row == 3 ? 273 : row == 2 ? 233 : row == 7 ? 162 : 153;
         Step(w, 40, y, true);
     }
     Wait(w, 600);
@@ -41,6 +42,18 @@ static bool Sprite(const game::World& w, int id, float x = -1, float y = -1) {
     for (const auto& s : w.Hud().sprites)
         if (s.id == id && (x < 0 || s.x == x) && (y < 0 || s.y == y)) return true;
     return false;
+}
+static bool CenteredText(const game::World& w, const game::ExeImage& exe, const std::string& text, float y, float scale) {
+    std::vector<game::SpriteDef> expected;
+    game::MenuTextScaled(exe, 320 - text.size() * game::MenuTextAdvance(exe, scale) * .5f, y, text, 1, scale, expected);
+    for (const auto& glyph : expected) {
+        bool found = false;
+        for (const auto& actual : w.Hud().sprites)
+            if (actual.id == glyph.id && actual.x == glyph.x && actual.y == glyph.y &&
+                actual.sx == glyph.sx && actual.sy == glyph.sy) found = true;
+        if (!found) return false;
+    }
+    return !expected.empty();
 }
 static void InventoryScroll(const game::World& w, bool above, bool below) {
     Check(w.Hud().menuScrollHints.size() == 1, "inventory supplies one current scroll cue");
@@ -134,23 +147,34 @@ int main(int argc, char** argv) {
     Check(!Sprite(w, 0xB30), "shoot centre card starts boss");
 
     Open(w, 2);
-    Step(w, 480, 194, true); Wait(w);
-    Check(Sprite(w, 0xAB8, 365, 84), "shoot right chooses training lesson two");
+    Check(CenteredText(w, exe, "CHALLENGE MODE", 30, 1.25f), "Challenges uses Challenge Mode heading");
+    const char* challenges[] = {
+        "CIVILIAN RESCUE", "30-SHOT CLEAR", "BARREL BLITZ", "ONE-SHOT FROG", "RAPID-FIRE BOSS",
+        "ENEMY SWEEP", "DISTANT TARGETS", "CAR DEFENSE", "FRIEND OR FOE", "COIN JUGGLE"
+    };
+    for (int i = 0; i < 10; ++i) {
+        if (i) { Step(w, 480, 194, true); Wait(w); }
+        Check(CenteredText(w, exe, challenges[i], 78, .85f), "carousel shows each challenge's objective title");
+        Check(!Sprite(w, 0xAFE) && !Sprite(w, 0xB38), "challenge titles replace stock training labels");
+    }
     Step(w, 50, 458, true); Wait(w, 3);
-    Check(w.GameMode() == 4, "training Back returns to main menu");
+    Check(w.GameMode() == 4, "Challenges Back returns to main menu");
     Open(w, 2);
     Step(w, 540, 459, true); Wait(w, 80);
+    Check(CenteredText(w, exe, challenges[0], 78, .85f), "challenge instructions retain the objective title");
+    Check(!Sprite(w, 0xAFE), "challenge instructions replace stock training name");
     Step(w, 639, 20, true); Wait(w);
-    Check(!w.Hud().canShoot, "blank shot does not begin the training instructions");
+    Check(!w.Hud().canShoot, "blank shot does not begin the challenge instructions");
     Step(w, 540, 459, true);
     for (int i = 0; i < 5000 && !Sprite(w, 0xB01); ++i) Step(w);
-    Check(Sprite(w, 0xB01) && Sprite(w, 0xB2E), "failed training exposes Retry and Back");
+    Check(Sprite(w, 0xB01) && Sprite(w, 0xB2E), "failed challenge exposes Retry and Back");
+    Check(CenteredText(w, exe, challenges[0], 78, .85f), "challenge result retains the objective title");
     Step(w, 510, 382);
     bool backHighlight = false;
     for (const auto& s : w.Hud().sprites) if (s.id == 0xB2E && s.sx == 1) backHighlight = true;
-    Check(backHighlight, "aiming at training Back highlights it");
+    Check(backHighlight, "aiming at challenge Back highlights it");
     Step(w, 510, 382, true); Wait(w, 120);
-    Check(Sprite(w, 0xB38), "shoot training result Back returns to lesson selection");
+    Check(CenteredText(w, exe, "CHALLENGE MODE", 30, 1.25f), "shoot challenge result Back returns to selection");
     Open(w, 7);
     Step(w, 480, 194, true); Wait(w);
     Step(w, 480, 194, true); Wait(w);
@@ -175,5 +199,5 @@ int main(int argc, char** argv) {
     Check(w.NetworkLobby(), "Back returns both players to shared lobby");
     Step(w, 639, 20, true); Wait(w);
     Check(w.NetworkLobby(), "blank lobby shot cannot start a game");
-    puts("PASS: Original inventory and both players' End buttons; Boss, Training, Scene, rankings and host authority");
+    puts("PASS: Original inventory and both players' End buttons; Boss, Challenges, Scene, rankings and host authority");
 }

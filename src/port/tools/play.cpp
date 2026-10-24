@@ -1102,7 +1102,7 @@ int main(int argc, char** argv) {
         }
         if (!net.SetLobbyServer(lobbyAddr, lobbyPort, &err)) fprintf(stderr, "netplay: %s (the in-game lobby is off)\n", err.c_str());
         homeDirectory.SetLobbyServer(lobbyAddr, lobbyPort, nullptr);
-        if (!rankings.Configure(lobbyAddr, lobbyPort, kBuildId, &err)) fprintf(stderr, "rankings: %s\n", err.c_str());
+        if (!rankings.Configure(lobbyAddr, lobbyPort, port::net::kLeaderboardCompatibilityId, &err)) fprintf(stderr, "rankings: %s\n", err.c_str());
     }
     int netLocal = netHostMode ? 0 : 1, netRemote = netHostMode ? 1 : 0;
     // Player identity belongs to the game, not to the connection. A surviving joiner must keep P2.
@@ -1222,7 +1222,7 @@ int main(int argc, char** argv) {
     port::FrontScreens screens(dir);
     // the modern main menu's background (the baked labels in-painted out of the tiles): with the port's features only
     if (screenshot.empty() || (getenv("HOTD2_PLAY_MENU") && !getenv("HOTD2_PLAY_MENU_NATIVE_BOOT")))
-        screens.SetModernMenu(activeNightShift);
+        screens.SetModernMenu(activeNightShift, true);
     if (screenshot.empty() && !port::AssetDir().empty())  // the mode select's six tiles (the pack's are 1024 x 1024 PNGs)
         for (const char* t : {"tex\\hod2title00.bin", "tex\\hod2title01.bin", "tex\\hod2title02.bin", "tex\\hod2title03.bin",
                               "tex\\hod2title10.bin", "tex\\hod2title11.bin"})
@@ -1789,7 +1789,7 @@ int main(int argc, char** argv) {
         }
         if (page.TakeGameplayReset()) {
             if (world.ResetPortGameOptions()) {
-                volumes.display.redBlood = false;
+                volumes.display.redBlood = play::DisplaySettings{}.redBlood;
                 volumes.display.showCrosshairs = true;
                 page.SetStatus("Gameplay defaults restored. Records, unlocks and device calibration are preserved.");
             } else {

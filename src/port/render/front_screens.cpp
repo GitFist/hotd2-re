@@ -67,9 +67,10 @@ std::vector<uint8_t> Dilate(const std::vector<uint8_t>& m, int r, const Rect& rc
 
 }  // namespace
 
-void FrontScreens::SetModernMenu(bool on) {
-    if (on == modernMenu_) return;
+void FrontScreens::SetModernMenu(bool on, bool renameChallenges) {
+    if (on == modernMenu_ && renameChallenges == renameChallenges_) return;
     modernMenu_ = on;
+    renameChallenges_ = renameChallenges;
     cleaned_ = false;
     cache_.erase(std::remove_if(cache_.begin(), cache_.end(),
                                 [](const auto& e) { return e.first.compare(0, 13, "tex\\hod2title") == 0; }),
@@ -132,7 +133,7 @@ std::unique_ptr<RgbaImage> FrontScreens::Load(const std::string& name) {
 }
 
 const RgbaImage* FrontScreens::Bitmap(const std::string& name) {
-    if (modernMenu_ && !cleaned_ && name.compare(0, 13, "tex\\hod2title") == 0) CleanMenuBackground();
+    if ((modernMenu_ || renameChallenges_) && !cleaned_ && name.compare(0, 13, "tex\\hod2title") == 0) CleanMenuBackground();
     for (auto& [n, img] : cache_)
         if (n == name) return img.get();
     std::unique_ptr<RgbaImage> img = Load(name);
@@ -178,7 +179,7 @@ void FrontScreens::CleanMenuBackground() {
     // the glyph body: where a bright label tile differs from the background under it
     std::vector<uint8_t> body(static_cast<size_t>(kBgW) * kBgH, 0);
     Rect rc;
-    for (int e = 0; e < 8; ++e)
+    for (int e = modernMenu_ ? 0 : 2; e < (modernMenu_ ? 8 : 3); ++e)
         for (int k = 0; k < 3; ++k) {
             const std::unique_ptr<RgbaImage> lab = Load(std::string(kLabelBase[e]) + static_cast<char>('0' + k) + ".bin");
             if (!lab || lab->width != kLabelSize || lab->height != kLabelSize || lab->logicalWidth != 0) continue;

@@ -280,7 +280,7 @@ void ValuesAndActions() {
             "local gameplay sight visibility remains editable during a run");
     menu.FocusRow(Menu::kBlood);
     press(8);
-    Require(display.redBlood, "local blood appearance remains editable during a run");
+    Require(!display.redBlood, "local blood appearance can switch from default red to green during a run");
     menu.SetPage(Menu::kDevices);
     for (const auto [row, action] : {std::pair{Menu::kLightguns, Menu::DeviceAction::Lightguns},
                                    {Menu::kWiiRemotes, Menu::DeviceAction::WiiRemotes}}) {
@@ -303,7 +303,7 @@ void ValuesAndActions() {
     press(8);
     Require(menu.TakeGraphicsReset() && display.renderScale == play::DisplaySettings{}.renderScale,
             "graphics reset restores rendering defaults");
-    Require(display.redBlood && !display.showCrosshairs && !display.nightShift,
+    Require(!display.redBlood && !display.showCrosshairs && !display.nightShift,
             "graphics reset preserves Gameplay cosmetics and chosen menu theme");
     values.gameplayEditable = true;
     menu.SetOptionValues(values);

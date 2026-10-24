@@ -28,7 +28,8 @@ public:
     explicit FrontScreens(std::string gameDir) : dir_(std::move(gameDir)) {}
     std::vector<ModelRenderer::SpriteDraw> Draws(const game::WorldHud& h);
     // The mode-select background without the baked labels (see above). Drops the cached hod2title tiles on a change.
-    void SetModernMenu(bool on);
+    // Classic port menus also remove the old Training label so World can draw Challenges.
+    void SetModernMenu(bool on, bool renameChallenges = false);
     bool ModernMenu() const { return modernMenu_; }
     // Load (and cache) a bitmap now: play.exe warms the mode select's tiles at boot, so an asset pack's big PNGs are
     // not decoded in the frame the menu first shows.
@@ -41,6 +42,7 @@ private:
     std::string dir_;
     std::vector<std::pair<std::string, std::unique_ptr<RgbaImage>>> cache_;
     bool modernMenu_ = false;
+    bool renameChallenges_ = false;
     bool cleaned_ = false;
 };
 

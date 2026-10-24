@@ -54,7 +54,7 @@ struct MenuTask : WTask {   // 0x00496960 (block 0x44)
 // and the copyright line (x >= 410, y >= 440).
 constexpr float kModernX = 24.0f, kModernY0 = 148.0f, kModernPitch = 27.0f, kModernScale = 1.25f;
 constexpr int kModernEntries = 11;
-const char* const kModernEntry[kModernEntries] = { "Arcade mode", "Original mode", "Training mode", "Boss mode", "Rankings",
+const char* const kModernEntry[kModernEntries] = { "Arcade mode", "Original mode", "Challenges", "Boss mode", "Rankings",
                                                    "Options",     "Network",       "Scene Select",  "Horde Mode", "Randomizer", "Exit" };
 
 // The font's 32-pixel textures have transparent space above the letters: capitals occupy roughly rows 12..32.
@@ -395,7 +395,10 @@ void World::Impl::BootFrame() {
     switch (subState) {
     case 0: logo(0x00588D44); break;  // "tex\segalogor_00.bin" .. "_11" (0x00588D44, D2C, D14, CFC, CE4, CCC)
     case 1: fade(); break;
-    case 2: FrontScreensFree(); ++subState; break;  // thunk 0x0049ED70
+    case 2:
+        FrontScreensFree();  // thunk 0x0049ED70
+        subState = cfg.portFeatures ? 5 : 3;  // playable client goes from Sega directly to the title
+        break;
     case 3: logo(0x00588DD4); break;  // "tex\empireBlack_00.bin" .. (0x00588DD4 .. 0x00588D5C)
     case 4: fade(); break;
     case 5:  // 0x0041E1D0: straight to the title (no Game_SetState)
@@ -651,11 +654,12 @@ void World::Impl::TaskMenu(Task& t) {
     }
     for (size_t i = 6; i < 0x20 && i < front.screens.size(); ++i) front.screens[i].visible = false;  // 0x0049EB30(i, 0)
     const bool onExtrasEntry = portEntry && !modern && front.menuCursor == 7;
+    const bool onChallengesEntry = portEntry && !modern && front.menuCursor == 2;
     const bool onPortEntry = portEntry && front.menuCursor == (modern ? 7 : 8);
     const bool onHordeEntry = modern && front.menuCursor == 8;
     const int label = portEntry && front.menuCursor >= 8 ? 7 : front.menuCursor;  // the bitmap label group (exit = 7)
     const size_t k = static_cast<size_t>((label + 2) * 3);
-    if (!onPortEntry && !onExtrasEntry && !modern)  // (modern: the highlight label tiles are never shown; the list below has the entries)
+    if (!onPortEntry && !onExtrasEntry && !onChallengesEntry && !modern)  // (modern: the highlight label tiles are never shown; the list below has the entries)
         for (size_t i = k; i < k + 3 && i < front.screens.size(); ++i) front.screens[i].visible = true;
     if (modern) {
         const size_t first = hudSprites.size();
@@ -666,6 +670,7 @@ void World::Impl::TaskMenu(Task& t) {
         for (size_t i = first; i < hudSprites.size(); ++i) hudSprites[i].flags |= 0x700;
     } else if (portEntry) {  // below Exit (its label tiles end at y 448), left of the copyright line: cells (13.5, 18) = (216, 432) px
         const size_t first = hudSprites.size();
+        MenuTextScaled(exe, 240, 140, "CHALLENGES", onChallengesEntry ? 0u : 0x40u, 1.0f, hudSprites);
         MenuTextScaled(exe, 38, 365, "EXTRAS", onExtrasEntry ? 0u : 0x40u, .9f, hudSprites);
         MenuText(exe, 13.5f, 18.0f, "Scene Select", onPortEntry ? 0u : 0x40u, hudSprites);
         for (size_t i = first; i < hudSprites.size(); ++i) hudSprites[i].flags |= 0x700;
