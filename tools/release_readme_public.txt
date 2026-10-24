@@ -50,8 +50,12 @@ calibration, original game data and installed packs are kept. Failed installatio
 restore the previous program files; an interrupted update is recovered on next launch.
 Keep the .hotd2-update folder if recovery needs another attempt. A writable local game
 folder and Windows PowerShell are required. --no-update-check disables the check.
-October 23 Builds A and B need one manual update to receive this updater fix if their
-update window stays hidden or installation fails. Follow the migration steps above.
+Updates reuse unchanged files and download only changed program files. A verified
+full-client fallback is available automatically; update files need no manual download.
+Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
+32-bit installations need one manual installation of the latest complete x64 package.
+Version 1.0 x64 can update through its selective path; if that fails, install manually.
+Follow the migration steps above to keep saves, settings, calibration and packs.
 
 ONLINE TWO-PLAYER
 Home has Host Online, Browse Lobby and Peer to Peer actions; Online also opens

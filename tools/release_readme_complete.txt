@@ -88,8 +88,12 @@ restore the previous program files; an interrupted update is recovered on next l
 Keep the .hotd2-update folder if recovery needs another attempt. A writable local game
 folder and Windows PowerShell are required. Offline/failed checks stay silent. Pass --no-update-check
 to disable this check. Scripted/headless/direct gameplay launches skip it.
-October 23 Builds A and B need one manual update to receive this updater fix if their
-update window stays hidden or installation fails. Follow the manual steps below.
+Updates reuse unchanged files and download only changed program files. A verified
+full-client fallback is available automatically; update files need no manual download.
+Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
+32-bit installations need one manual installation of the latest complete x64 package.
+Version 1.0 x64 can update through its selective path; if that fails, install manually.
+Follow the manual steps below to keep saves, settings, calibration and packs.
 
 If updating manually, close the game and extract the ENTIRE new ZIP into a separate writable
 folder. Keep its new executable, all accompanying DLLs, licenses and scenes together.

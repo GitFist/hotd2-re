@@ -7,7 +7,8 @@
 
 # Release distribution
 
-- Focus new installations on one complete Windows x64 download. Retain x86 builds as compatibility payloads for existing clients; never silently replace an x86 installation with x64.
-- The public date-tagged release must retain `hotd2re-win-x64.zip`, `hotd2re-win-x86.zip` and their `.sha256` sidecars while supporting existing updaters. Older clients jump directly to the latest release and may skip intermediate versions.
-- Publish selective-update indexes, their checksums and content-addressed gzip assets in the matching `updates-<date-tag>` companion release. Mark it prerelease and never latest. Publish and verify its assets before making the public release latest.
-- Promote the versioned complete x64 ZIP in the release title/body and README. Keep its generated checksum locally; GitHub provides its asset digest, so it needs no separate public checksum download.
+- Publish exactly one complete Windows x64 ZIP on the main release page. The user accepted a one-time manual migration instead of retaining legacy client ZIPs/checksums there. Do not republish x86 compatibility downloads or expose updater assets on the main release.
+- Version 1.1 is the clean-distribution baseline. Older/date-only and x86 clients require a manual x64 installation. Version 1.0 x64 can reach 1.1 through selective updates, but needs manual installation if that path fails; its old public ZIP fallback is retired.
+- Publish the x64 selective-update index, its checksum, content-addressed gzip files, and the client-only full fallback ZIP plus checksum in `updates-<date-tag>`. The fallback must be `packageKind=public`, without original game data. Mark the companion release prerelease and never latest; verify all assets before making the main release latest.
+- Keep checksum verification and transactional recovery. Never silently replace an x86 installation with x64. Preserve existing historical companion releases for their remaining references.
+- Promote the versioned complete x64 ZIP in the release title/body and README. Keep its generated checksum locally; GitHub provides its asset digest, so it needs no separate main-page checksum download.

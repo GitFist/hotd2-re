@@ -4,7 +4,7 @@
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring online co-op, additional game modes, and modern controls and display options.
 
-**[Download 1.0 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/HOTD2RE-1.0-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.1 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/HOTD2RE-1.1-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -24,26 +24,26 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.0-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/HOTD2RE-1.0-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.1-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/HOTD2RE-1.1-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-**Version 1.0** introduces simpler version numbers, a single recommended x64 download, and selective updates that reuse unchanged program files. It includes the Night Shift multiplayer lobby, visible update progress, automatic restart and interrupted-install recovery. The Challenges, shared-leaderboard, Chapter 6 knife-thrower, and previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+**Version 1.1** provides one complete x64 download on the release page. Install it once, then use in-game updates for future releases. Selective updates and full-download fallback are handled automatically through a separate update feed. It includes the Night Shift multiplayer lobby, visible update progress, automatic restart and interrupted-install recovery. The Challenges, shared-leaderboard, Chapter 6 knife-thrower, and previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
-The current release is **1.0**. Later releases advance by **0.1**: 1.1, 1.2,
+The current release is **1.1**. Later releases advance by **0.1**: 1.2, 1.3,
 and so on, with 2.0 after 1.9.
 
 The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update now** opens a visible progress window, closes the game, downloads and verifies the matching Windows client, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.
 
-Version 1.0 adds selective downloads: unchanged program files are verified and reused, while changed or missing files download individually. A changed file is downloaded in full, compressed. The updater falls back to the complete client ZIP if selective assets are unavailable or invalid. October 24 Build B and earlier clients need one full update to gain this feature; subsequent updates can use it. Staging and recovery still need space for a full program copy and backups.
+Unchanged program files are verified and reused, while changed or missing files download individually. A changed file is downloaded in full, compressed. The updater falls back to a verified full client download if selective assets are unavailable or invalid. Both download paths use the companion update feed. Staging and recovery still need space for a full program copy and backups.
 
-The extra client ZIPs and checksums on the release page support existing automatic updaters. New players only need the x64 download above. Existing 32-bit clients continue receiving compatible updates; switching to x64 is a manual installation. Selective-update files are hosted in a separate companion release and are downloaded automatically.
+**One-time migration:** older date-labeled builds and 32-bit installations need a manual installation of the latest complete x64 package. Version 1.0 x64 can update through its selective-download path; if that fails, use the manual installation below. Compatibility ZIPs/checksums have been retired from the main release page, and new releases are x64 only. After installing 1.1, future updates work from inside the game; supporting files are downloaded automatically.
 
-**Later** keeps you playing, and **Download** opens the manual download page. Failed checks stay silent. Launch with `--no-update-check` to disable the check. Versions before October 23 need one manual update to gain the updater. Published October 23 Builds A and B also need a manual update if their progress window stays hidden or installation fails; follow the instructions below.
+**Later** keeps you playing, and **Download** opens the manual download page. Failed checks stay silent. Launch with `--no-update-check` to disable the check.
 
 For a manual update, close the game and extract the **entire new ZIP into a fresh writable folder**. Keep the new executable, accompanying DLLs, licenses and `scenes` together. Replacing only the executable can leave incompatible older runtimes installed.
 

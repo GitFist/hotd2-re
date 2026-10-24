@@ -38,11 +38,11 @@ try {
     Check ((ConvertTo-UpdateArgument 'a"b') -ceq '"a\"b"') 'embedded quote'
     Check ((ConvertTo-UpdateArgument 'C:\two words\') -ceq '"C:\two words\\"') 'trailing backslash'
     foreach ($address in @(
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x86.zip.sha256',
-        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x64.files.json',
-        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x86.files.json.sha256',
-        ('https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-file-' + ('a' * 64) + '.gz'),
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-win-x64.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-win-x86.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-win-x86.files.json.sha256',
+        ('https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-file-' + ('a' * 64) + '.gz'),
         'https://release-assets.githubusercontent.com/github-production-release-asset/asset?sig=example',
         'https://objects.githubusercontent.com/path',
         'https://github-releases.githubusercontent.com/path?sig=example')) {
@@ -60,8 +60,10 @@ try {
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x64.files.json',
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x86.files.json.sha256',
         ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-file-' + ('a' * 64) + '.gz'),
-        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x64.zip',
-        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x86.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/hotd2re-win-x64.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/hotd2re-win-x86.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-d/hotd2re-complete.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.02.30-d/hotd2re-win-x64.zip',
         'https://github.com/GitFist/hotd2-re/releases/download/updates-updates-v2026.10.24-c/hotd2re-win-x64.files.json',
         'https://github.com/GitFist/hotd2-re/releases/download/updates-2026.10.24-c/hotd2re-win-x64.files.json',
         'https://github.com/GitFist/hotd2-re/releases/download/updates-v1.0/hotd2re-win-x64.files.json',
@@ -219,10 +221,10 @@ function Install-Update {
     Check ($result -eq 0) 'runner completes offline update'
     $expectedUris = @(
         'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.23-a/hotd2re-win-x64.files.json.sha256',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip.sha256',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip'
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.23-a/hotd2re-win-x64.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.23-a/hotd2re-win-x64.zip'
     )
-    Check (($script:downloadUris -join "`n") -ceq ($expectedUris -join "`n")) 'companion index failure falls back to the matching public ZIP release'
+    Check (($script:downloadUris -join "`n") -ceq ($expectedUris -join "`n")) 'companion index failure uses the full ZIP from the same companion release'
     $lines = @(Wait-File $gameOutput)
     Check ([IO.File]::Exists((Join-Path $root 'committed'))) 'commit completes before game resumes'
     Check ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($lines[1])) -ceq 'kept launch option') 'restart callback keeps arguments'

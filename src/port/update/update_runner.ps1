@@ -42,12 +42,11 @@ function Assert-UpdateDownloadUri([Uri]$Uri) {
         throw 'The download address could not be verified.'
     }
     if ($Uri.DnsSafeHost -ceq 'github.com') {
-        # Public releases remain compatible with existing ZIP-only clients.
-        # Selective assets belong exclusively to the matching companion feed.
+        # Both selective files and the full client fallback belong exclusively
+        # to the matching companion feed. Public complete packages are manual downloads.
         $tagPattern = '(?<tag>v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-z]{1,16})'
-        $publicPath = $tagPattern + '/hotd2re-win-(?:x64|x86)\.zip(?:\.sha256)?'
-        $companionPath = 'updates-' + $tagPattern + '/(?:hotd2re-win-(?:x64|x86)\.files\.json(?:\.sha256)?|hotd2re-file-[0-9a-f]{64}\.gz)'
-        $match = [regex]::Match($Uri.AbsolutePath, ('\A/GitFist/hotd2-re/releases/download/(?:' + $publicPath + '|' + $companionPath + ')\z'))
+        $companionPath = 'updates-' + $tagPattern + '/(?:hotd2re-win-(?:x64|x86)\.(?:zip|files\.json)(?:\.sha256)?|hotd2re-file-[0-9a-f]{64}\.gz)'
+        $match = [regex]::Match($Uri.AbsolutePath, ('\A/GitFist/hotd2-re/releases/download/' + $companionPath + '\z'))
         $date = [datetime]::MinValue
         if (!$match.Success -or $Uri.Query -ne '' -or
             ![datetime]::TryParseExact($match.Groups['tag'].Value.Substring(1, 10), 'yyyy.MM.dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) {
@@ -391,7 +390,6 @@ function Show-UpdateMessage([string]$Message) {
 }
 
 function Get-UpdatePayload($Request, [string]$SessionDirectory) {
-    $release = 'https://github.com/GitFist/hotd2-re/releases/download/' + $Request.tag + '/'
     $fileRelease = 'https://github.com/GitFist/hotd2-re/releases/download/updates-' + $Request.tag + '/'
     $stem = 'hotd2re-win-' + $Request.architecture
     $stage = Join-Path $Request.root '.hotd2-update/stage'
@@ -414,8 +412,8 @@ function Get-UpdatePayload($Request, [string]$SessionDirectory) {
         return Expand-VerifiedFileUpdate -Root $Request.root -IndexPath $indexPath -ExpectedSha256 $hash -Stage $stage `
             -Architecture $Request.architecture -Tag $Request.tag -DownloadFile $download
     } catch {
-        # Old releases have no file index. Missing/corrupt blobs or unusable local
-        # files also fall back to the independently verified full client ZIP.
+        # Missing indexes, corrupt blobs or unusable local files fall back to
+        # the independently verified full client ZIP in the same companion feed.
         # Cleanup must succeed before reusing the staging directory.
         Clear-UpdateStage -Root $Request.root
         Set-UpdateStatus 'Using the full client download...'
@@ -423,9 +421,9 @@ function Get-UpdatePayload($Request, [string]$SessionDirectory) {
     $asset = $stem + '.zip'
     $checksumPath = Join-Path $SessionDirectory 'download.sha256'
     $archive = Join-Path $SessionDirectory 'download.zip'
-    Save-UpdateDownload ([Uri]($release + $asset + '.sha256')) $checksumPath 512 'Checking the full update...'
+    Save-UpdateDownload ([Uri]($fileRelease + $asset + '.sha256')) $checksumPath 512 'Checking the full update...'
     $hash = Get-UpdateChecksum ([IO.File]::ReadAllText($checksumPath)) $asset
-    Save-UpdateDownload ([Uri]($release + $asset)) $archive 536870912 'Downloading the full client update...'
+    Save-UpdateDownload ([Uri]($fileRelease + $asset)) $archive 536870912 'Downloading the full client update...'
     Set-UpdateStatus 'Verifying the update...'
     return Expand-VerifiedUpdate -Archive $archive -ExpectedSha256 $hash -Stage $stage `
         -Architecture $Request.architecture -Tag $Request.tag
