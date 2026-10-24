@@ -528,9 +528,9 @@ void Platform::SetGameImage(const input::ImageRect& image) {
     m.lightguns.SetImage(float(image.x)/w,float(image.y)/h,float(image.w)/w,float(image.h)/h);
 }
 
-bool Platform::NotifyUpdate(const std::string& currentBuild, const std::string& availableTag) {
+bool Platform::NotifyUpdate(const std::string& currentBuild, const std::string& /*availableTag*/) {
     if (!impl_->window) return false;
-    const std::string message = "HOTD2RE " + availableTag + " is available.\n\nYou are running " + currentBuild +
+    const std::string message = "A HOTD2RE update is available.\n\nYou are running version " + currentBuild +
         ".\n\nUpdate now closes the game and opens an update progress window."
         "\nThe game restarts when the update is complete."
         "\nYour saves, settings and installed packs will be kept."

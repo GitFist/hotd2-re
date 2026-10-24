@@ -34,6 +34,9 @@ October 24 Build B brings **Night Shift styling to the connected multiplayer lob
 
 ## Updates
 
+The next release will be **1.0**. Later releases advance by **0.1**: 1.1, 1.2,
+and so on, with 2.0 after 1.9.
+
 The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update now** opens a visible progress window, closes the game, downloads and verifies the matching Windows client, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.
 
 The next release adds selective downloads: unchanged program files are verified and reused, while changed or missing files download individually. A changed file is downloaded in full, compressed. The updater falls back to the complete client ZIP if selective assets are unavailable or invalid. Current October 24 Build B clients need one full update to gain this feature; subsequent updates can use it. Staging and recovery still need space for a full program copy and backups.

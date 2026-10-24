@@ -1,7 +1,7 @@
 The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
-Build {{BUILD_LABEL}} (Windows {{ARCHITECTURE}}).
+Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation

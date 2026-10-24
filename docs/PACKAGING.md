@@ -5,6 +5,16 @@ Run the PowerShell tools with Python 3.9 or newer available as `python`, or pass
 checkout. Every invocation needs a fresh `-Out` directory. Existing outputs are
 refused and never deleted or overwritten, including after a failed validation.
 
+Public release numbering starts at **1.0**, then increases by **0.1** for each
+release: 1.1, 1.2, ... 1.9, 2.0. Set `kReleaseVersion` in `play.cpp` and use the
+same number in the GitHub release title. The next release is 1.0; it has not yet
+been published. Keep the date-based GitHub tag, architecture-specific
+`kBuildName` labels and `kUpdateBuildName` as internal compatibility identifiers,
+advancing them at publication. Existing clients only recognize that date format.
+The manifest retains `buildLabel` for their verifier and records the public
+number separately as `releaseVersion`. Do not replace an existing release asset
+or reuse an internal tag for a new public version.
+
 Public packages contain the port, the bootstrap scene, notices and applicable
 redistributable runtimes. They never copy an original installation, settings,
 saves, rejoin tickets, texture packs, debug symbols or arbitrary sibling DLLs.

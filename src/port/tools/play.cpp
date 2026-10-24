@@ -186,9 +186,12 @@ uint32_t WorldHash(const game::World& w) {
     return h;
 }
 
-// The build: shown on the Network screen and exchanged in the netplay handshake (two different builds could run
-// different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
-// Presentation-only updates can change the displayed label while retaining multiplayer compatibility.
+// Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
+const char* const kReleaseVersion = "1.0";
+// Internal build labels retain the date format understood by already-installed
+// updaters. Advance these and kUpdateBuildName when publishing each release.
+// kBuildId is exchanged in the netplay handshake: bump it when game/protocol
+// changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026102302;
 const char* const kBuildName = "2026 10 24 B";
@@ -499,7 +502,7 @@ void LobbySprites(const game::ExeImage& exe, const Lobby& l, const port::net::Se
         default:
             break;
     }
-    game::MenuText(exe, 1.0f, 18.6f, std::string("VERSION ") + kBuildName, 0x40, out);  // both players need the same one
+    game::MenuText(exe, 1.0f, 18.6f, std::string("VERSION ") + kReleaseVersion, 0x40, out);
     for (size_t i = first; i < out.size(); ++i) out[i].flags |= 0x700;
 }
 
@@ -590,7 +593,7 @@ game::WorldHud ModernLobbyHud(const Lobby& l, const port::net::Session& net) {
         default:
             break;
     }
-    text(28, 452, std::string("BUILD ") + kBuildName, .42f, 0xFFBFB8AA);
+    text(28, 452, std::string("VERSION ") + kReleaseVersion, .42f, 0xFFBFB8AA);
     return h;
 }
 
@@ -750,6 +753,9 @@ std::string FindGameDir(const char* argv0) {
 }
 
 int main(int argc, char** argv) {
+    // Keep the architecture-specific compatibility label in diagnostics and in
+    // the executable; existing updaters verify its bytes against the manifest.
+    fprintf(stderr, "HOTD2RE %s (build %s)\n", kReleaseVersion, kBuildName);
 #ifdef PLAY_GUI
     // Recover before loading optional runtime DLLs or touching save/settings files.
     std::string recoveryError;
@@ -1233,7 +1239,7 @@ int main(int argc, char** argv) {
     platform::Platform plat;
     platform::Options po;
     po.title = std::string(netplay ? (netHostMode ? "hotd2-re play (host, P1)" : "hotd2-re play (joined, P2)") : "hotd2-re play") + " - " +
-               kBuildName;
+               kReleaseVersion;
     po.width = width;
     po.height = height;
     po.window = !headless;
@@ -2234,7 +2240,7 @@ int main(int argc, char** argv) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
                 if (attractionDriver) attractionAudio.Update(*attractionDriver, sndTable, attract, false);
-                if (plat.NotifyUpdate(kBuildName, availableUpdate)) {
+                if (plat.NotifyUpdate(kReleaseVersion, availableUpdate)) {
                     std::string updateError;
                     if (port::update::StartUpdate(availableUpdate, &updateError)) quit = true;
                     else plat.NotifyUpdateError(updateError);

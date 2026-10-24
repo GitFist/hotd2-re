@@ -115,6 +115,14 @@ def executable_info(exe, source_dir, architecture):
     ids = dict((label, int(build_id)) for build_id, label in re.findall(
         r'\bkBuildId\s*=\s*(\d+)\s*;\s*const\s+char\s*\*\s*const\s+kBuildName\s*=\s*"([^"\r\n]+)"', source))
     info.update(buildLabel=label, sourceBuildId=ids.get(label), sha256=sha256(exe))
+    if re.search(r"\bkReleaseVersion\b", source):
+        versions = re.findall(r'\bkReleaseVersion\s*=\s*"([^"\r\n]*)"', source)
+        if len(versions) != 1 or not re.fullmatch(r"[1-9][0-9]*\.[0-9]", versions[0]):
+            raise ValueError("Source release version must be canonical major.minor, with one fractional digit (for example 1.0)")
+        version = versions[0]
+        if version.encode("ascii") + b"\0" not in binary:
+            raise ValueError("Executable release version does not match source; rebuild or select matching -SourceRoot")
+        info["releaseVersion"] = version
     return info
 
 
@@ -373,8 +381,9 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         (package_dir / "game/PUT_YOUR_GAME_FILES_HERE.txt").write_text("Copy your own House of the Dead 2 installation here: Hod2.exe and its data folders.\n", encoding="ascii")
     else:
         (package_dir / "hotd2re_settings.ini").write_text("master=5\nmusic=5\nguns=5\nsfx=5\nattraction=5\ninput=mouse\nfullscreen=0\nscale=1\naspect=4:3\ncrt=0\nrender=1\nlobby=64.23.186.88:27020\n", encoding="ascii")
-    (package_dir / "README.txt").write_text(readme.replace("{{BUILD_LABEL}}", info["buildLabel"]).replace("{{ARCHITECTURE}}", architecture), encoding="utf-8")
-    (package_dir / "BUILD.txt").write_text(f"Native Windows {architecture} / {info['peFormat']} ({info['machine']})\nBuild label: {info['buildLabel']}\nSource base revision: {revision['baseRevision']} ({revision['status']})\nhotd2.exe SHA256: {info['sha256']}\nPackage kind: {kind}; original game data included: {kind == 'complete'}\n", encoding="ascii")
+    release_version = info.get("releaseVersion", info["buildLabel"])
+    (package_dir / "README.txt").write_text(readme.replace("{{BUILD_LABEL}}", info["buildLabel"]).replace("{{RELEASE_VERSION}}", release_version).replace("{{ARCHITECTURE}}", architecture), encoding="utf-8")
+    (package_dir / "BUILD.txt").write_text(f"Native Windows {architecture} / {info['peFormat']} ({info['machine']})\nRelease version: {release_version}\nBuild label: {info['buildLabel']}\nSource base revision: {revision['baseRevision']} ({revision['status']})\nhotd2.exe SHA256: {info['sha256']}\nPackage kind: {kind}; original game data included: {kind == 'complete'}\n", encoding="ascii")
     (package_dir / "CREDITS.txt").write_text("Native code, SDL and shader notices are retained in LICENSE-native-code.txt (when supplied), LICENSE-SDL.txt and THIRD_PARTY_NOTICES.txt.\nOptional runtime license/notice trees accompany their DLLs.\nOriginal game data retains its respective rights and is not covered by the native code license.\n", encoding="ascii")
     metadata = dict(format=1, packageKind=kind, originalGameDataIncluded=kind == "complete", executable=info,
                     sourceAtPackaging=revision, optionalRuntimeDlls=[name for _, name in runtime if name.endswith(".dll")],

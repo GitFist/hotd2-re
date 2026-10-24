@@ -4,7 +4,7 @@ START PLAYING
 1. Extract the entire ZIP into a normal, writable folder. Do not run inside the ZIP.
 2. Open the hotd2re folder and double-click hotd2.exe.
 
-Build {{BUILD_LABEL}} (Windows {{ARCHITECTURE}}).
+Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
 This complete package includes the required game data. No separate installation or disc is needed.
 Keep the game and scenes folders next to hotd2.exe. Launch the top-level hotd2.exe.
 Requires Windows 10/11 with Direct3D 11 support. Optional graphics features have additional

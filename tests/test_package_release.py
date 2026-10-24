@@ -68,6 +68,7 @@ const char* const kBuildName = "2026 10 19 NS32";
     def test_actual_pe_selects_ns32_when_source_lists_ns64_first(self):
         info = release.executable_info(self.exe, self.source, "x86")
         self.assertEqual((info["buildLabel"], info["sourceBuildId"], info["machine"]), ("2026 10 19 NS32", 2026101905, "0x014c"))
+        self.assertNotIn("releaseVersion", info)
         other = fake_pe(self.root / "x64.exe", "x64", "2026 10 19 NS64")
         self.assertEqual(release.executable_info(other, self.source, "x64")["peFormat"], "PE32+")
 
@@ -123,6 +124,62 @@ const char* const kUpdateBuildName = "2026 10 23 A";
         self.assertEqual(marker.read_bytes(), b"preserve this")
         self.assertEqual(list(output.iterdir()), [marker])
 
+    def test_release_version_is_public_while_internal_build_labels_are_preserved(self):
+        (self.source / "src/port/tools/play.cpp").write_text('''#if INTPTR_MAX == INT64_MAX
+constexpr uint32_t kBuildId = 2026102302;
+const char* const kBuildName = "2026 10 23 B";
+#else
+constexpr uint32_t kBuildId = 2026102303;
+const char* const kBuildName = "2026 10 23 NS32 B";
+#endif
+const char* const kReleaseVersion = "1.0";
+''')
+        game, game_manifest, _ = self.game_manifest()
+        for architecture, label, build_id in (("x64", "2026 10 23 B", 2026102302), ("x86", "2026 10 23 NS32 B", 2026102303)):
+            exe = fake_pe(self.root / architecture / "hotd2.exe", architecture, label)
+            exe.write_bytes(exe.read_bytes() + b"1.0\0")
+            info = release.executable_info(exe, self.source, architecture)
+            self.assertEqual((info["releaseVersion"], info["buildLabel"], info["sourceBuildId"]), ("1.0", label, build_id))
+            for kind in ("public", "complete"):
+                with self.subTest(architecture=architecture, kind=kind):
+                    arguments = dict(game_dir=game, game_manifest=game_manifest) if kind == "complete" else {}
+                    archive = self.package(kind=kind, architecture=architecture, exe=exe,
+                                           out=self.root / f"release-{architecture}-{kind}", **arguments)
+                    package = archive.parent / "hotd2re"
+                    manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_bytes())
+                    self.assertEqual(manifest["executable"]["releaseVersion"], "1.0")
+                    self.assertEqual(manifest["executable"]["buildLabel"], label)
+                    self.assertIn(f"Release 1.0 (Windows {architecture}).", (package / "README.txt").read_text())
+                    self.assertIn(f"Release version: 1.0\nBuild label: {label}\n", (package / "BUILD.txt").read_text())
+                    if kind == "public":
+                        index = json.loads((archive.parent / f"hotd2re-win-{architecture}.files.json").read_bytes())
+                        self.assertEqual(index["buildLabel"], label)
+                        self.assertEqual(json.loads(base64.b64decode(index["manifestBase64"]))["executable"]["releaseVersion"], "1.0")
+
+    def test_release_versions_reject_noncanonical_source_or_stale_executables(self):
+        source_path = self.source / "src/port/tools/play.cpp"
+        original_source = source_path.read_text()
+        original_binary = self.exe.read_bytes()
+        for version in ("0.0", "01.0", "1", "1.00", "1.10", "-1.0", "1.a", "1.0-beta", "", "1.0 "):
+            with self.subTest(version=version):
+                source_path.write_text(original_source + f'\nconst char* const kReleaseVersion = "{version}";\n')
+                with self.assertRaisesRegex(ValueError, "canonical major.minor"):
+                    release.executable_info(self.exe, self.source, "x86")
+        for version in ("1.0", "1.9", "2.0", "10.0"):
+            source_path.write_text(original_source + f'\nconst char* const kReleaseVersion = "{version}";\n')
+            self.exe.write_bytes(original_binary + version.encode("ascii") + b"\0")
+            self.assertEqual(release.executable_info(self.exe, self.source, "x86")["releaseVersion"], version)
+        source_path.write_text(original_source + '\nconst char* const kReleaseVersion = "1.0";\n')
+        for marker in (b"", b"1.1\0", b"1.0"):
+            with self.subTest(marker=marker):
+                self.exe.write_bytes(original_binary + marker)
+                with self.assertRaisesRegex(ValueError, "Executable release version does not match"):
+                    self.package()
+                self.assertFalse((self.root / "new-output").exists())
+        source_path.write_text(original_source + '\nconst char* const kReleaseVersion = GetVersion();\n')
+        with self.assertRaisesRegex(ValueError, "canonical major.minor"):
+            release.executable_info(self.exe, self.source, "x86")
+
     @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "PowerShell wrapper integration requires Windows")
     def test_powershell_wrappers_forward_paths_and_preserve_existing_outputs(self):
         output = self.root / "existing output with spaces"
@@ -156,6 +213,9 @@ const char* const kUpdateBuildName = "2026 10 23 A";
         manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_text())
         self.assertFalse(manifest["originalGameDataIncluded"])
         self.assertEqual(manifest["executable"]["architecture"], "x86")
+        self.assertNotIn("releaseVersion", manifest["executable"])
+        self.assertIn("Release 2026 10 19 NS32 (Windows x86).", (package / "README.txt").read_text())
+        self.assertIn("Release version: 2026 10 19 NS32\nBuild label: 2026 10 19 NS32\n", (package / "BUILD.txt").read_text())
         for entry in manifest["files"]:
             self.assertEqual(release.sha256(package / entry["path"]), entry["sha256"])
         checks = (package / "SHA256SUMS.txt").read_text().splitlines()
