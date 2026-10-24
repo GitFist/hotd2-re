@@ -1,5 +1,6 @@
 # Complete LOCAL package from the user's own installation and extraction manifest.
-# Writes hotd2re-complete.zip and its .sha256 sidecar in the selected output directory.
+# Writes HOTD2RE-<release>-Windows-<architecture>.zip and its local .sha256 sidecar.
+# Older sources without a release version retain hotd2re-complete.zip. Defaults to x64.
 # Example: -GameDir R:/game -GameManifest R:/original/game-manifest.json
 # No input game files are changed. Existing output directories are always refused.
 [CmdletBinding()]
@@ -7,7 +8,7 @@ param(
     [Parameter(Mandatory=$true)][string]$GameDir,
     [string]$GameManifest = "",
     [string]$Out = "build/dist-complete-local",
-    [ValidateSet("x86", "x64")][string]$Architecture = "x86",
+    [ValidateSet("x86", "x64")][string]$Architecture = "x64",
     [string]$Exe = "",
     [string]$SourceRoot = "",
     [string]$Python = "python"

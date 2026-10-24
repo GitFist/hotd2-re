@@ -194,13 +194,13 @@ const char* const kReleaseVersion = "1.0";
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026102302;
-const char* const kBuildName = "2026 10 24 B";
+const char* const kBuildName = "2026 10 24 C";
 #else
 constexpr uint32_t kBuildId = 2026102303;
-const char* const kBuildName = "2026 10 24 NS32 B";
+const char* const kBuildName = "2026 10 24 NS32 C";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 24 B";
+const char* const kUpdateBuildName = "2026 10 24 C";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.

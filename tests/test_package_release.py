@@ -145,6 +145,10 @@ const char* const kReleaseVersion = "1.0";
                     arguments = dict(game_dir=game, game_manifest=game_manifest) if kind == "complete" else {}
                     archive = self.package(kind=kind, architecture=architecture, exe=exe,
                                            out=self.root / f"release-{architecture}-{kind}", **arguments)
+                    expected_name = f"HOTD2RE-1.0-Windows-{architecture}.zip" if kind == "complete" else f"hotd2re-win-{architecture}.zip"
+                    self.assertEqual(archive.name, expected_name)
+                    self.assertEqual(archive.with_name(archive.name + ".sha256").read_text(),
+                                     f"{release.sha256(archive)}  {expected_name}\n")
                     package = archive.parent / "hotd2re"
                     manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_bytes())
                     self.assertEqual(manifest["executable"]["releaseVersion"], "1.0")
@@ -179,6 +183,45 @@ const char* const kReleaseVersion = "1.0";
         source_path.write_text(original_source + '\nconst char* const kReleaseVersion = GetVersion();\n')
         with self.assertRaisesRegex(ValueError, "canonical major.minor"):
             release.executable_info(self.exe, self.source, "x86")
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "PowerShell wrapper integration requires Windows")
+    def test_powershell_wrappers_default_to_x64_and_preserve_explicit_x86(self):
+        wrappers = self.root / "wrapper fixtures"
+        wrappers.mkdir()
+        (wrappers / "package_release.py").write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        for name, kind in (("make_dist.ps1", "public"), ("make_complete_dist.ps1", "complete")):
+            wrapper = wrappers / name
+            wrapper.write_bytes((release.REPO / "tools" / name).read_bytes())
+            for architecture in (None, "x86"):
+                with self.subTest(wrapper=name, architecture=architecture):
+                    arguments = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
+                                 "-Python", sys.executable, "-Out", str(self.root / "unused output")]
+                    if architecture:
+                        arguments += ["-Architecture", architecture]
+                    if kind == "complete":
+                        arguments += ["-GameDir", str(self.root / "unused game")]
+                    result = subprocess.run(arguments, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    forwarded = json.loads(result.stdout)
+                    self.assertEqual(forwarded[forwarded.index("--architecture") + 1], architecture or "x64")
+                    self.assertEqual(forwarded[forwarded.index("--kind") + 1], kind)
+        self.assertFalse((self.root / "unused output").exists())
+
+    def test_python_cli_defaults_to_x64_and_preserves_explicit_x86(self):
+        placeholder = self.root / "cli-result.zip"
+        placeholder.write_bytes(b"fixture")
+        for kind in ("public", "complete"):
+            for architecture in (None, "x86"):
+                with self.subTest(kind=kind, architecture=architecture):
+                    arguments = ["package_release.py", "--kind", kind]
+                    if architecture:
+                        arguments += ["--architecture", architecture]
+                    with patch.object(sys, "argv", arguments), patch.object(release, "stage_package", return_value=placeholder) as stage, patch("builtins.print"):
+                        self.assertEqual(release.main(), 0)
+                    selected = architecture or "x64"
+                    self.assertEqual(stage.call_args.kwargs["architecture"], selected)
+                    build = "build-x64" if selected == "x64" else "build"
+                    self.assertEqual(stage.call_args.kwargs["exe"], release.REPO / build / "src/port/Release/hotd2.exe")
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "PowerShell wrapper integration requires Windows")
     def test_powershell_wrappers_forward_paths_and_preserve_existing_outputs(self):

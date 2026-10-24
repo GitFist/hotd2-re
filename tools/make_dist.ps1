@@ -1,9 +1,9 @@
 # Public native-port package: no original game data, settings, saves or asset packs.
-# Existing output directories are refused; select -Architecture x64 for a 64-bit build.
+# Existing outputs are refused. Defaults to x64; -Architecture x86 keeps legacy downloads available.
 [CmdletBinding()]
 param(
     [string]$Out = "build/dist",
-    [ValidateSet("x86", "x64")][string]$Architecture = "x86",
+    [ValidateSet("x86", "x64")][string]$Architecture = "x64",
     [string]$Exe = "",
     [string]$SourceRoot = "",
     [string]$Python = "python"

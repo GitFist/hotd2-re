@@ -392,7 +392,10 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     privacy_check(package_dir)
     if kind == "public":
         write_file_assets(package_dir, out, info)
-    name = "hotd2re-complete.zip" if kind == "complete" else f"hotd2re-win-{architecture}.zip"
+    if kind == "complete":
+        name = f"HOTD2RE-{info['releaseVersion']}-Windows-{architecture}.zip" if "releaseVersion" in info else "hotd2re-complete.zip"
+    else:
+        name = f"hotd2re-win-{architecture}.zip"
     archive_path = out / name
     with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(package_dir.rglob("*")):
@@ -406,7 +409,7 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kind", choices=("public", "complete"), required=True)
-    parser.add_argument("--architecture", choices=("x86", "x64"), default="x86")
+    parser.add_argument("--architecture", choices=("x86", "x64"), default="x64")
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--source-root", type=Path, default=REPO)

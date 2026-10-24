@@ -42,7 +42,7 @@ public static class UpdateClientFixture {
         if ($compiled.Errors.HasErrors) { throw ($compiled.Errors | Out-String) }
     } finally { $provider.Dispose() }
     Copy-Item -LiteralPath $fixtureExe -Destination (Join-Path $root 'hotd2.exe')
-    $label = if ($Architecture -eq 'x86') { '2026 10 24 NS32 A' } else { '2026 10 24 A' }
+    $label = if ($Architecture -eq 'x86') { '2026 10 24 NS32 C' } else { '2026 10 24 C' }
     # PE overlay makes the fixture carry the same ASCII version marker as hotd2.exe.
     $marker = [Text.Encoding]::ASCII.GetBytes($label + [char]0)
     $stream = [IO.File]::Open($fixtureExe, [IO.FileMode]::Append, [IO.FileAccess]::Write)
@@ -115,7 +115,7 @@ public static class UpdateClientFixture {
     $request = [pscustomobject]@{
         root = $root; executable = Join-Path $root 'hotd2.exe'; workingDirectory = $root
         arguments = @($output, 'quoted "argument" with spaces', $unicode)
-        architecture = $Architecture; tag = 'v2026.10.24-a'; recover = $false
+        architecture = $Architecture; tag = 'v2026.10.24-c'; recover = $false
         parentPid = 2147483647; parentStartTime = '1'
     }
     $requestPath = Join-Path $session 'request.json'
@@ -128,7 +128,7 @@ public static class UpdateClientFixture {
     function Save-UpdateDownload($Uri, $Destination, $MaximumBytes, $Description) {
         Assert-UpdateDownloadUri $Uri
         $asset = [IO.Path]::GetFileName($Uri.AbsolutePath)
-        $script:requests.Add($asset)
+        $script:requests.Add($Uri.AbsoluteUri)
         if ($asset.Contains('.files.json') -and $DownloadMode -eq 'full') { throw 'Fixture release predates selective updates.' }
         if ($asset.EndsWith('.files.json.sha256')) {
             $hash = if ($DownloadMode -eq 'bad-index') { '0' * 64 } else { $script:indexHash }
@@ -155,9 +155,22 @@ public static class UpdateClientFixture {
     $lines = [IO.File]::ReadAllLines($output)
     Assert ($lines[0] -ceq $root -and $lines[1] -ceq $request.arguments[1] -and $lines[2] -ceq $unicode) 'Restart lost arguments or working directory.'
     Assert ((Get-HotdHash (Join-Path $root 'hotd2.exe')) -ceq $manifest.executable.sha256) 'Updated executable mismatch.'
+    $publicRelease = 'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/'
+    $companionRelease = 'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/'
+    $indexAsset = 'hotd2re-win-' + $Architecture + '.files.json'
+    $expectedRequests = @($companionRelease + $indexAsset + '.sha256')
+    if ($DownloadMode -ne 'full') { $expectedRequests += $companionRelease + $indexAsset }
+    if ($DownloadMode -in @('files', 'bad-file', 'missing-file')) {
+        $expectedRequests += $companionRelease + 'hotd2re-file-' + $manifest.executable.sha256 + '.gz'
+    }
+    if ($DownloadMode -ne 'files') {
+        $expectedRequests += $publicRelease + 'hotd2re-win-' + $Architecture + '.zip.sha256'
+        $expectedRequests += $publicRelease + 'hotd2re-win-' + $Architecture + '.zip'
+    }
+    Assert (($script:requests -join "`n") -ceq ($expectedRequests -join "`n")) 'Update assets did not use the exact matching companion/public release paths.'
     $blobs = @($script:requests | Where-Object { $_.EndsWith('.gz') })
     if ($DownloadMode -eq 'files') {
-        Assert ($blobs.Count -eq 1 -and $blobs[0] -ceq ('hotd2re-file-' + $manifest.executable.sha256 + '.gz')) 'Unchanged files were downloaded.'
+        Assert ($blobs.Count -eq 1 -and $blobs[0] -ceq ($companionRelease + 'hotd2re-file-' + $manifest.executable.sha256 + '.gz')) 'Unchanged files were downloaded.'
         Assert (-not ($script:requests | Where-Object { $_.EndsWith('.zip') })) 'Selective update unexpectedly downloaded the full package.'
     } else {
         Assert (@($script:requests | Where-Object { $_.EndsWith('.zip') }).Count -eq 1) 'Unavailable/invalid selective update did not use the full package.'

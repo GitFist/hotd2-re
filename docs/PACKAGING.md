@@ -7,8 +7,8 @@ refused and never deleted or overwritten, including after a failed validation.
 
 Public release numbering starts at **1.0**, then increases by **0.1** for each
 release: 1.1, 1.2, ... 1.9, 2.0. Set `kReleaseVersion` in `play.cpp` and use the
-same number in the GitHub release title. The next release is 1.0; it has not yet
-been published. Keep the date-based GitHub tag, architecture-specific
+same number in the GitHub release title. Version 1.0 uses internal tag
+`v2026.10.24-c`. Keep the date-based GitHub tag, architecture-specific
 `kBuildName` labels and `kUpdateBuildName` as internal compatibility identifiers,
 advancing them at publication. Existing clients only recognize that date format.
 The manifest retains `buildLabel` for their verifier and records the public
@@ -20,12 +20,13 @@ redistributable runtimes. They never copy an original installation, settings,
 saves, rejoin tickets, texture packs, debug symbols or arbitrary sibling DLLs.
 
 ```powershell
-./tools/make_dist.ps1 -Architecture x86 -Out build/dist-review-x86
 ./tools/make_dist.ps1 -Architecture x64 -Out build/dist-review-x64
+./tools/make_dist.ps1 -Architecture x86 -Out build/dist-compatibility-x86
 ```
 
-The default executable is `build/src/port/Release/hotd2.exe` for x86 or
-`build-x64/src/port/Release/hotd2.exe` for x64. To select a completed build explicitly:
+Packaging defaults to x64. The default executable is
+`build-x64/src/port/Release/hotd2.exe`, or `build/src/port/Release/hotd2.exe`
+when explicitly selecting x86 for compatibility. To select a completed build explicitly:
 
 ```powershell
 ./tools/make_dist.ps1 -Architecture x64 -Exe build-x64/src/port/Release/play.exe -Out build/dist-review-custom
@@ -84,13 +85,26 @@ assets. The index embeds the exact package metadata and describes the compressed
 size and SHA-256 of each payload file. Gzip output is deterministic; identical
 file contents share one asset. Complete packages do not emit these assets.
 
-For a release, upload both architectures' indexes and checksum sidecars, every
-unique gzip asset from both `file-assets` directories, and the existing client
-ZIPs and checksum sidecars. Asset names are flat on GitHub: upload the files,
-not the `file-assets` directory. When names overlap between architectures,
-verify their bytes match and upload that asset once. Finish uploading all assets
-before making the release public/latest. Keep the ZIPs for manual downloads,
-older clients and fallback; the tools do not publish automatically.
+The public release has one promoted complete x64 download, named
+`HOTD2RE-<version>-Windows-x64.zip`. Keep its generated checksum locally rather
+than adding another public download; GitHub reports the uploaded asset's digest.
+The public release must also contain the unchanged `hotd2re-win-x64.zip` and
+`hotd2re-win-x86.zip` names and their checksum sidecars. They serve installed
+clients and fallback. Label them as automatic-updater compatibility files, and
+link only the complete x64 package prominently in the release notes.
+
+Upload both architectures' indexes and sidecars and every unique gzip asset to
+the matching `updates-<date-tag>` companion release, for example
+`updates-v2026.10.24-c`. Mark this release **prerelease** and **not latest**.
+Asset names are flat on GitHub: upload the files, not the `file-assets` directory.
+When names overlap between architectures, verify their bytes match and upload
+that asset once. Verify and publish the companion assets before making the
+public release latest. Neither packaging tool uploads automatically.
+
+Older clients jump directly to the latest public release and can skip 1.0.
+Retain the legacy ZIP names and sidecars on future public releases while
+supporting those clients. An x86 client must continue receiving an x86 payload;
+moving to x64 requires a manual installation.
 
 The file updater hashes installed files and stages verified copies of unchanged
 ones. It downloads only missing or changed files, verifies the reconstructed

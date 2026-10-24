@@ -39,11 +39,13 @@ try {
     Check ((ConvertTo-UpdateArgument 'C:\two words\') -ceq '"C:\two words\\"') 'trailing backslash'
     foreach ($address in @(
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x64.files.json',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x86.files.json.sha256',
-        ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-' + ('a' * 64) + '.gz'),
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x86.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x86.files.json.sha256',
+        ('https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-file-' + ('a' * 64) + '.gz'),
         'https://release-assets.githubusercontent.com/github-production-release-asset/asset?sig=example',
-        'https://objects.githubusercontent.com/path')) {
+        'https://objects.githubusercontent.com/path',
+        'https://github-releases.githubusercontent.com/path?sig=example')) {
         Assert-UpdateDownloadUri ([Uri]$address)
         Check $true 'trusted release address'
     }
@@ -52,9 +54,21 @@ try {
         'https://github.com.evil.test/file', 'https://evil.test/file',
         'https://github.com/Other/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip',
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64-complete.zip',
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-short.gz',
-        ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-' + ('a' * 64) + '.exe'),
-        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x64.files.json?redirect=other',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-file-short.gz',
+        ('https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-file-' + ('a' * 64) + '.exe'),
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x64.files.json?redirect=other',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-win-x86.files.json.sha256',
+        ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-c/hotd2re-file-' + ('a' * 64) + '.gz'),
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x64.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-c/hotd2re-win-x86.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-updates-v2026.10.24-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-2026.10.24-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v1.0/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/UPDATES-v2026.10.24-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.24-C/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.02.30-c/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.02.30-c/hotd2re-win-x64.zip',
         'https://github.com@evil.test/file', 'https://release-assets.githubusercontent.com:444/file',
         'https://release-assets.githubusercontent.com/file#fragment')) {
         Reject { Assert-UpdateDownloadUri ([Uri]$address) } 'untrusted redirect rejected'
@@ -150,6 +164,10 @@ while ($true) { Start-Sleep -Seconds 1 }
     $result = Invoke-UpdateRunner $requestPath $session
     Check ($result -eq 1 -and -not [IO.File]::Exists((Join-Path $session 'ready'))) 'malformed request never tells parent to quit'
     Check ([IO.File]::Exists((Join-Path $session 'error.txt'))) 'startup error available to parent'
+    foreach ($tag in @('updates-v2026.10.24-c', 'v1.0', 'v2026.10.24-C')) {
+        $request.tag = $tag; Save-Request
+        Reject { Read-UpdateRequest $requestPath $session } 'request requires the official public date tag'
+    }
     $request.tag = 'v2026.10.23-a'; $request.executable = $probe; Save-Request
     Reject { Read-UpdateRequest $requestPath $session } 'executable outside installation rejected'
     $request.executable = Join-Path $root 'hotd2.exe'; Save-Request
@@ -185,9 +203,12 @@ function Install-Update {
     $script:messages = @()
     $script:failDownload = $false
     $script:downloads = 0
+    $script:downloadUris = [Collections.Generic.List[string]]::new()
     function Show-UpdateMessage([string]$Message) { $script:messages += $Message }
     function Save-UpdateDownload {
         param($Uri, $Destination, $MaximumBytes, $Description)
+        Assert-UpdateDownloadUri $Uri
+        $script:downloadUris.Add($Uri.AbsoluteUri)
         $script:downloads++
         if ($script:failDownload) { throw 'Simulated download failure.' }
         if ($Uri.AbsolutePath.EndsWith('.sha256')) {
@@ -196,6 +217,12 @@ function Install-Update {
     }
     $result = Invoke-UpdateRunner $requestPath $session
     Check ($result -eq 0) 'runner completes offline update'
+    $expectedUris = @(
+        'https://github.com/GitFist/hotd2-re/releases/download/updates-v2026.10.23-a/hotd2re-win-x64.files.json.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip.sha256',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip'
+    )
+    Check (($script:downloadUris -join "`n") -ceq ($expectedUris -join "`n")) 'companion index failure falls back to the matching public ZIP release'
     $lines = @(Wait-File $gameOutput)
     Check ([IO.File]::Exists((Join-Path $root 'committed'))) 'commit completes before game resumes'
     Check ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($lines[1])) -ceq 'kept launch option') 'restart callback keeps arguments'

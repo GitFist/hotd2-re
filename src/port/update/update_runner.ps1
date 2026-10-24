@@ -42,7 +42,15 @@ function Assert-UpdateDownloadUri([Uri]$Uri) {
         throw 'The download address could not be verified.'
     }
     if ($Uri.DnsSafeHost -ceq 'github.com') {
-        if ($Uri.AbsolutePath -cnotmatch '\A/GitFist/hotd2-re/releases/download/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-z]{1,16}/(?:hotd2re-win-(?:x64|x86)\.(?:zip|files\.json)(?:\.sha256)?|hotd2re-file-[0-9a-f]{64}\.gz)\z' -or $Uri.Query -ne '') {
+        # Public releases remain compatible with existing ZIP-only clients.
+        # Selective assets belong exclusively to the matching companion feed.
+        $tagPattern = '(?<tag>v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-z]{1,16})'
+        $publicPath = $tagPattern + '/hotd2re-win-(?:x64|x86)\.zip(?:\.sha256)?'
+        $companionPath = 'updates-' + $tagPattern + '/(?:hotd2re-win-(?:x64|x86)\.files\.json(?:\.sha256)?|hotd2re-file-[0-9a-f]{64}\.gz)'
+        $match = [regex]::Match($Uri.AbsolutePath, ('\A/GitFist/hotd2-re/releases/download/(?:' + $publicPath + '|' + $companionPath + ')\z'))
+        $date = [datetime]::MinValue
+        if (!$match.Success -or $Uri.Query -ne '' -or
+            ![datetime]::TryParseExact($match.Groups['tag'].Value.Substring(1, 10), 'yyyy.MM.dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) {
             throw 'The download address could not be verified.'
         }
     } elseif ($Uri.DnsSafeHost -cnotin @('release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com')) {
@@ -384,23 +392,24 @@ function Show-UpdateMessage([string]$Message) {
 
 function Get-UpdatePayload($Request, [string]$SessionDirectory) {
     $release = 'https://github.com/GitFist/hotd2-re/releases/download/' + $Request.tag + '/'
+    $fileRelease = 'https://github.com/GitFist/hotd2-re/releases/download/updates-' + $Request.tag + '/'
     $stem = 'hotd2re-win-' + $Request.architecture
     $stage = Join-Path $Request.root '.hotd2-update/stage'
     Clear-UpdateStage -Root $Request.root
     try {
-        # New releases describe independently compressed files. Verify the index,
+        # Companion releases describe independently compressed files. Verify the index,
         # reuse matching installed bytes, and validate the same complete payload
         # that the ZIP path supplies before any installed file can be changed.
         $indexAsset = $stem + '.files.json'
         $indexChecksum = Join-Path $SessionDirectory 'files.sha256'
         $indexPath = Join-Path $SessionDirectory 'files.json'
         Set-UpdateStatus 'Checking which files changed...'
-        Save-UpdateDownload ([Uri]($release + $indexAsset + '.sha256')) $indexChecksum 512 'Checking the update...'
+        Save-UpdateDownload ([Uri]($fileRelease + $indexAsset + '.sha256')) $indexChecksum 512 'Checking the update...'
         $hash = Get-UpdateChecksum ([IO.File]::ReadAllText($indexChecksum)) $indexAsset
-        Save-UpdateDownload ([Uri]($release + $indexAsset)) $indexPath 2097152 'Checking which files changed...'
+        Save-UpdateDownload ([Uri]($fileRelease + $indexAsset)) $indexPath 2097152 'Checking which files changed...'
         $download = {
             param($Asset, $Destination, $MaximumBytes, $Description)
-            Save-UpdateDownload ([Uri]($release + $Asset)) $Destination $MaximumBytes $Description
+            Save-UpdateDownload ([Uri]($fileRelease + $Asset)) $Destination $MaximumBytes $Description
         }.GetNewClosure()
         return Expand-VerifiedFileUpdate -Root $Request.root -IndexPath $indexPath -ExpectedSha256 $hash -Stage $stage `
             -Architecture $Request.architecture -Tag $Request.tag -DownloadFile $download
