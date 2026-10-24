@@ -21,8 +21,13 @@ def packaged_script(host, final_frame):
     """Aim at the current clickable menus and use an unlisted test room."""
     def event(frame, x, y, buttons=1):
         return f'{frame} 0 {x/640} {y/480} {buttons}\n{frame+4} 0 {x/640} {y/480} 0\n'
-    inputs = event(100, 320, 240) + event(200, 320, 240, 4) + event(300, 320, 240, 4)
-    inputs += event(400, 40, 338) + event(450, 320, 202)  # Network > Peer to Peer
+    # Start skips the Sega logo, then opens Home from the title. Keep the aim
+    # outside the Home rows, and do not send a third Start that selects a page.
+    inputs = event(100, 630, 465, 4) + event(200, 630, 465, 4)
+    # NightShiftMenuFrame: Home's Peer to Peer shortcut is x366..612/y362..397.
+    # It opens Lobby::kP2P directly, without the Online menu's intermediate row.
+    inputs += event(400, 480, 379)
+    # Lobby::RowAt: HOST/JOIN are text rows 5 / 6.25 (y130..154 / y160..184).
     inputs += event(500, 320, 142 if host else 172)
     # Both peers reset to frame 901 when the shared lobby starts. Only P1 picks Arcade.
     if host:

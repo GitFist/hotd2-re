@@ -19,8 +19,9 @@ Touchpad users: if clicks do nothing in the game, open hotd2re_settings.ini and 
 
 NIGHT SHIFT
 The Home page uses the game's live standby preview. Play contains Arcade, Original,
-Boss Mode (time attack), Horde and Randomizer. Practice contains training and scene
-selection. Boss Mode is a scored time attack, not a practice mode.
+Boss Mode (time attack), Challenges, Horde and Randomizer. Practice contains Scene
+Select. Challenges is the former Training mode, with objective captions for each challenge.
+Boss Mode is a scored time attack, not a practice mode.
 Options opens graphics shortcuts and Game Options. Display > Menu Style selects Night Shift
 or Classic for the next launch. Existing campaign rules and saves are retained.
 Menus stay sharp at display resolution independently of gameplay render scale. Faded edges

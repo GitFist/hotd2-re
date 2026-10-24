@@ -190,14 +190,14 @@ uint32_t WorldHash(const game::World& w) {
 // different worlds, so they do not connect). Bump both on every change that affects the game or the protocol.
 // Presentation-only updates can change the displayed label while retaining multiplayer compatibility.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026102300;
-const char* const kBuildName = "2026 10 23 A";
+constexpr uint32_t kBuildId = 2026102302;
+const char* const kBuildName = "2026 10 23 B";
 #else
-constexpr uint32_t kBuildId = 2026102301;
-const char* const kBuildName = "2026 10 23 NS32 A";
+constexpr uint32_t kBuildId = 2026102303;
+const char* const kBuildName = "2026 10 23 NS32 B";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 23 A";
+const char* const kUpdateBuildName = "2026 10 23 B";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.

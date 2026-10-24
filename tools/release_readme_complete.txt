@@ -14,7 +14,8 @@ launches with a custom game-folder path or command-line options.
 
 NIGHT SHIFT MENUS
 Home uses the game's moving standby preview. Play contains Arcade, Original, Boss Mode
-(time attack), Horde and Randomizer. Practice contains Training and Scene Select.
+(time attack), Challenges, Horde and Randomizer. Practice contains Scene Select.
+Challenges is the former Training mode, with objective captions for each challenge.
 Home also offers Leaderboard, Online, Extras, Options and Exit. Host Online, Browse Lobby and
 Peer to Peer are directly accessible beside the waiting-room preview.
 Options > Game Options contains game rules, sound controls and Wii Remote / Light Gun setup.
@@ -139,9 +140,9 @@ released before use again.
 Original item select: shoot a stock item to equip it, an equipped item to put it back,
 and your END button when ready. Both players choose their own items and confirm separately.
 Shoot the inventory arrows to scroll. BACK returns to the main menu or shared lobby.
-Boss, Training and Scene Select: shoot a side arrow/card to browse, then the centre card
+Boss, Challenges and Scene Select: shoot a side arrow/card to browse, then the centre card
 or START to play. LEVEL arrows change unlocked difficulty; BACK returns to the menu/lobby.
-Training instructions and Retry/Back, ranking-page arrows and BACK are clickable too.
+Challenge instructions and Retry/Back, ranking-page arrows and BACK are clickable too.
 Online menus have clickable rows, a room-code number pad, DELETE, BACK and cancel buttons.
 At the end of a chapter, the results show each player's stage totals and the team summary.
 After three seconds, click, shoot, or press Enter to continue. Either online player can advance both games.

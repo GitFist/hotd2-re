@@ -8,7 +8,7 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 ## Features
 
-- **Game modes:** Arcade, Original, Training, Boss, Scene Select, and Horde.
+- **Game modes:** Arcade, Original, Challenges (formerly Training), Boss, Scene Select, and Horde.
 - **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
 - **Online co-op:** two-player rooms, public lobbies, private room codes, and reconnect support.
 - **Flexible controls:** mouse, touchpad, touch, in-game light-gun setup for two players, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
@@ -30,7 +30,7 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-The October 23 update adds **Update and restart** and fixes Chapter 6 knife throwers running out of reach and pulling the camera away after one enemy is killed. The previous Night Shift audio, Extras, leaderboard and menu improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+October 23 Build B moves **Challenges** into Play with clearer objective captions, shortens startup, makes menu shading consistent, and defaults new settings to red blood. It also uses a stable shared-leaderboard compatibility ID across routine releases and architectures. Updated ranking servers can include compatible legacy scores; operators should follow the [ranking service rollout instructions](server/lobby/RANKINGS.md). **Update and restart**, the Chapter 6 knife-thrower fix, and previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
