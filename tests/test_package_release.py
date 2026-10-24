@@ -79,6 +79,26 @@ const char* const kBuildName = "2026 10 19 NS32";
         with self.assertRaises(ValueError):
             release.pe_info(fake_pe(self.root / "not-an-exe.exe", dll=True))
 
+    def test_updater_version_does_not_override_architecture_display_label(self):
+        (self.source / "src/port/tools/play.cpp").write_text('''#if INTPTR_MAX == INT64_MAX
+constexpr uint32_t kBuildId = 2026102300;
+const char* const kBuildName = "2026 10 23 A";
+#else
+constexpr uint32_t kBuildId = 2026102301;
+const char* const kBuildName = "2026 10 23 NS32 A";
+#endif
+const char* const kUpdateBuildName = "2026 10 23 A";
+''')
+        exe = fake_pe(self.root / "updater.exe", "x86", "2026 10 23 NS32 A")
+        exe.write_bytes(exe.read_bytes() + b"2026 10 23 A\0")
+        info = release.executable_info(exe, self.source, "x86")
+        self.assertEqual((info["buildLabel"], info["sourceBuildId"]), ("2026 10 23 NS32 A", 2026102301))
+        wide = fake_pe(self.root / "updater64.exe", "x64", "2026 10 23 A")
+        self.assertEqual(release.executable_info(wide, self.source, "x64")["sourceBuildId"], 2026102300)
+        missing_display = fake_pe(self.root / "missing-label.exe", "x86", "2026 10 23 A")
+        with self.assertRaises(ValueError):
+            release.executable_info(missing_display, self.source, "x86")
+
     def test_truncated_or_hostile_pe_offsets_are_rejected(self):
         for data in (b"MZ", b"not an exe", self.exe.read_bytes()[:160]):
             broken = self.root / "broken.exe"

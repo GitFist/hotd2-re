@@ -87,14 +87,19 @@ def executable_info(exe, source_dir, architecture):
         raise ValueError(f"Requested {architecture}, executable is {info['architecture']}")
     source = require_file(source_dir / "src/port/tools/play.cpp").read_text(encoding="utf-8")
     labels = set(re.findall(r'\bkBuildName\s*=\s*"([^"\r\n]+)"', source))
+    # An x86 client also embeds the architecture-independent updater version,
+    # which can equal the x64 display label. Select source labels for the actual
+    # PE architecture before looking for their bytes in the executable.
+    def label_architecture(label):
+        marker = re.search(r"\bNS(32|64)\b", label)
+        return ("x64" if marker[1] == "64" else "x86") if marker else None
+    specific = {label for label in labels if label_architecture(label) == architecture}
+    labels = specific or {label for label in labels if label_architecture(label) is None}
     binary = exe.read_bytes()
     matching = sorted(label for label in labels if label.encode("ascii") + b"\0" in binary)
     if len(matching) != 1:
         raise ValueError("Executable must contain exactly one matching source build label; rebuild or select matching -SourceRoot")
     label = matching[0]
-    suffix = re.search(r"\bNS(32|64)$", label)
-    if suffix and suffix[1] != ("64" if architecture == "x64" else "32"):
-        raise ValueError("Executable build label disagrees with its actual PE machine")
     ids = dict((label, int(build_id)) for build_id, label in re.findall(
         r'\bkBuildId\s*=\s*(\d+)\s*;\s*const\s+char\s*\*\s*const\s+kBuildName\s*=\s*"([^"\r\n]+)"', source))
     info.update(buildLabel=label, sourceBuildId=ids.get(label), sha256=sha256(exe))
