@@ -42,7 +42,7 @@ function Assert-UpdateDownloadUri([Uri]$Uri) {
         throw 'The download address could not be verified.'
     }
     if ($Uri.DnsSafeHost -ceq 'github.com') {
-        if ($Uri.AbsolutePath -cnotmatch '\A/GitFist/hotd2-re/releases/download/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-z]{1,16}/hotd2re-win-(?:x64|x86)\.zip(?:\.sha256)?\z' -or $Uri.Query -ne '') {
+        if ($Uri.AbsolutePath -cnotmatch '\A/GitFist/hotd2-re/releases/download/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-z]{1,16}/(?:hotd2re-win-(?:x64|x86)\.(?:zip|files\.json)(?:\.sha256)?|hotd2re-file-[0-9a-f]{64}\.gz)\z' -or $Uri.Query -ne '') {
             throw 'The download address could not be verified.'
         }
     } elseif ($Uri.DnsSafeHost -cnotin @('release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com')) {
@@ -382,6 +382,46 @@ function Show-UpdateMessage([string]$Message) {
     }
 }
 
+function Get-UpdatePayload($Request, [string]$SessionDirectory) {
+    $release = 'https://github.com/GitFist/hotd2-re/releases/download/' + $Request.tag + '/'
+    $stem = 'hotd2re-win-' + $Request.architecture
+    $stage = Join-Path $Request.root '.hotd2-update/stage'
+    Clear-UpdateStage -Root $Request.root
+    try {
+        # New releases describe independently compressed files. Verify the index,
+        # reuse matching installed bytes, and validate the same complete payload
+        # that the ZIP path supplies before any installed file can be changed.
+        $indexAsset = $stem + '.files.json'
+        $indexChecksum = Join-Path $SessionDirectory 'files.sha256'
+        $indexPath = Join-Path $SessionDirectory 'files.json'
+        Set-UpdateStatus 'Checking which files changed...'
+        Save-UpdateDownload ([Uri]($release + $indexAsset + '.sha256')) $indexChecksum 512 'Checking the update...'
+        $hash = Get-UpdateChecksum ([IO.File]::ReadAllText($indexChecksum)) $indexAsset
+        Save-UpdateDownload ([Uri]($release + $indexAsset)) $indexPath 2097152 'Checking which files changed...'
+        $download = {
+            param($Asset, $Destination, $MaximumBytes, $Description)
+            Save-UpdateDownload ([Uri]($release + $Asset)) $Destination $MaximumBytes $Description
+        }.GetNewClosure()
+        return Expand-VerifiedFileUpdate -Root $Request.root -IndexPath $indexPath -ExpectedSha256 $hash -Stage $stage `
+            -Architecture $Request.architecture -Tag $Request.tag -DownloadFile $download
+    } catch {
+        # Old releases have no file index. Missing/corrupt blobs or unusable local
+        # files also fall back to the independently verified full client ZIP.
+        # Cleanup must succeed before reusing the staging directory.
+        Clear-UpdateStage -Root $Request.root
+        Set-UpdateStatus 'Using the full client download...'
+    }
+    $asset = $stem + '.zip'
+    $checksumPath = Join-Path $SessionDirectory 'download.sha256'
+    $archive = Join-Path $SessionDirectory 'download.zip'
+    Save-UpdateDownload ([Uri]($release + $asset + '.sha256')) $checksumPath 512 'Checking the full update...'
+    $hash = Get-UpdateChecksum ([IO.File]::ReadAllText($checksumPath)) $asset
+    Save-UpdateDownload ([Uri]($release + $asset)) $archive 536870912 'Downloading the full client update...'
+    Set-UpdateStatus 'Verifying the update...'
+    return Expand-VerifiedUpdate -Archive $archive -ExpectedSha256 $hash -Stage $stage `
+        -Architecture $Request.architecture -Tag $Request.tag
+}
+
 function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScriptRoot) {
     $request = $null
     $mutex = $null
@@ -415,18 +455,7 @@ function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScrip
             return 0
         }
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $asset = 'hotd2re-win-' + $request.architecture + '.zip'
-        $release = 'https://github.com/GitFist/hotd2-re/releases/download/' + $request.tag + '/' + $asset
-        $checksumPath = Join-Path $SessionDirectory 'download.sha256'
-        $archive = Join-Path $SessionDirectory 'download.zip'
-        Set-UpdateStatus 'Checking the update...'
-        Save-UpdateDownload ([Uri]($release + '.sha256')) $checksumPath 512 'Checking the update...'
-        $hash = Get-UpdateChecksum ([IO.File]::ReadAllText($checksumPath)) $asset
-        Set-UpdateStatus 'Downloading the update...'
-        Save-UpdateDownload ([Uri]$release) $archive 1073741824 'Downloading the update...'
-        Set-UpdateStatus 'Verifying the update...'
-        Clear-UpdateStage -Root $request.root
-        $payload = Expand-VerifiedUpdate -Archive $archive -ExpectedSha256 $hash -Stage (Join-Path $request.root '.hotd2-update/stage') -Architecture $request.architecture -Tag $request.tag
+        $payload = Get-UpdatePayload $request $SessionDirectory
         Set-UpdateStatus 'Installing the update. Your saves and settings will be kept.'
         $beforeCommit = {
             $launchState.child = [Hotd2Update.Launch]::Suspended($request.executable, (Get-UpdateCommandLine $request), $request.workingDirectory)

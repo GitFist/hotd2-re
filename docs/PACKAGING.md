@@ -68,6 +68,30 @@ executable SHA-256, packaging revision, optional runtimes, privacy exceptions an
 payload hashes. `SHA256SUMS.txt` also hashes the JSON manifest; it excludes itself
 to avoid a hash cycle. The adjacent `.zip.sha256` hashes the final archive.
 
+Public packages also produce `hotd2re-win-<arch>.files.json`, its `.sha256`
+sidecar, and a `file-assets` directory containing `hotd2re-file-<sha256>.gz`
+assets. The index embeds the exact package metadata and describes the compressed
+size and SHA-256 of each payload file. Gzip output is deterministic; identical
+file contents share one asset. Complete packages do not emit these assets.
+
+For a release, upload both architectures' indexes and checksum sidecars, every
+unique gzip asset from both `file-assets` directories, and the existing client
+ZIPs and checksum sidecars. Asset names are flat on GitHub: upload the files,
+not the `file-assets` directory. When names overlap between architectures,
+verify their bytes match and upload that asset once. Finish uploading all assets
+before making the release public/latest. Keep the ZIPs for manual downloads,
+older clients and fallback; the tools do not publish automatically.
+
+The file updater hashes installed files and stages verified copies of unchanged
+ones. It downloads only missing or changed files, verifies the reconstructed
+package, then uses the same transactional install and recovery as ZIP updates.
+Any unavailable or invalid file index or asset triggers a verified ZIP fallback.
+Clients without this updater need one full update to receive it. This is file
+replacement, not binary patching: changing a DLL requires downloading that whole
+compressed DLL. Staging and rollback still require space for the full program,
+and release storage/request counts increase. Saves, settings, original game data
+and installed packs remain outside the public payload.
+
 Synthetic tests create public fixture packages only:
 
 ```powershell

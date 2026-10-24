@@ -1,5 +1,6 @@
 # Offline package validation and crash-recoverable installation. Dot-sourced by
-# the separately launched updater; nothing here downloads or executes a package.
+# the separately launched updater; downloads use its supplied callback and no
+# package code is executed here.
 $script:HotdVerifiedPayloads = @{}
 
 function Assert-HotdPath([string]$Path) {
@@ -117,7 +118,7 @@ function Test-HotdBuildLabel([string]$Path, [string]$Label) {
     } finally { $stream.Dispose() }
 }
 
-function Get-HotdPayload([string]$Payload, [string]$Architecture, [string]$Tag) {
+function Assert-HotdManifestIdentity($Manifest, [string]$Architecture, [string]$Tag) {
     if ($Architecture -notin @('x64', 'x86') -or $Tag -cnotmatch '^v(\d{4})\.(\d{2})\.(\d{2})-([a-z]{1,16})$') {
         throw 'Invalid release architecture or version.'
     }
@@ -125,11 +126,15 @@ function Get-HotdPayload([string]$Payload, [string]$Architecture, [string]$Tag) 
     $null = [datetime]::new([int]$year, [int]$month, [int]$day)
     $expectedLabel = "$year $month $day $revision"
     $alternateLabel = "$year $month $day NS32 $revision"
-    $manifest = Get-HotdJson (Get-HotdChild $Payload 'PACKAGE-MANIFEST.json')
     if ($manifest.format -ne 1 -or $manifest.packageKind -cne 'public' -or $manifest.originalGameDataIncluded -ne $false -or
         $manifest.executable.architecture -cne $Architecture -or
         ($manifest.executable.buildLabel -cne $expectedLabel -and !($Architecture -eq 'x86' -and $manifest.executable.buildLabel -ceq $alternateLabel)) -or
         $manifest.executable.sha256 -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'Package metadata does not match this release.' }
+}
+
+function Get-HotdPayload([string]$Payload, [string]$Architecture, [string]$Tag) {
+    $manifest = Get-HotdJson (Get-HotdChild $Payload 'PACKAGE-MANIFEST.json')
+    Assert-HotdManifestIdentity $manifest $Architecture $Tag
     $files = @($manifest.files)
     if ($files.Count -lt 2 -or $files.Count -gt 512) { throw 'Invalid package file count.' }
     $records = @{}
@@ -167,6 +172,202 @@ function Get-HotdPayload([string]$Payload, [string]$Architecture, [string]$Tag) 
         $records[$metadata] = [pscustomobject]@{ path = $metadata; bytes = ([IO.FileInfo]::new($path)).Length; sha256 = Get-HotdHash $path }
     }
     return $records
+}
+
+function Expand-VerifiedFileUpdate([string]$Root, [string]$IndexPath, [string]$ExpectedSha256, [string]$Stage,
+    [string]$Architecture, [string]$Tag, [scriptblock]$DownloadFile) {
+    $ErrorActionPreference = 'Stop'
+    $rootPath = Assert-HotdPath $Root
+    $indexPath = Assert-HotdPath $IndexPath
+    $stagePath = Assert-HotdPath $Stage
+    if ($stagePath -cne (Get-HotdChild $rootPath '.hotd2-update/stage')) { throw 'Unexpected update staging directory.' }
+    if ([IO.File]::Exists($stagePath) -or [IO.Directory]::Exists($stagePath)) { throw 'Update staging directory already exists.' }
+    if ($ExpectedSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or !$DownloadFile) { throw 'Invalid file-update checksum or downloader.' }
+
+    # Hash and parse the same bounded bytes, never a second read of the index.
+    $stream = [IO.File]::Open($indexPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt 2MB) { throw 'Missing or oversized file-update index.' }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $count = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($count -eq 0) { throw 'Truncated file-update index.' }
+            $offset += $count
+        }
+    } finally { $stream.Dispose() }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    if ($actualHash -ine $ExpectedSha256) { throw 'Downloaded file-update index checksum did not match GitHub.' }
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    try { $index = $utf8.GetString($bytes).TrimStart([char]0xfeff) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Malformed file-update index.' }
+    if (($index.format -isnot [int] -and $index.format -isnot [long]) -or $index.format -ne 1 -or $index.architecture -cne $Architecture -or
+        $index.buildLabel -isnot [string] -or $index.manifestBase64 -isnot [string] -or $index.checksumsBase64 -isnot [string]) {
+        throw 'Invalid file-update metadata.'
+    }
+    try {
+        $manifestBytes = [Convert]::FromBase64String($index.manifestBase64)
+        $checksumBytes = [Convert]::FromBase64String($index.checksumsBase64)
+        if ($manifestBytes.Length -lt 1 -or $manifestBytes.Length -gt 2MB -or $checksumBytes.Length -lt 1 -or $checksumBytes.Length -gt 2MB) {
+            throw 'Invalid metadata size.'
+        }
+        $manifest = $utf8.GetString($manifestBytes).TrimStart([char]0xfeff) | ConvertFrom-Json -ErrorAction Stop
+    } catch { throw 'Malformed embedded package metadata.' }
+    Assert-HotdManifestIdentity $manifest $Architecture $Tag
+    if ($index.buildLabel -cne $manifest.executable.buildLabel) { throw 'File-update build labels disagree.' }
+    $files = @($index.files); $manifestFiles = @($manifest.files)
+    if ($files.Count -lt 2 -or $files.Count -gt 512 -or $files.Count -ne $manifestFiles.Count) { throw 'Invalid file-update file count.' }
+    $records = @{}; $content = @{}; [long]$total = $manifestBytes.Length + $checksumBytes.Length; [long]$packedTotal = 0
+    foreach ($entry in $files) {
+        if ($entry.path -isnot [string]) { throw 'Malformed file-update entry.' }
+        $name = Assert-HotdRelative $entry.path
+        if ($records.ContainsKey($name) -or $name -ieq 'PACKAGE-MANIFEST.json' -or $name -ieq 'SHA256SUMS.txt' -or
+            (!(Test-HotdManaged $name) -and $name -cne 'game/PUT_YOUR_GAME_FILES_HERE.txt')) { throw "Unexpected file-update file: $name" }
+        if (($entry.bytes -isnot [int] -and $entry.bytes -isnot [long]) -or $entry.bytes -lt 0 -or $entry.bytes -gt 512MB -or
+            ($entry.packedBytes -isnot [int] -and $entry.packedBytes -isnot [long]) -or $entry.packedBytes -le 0 -or $entry.packedBytes -gt 512MB -or
+            $entry.sha256 -isnot [string] -or $entry.sha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+            $entry.packedSha256 -isnot [string] -or $entry.packedSha256 -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'Invalid file-update size or hash.' }
+        $total += $entry.bytes; $packedTotal += $entry.packedBytes
+        if ($total -gt 1GB -or $packedTotal -gt 512MB) { throw 'File update exceeds its size limit.' }
+        $key = $entry.sha256.ToLowerInvariant()
+        if ($content.ContainsKey($key)) {
+            $prior = $content[$key]
+            if ($prior.bytes -ne $entry.bytes -or $prior.packedBytes -ne $entry.packedBytes -or $prior.packedSha256 -ine $entry.packedSha256) {
+                throw 'Conflicting content-addressed file metadata.'
+            }
+        } else { $content[$key] = $entry }
+        $null = Get-HotdChild $rootPath $name
+        $records[$name] = $entry
+    }
+    foreach ($name in $records.Keys) {
+        $parent = $name
+        while ($parent.Contains('/')) {
+            $parent = $parent.Substring(0, $parent.LastIndexOf('/'))
+            if ($records.ContainsKey($parent)) { throw 'File-update file and directory paths collide.' }
+        }
+    }
+    $seen = @{}
+    foreach ($entry in $manifestFiles) {
+        if ($entry.path -isnot [string] -or !$records.ContainsKey($entry.path) -or $seen.ContainsKey($entry.path)) { throw 'File-update manifest paths disagree.' }
+        $record = $records[$entry.path]
+        if ($entry.path -cne $record.path -or ($entry.bytes -isnot [int] -and $entry.bytes -isnot [long]) -or
+            $entry.bytes -ne $record.bytes -or $entry.sha256 -isnot [string] -or $entry.sha256 -ine $record.sha256) { throw 'File-update manifest sizes or hashes disagree.' }
+        $seen[$entry.path] = $true
+    }
+    foreach ($required in @('hotd2.exe', 'scenes/st1_play.scene')) {
+        if (!$records.ContainsKey($required) -or $records[$required].bytes -eq 0) { throw "Required program file missing: $required" }
+    }
+    if ($records['hotd2.exe'].sha256 -ine $manifest.executable.sha256) { throw 'Executable hashes disagree.' }
+
+    # GZipStream on supported Windows runtimes can accept a missing trailer.
+    # Explicit CRC/length checks also reject truncated streams that inflate fully.
+    if (!('Hotd2Update.FilePayload' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.IO.Compression;
+namespace Hotd2Update {
+    public static class FilePayload {
+        private static readonly uint[] CrcTable = MakeTable();
+        private static uint[] MakeTable() {
+            var table = new uint[256];
+            for (uint i = 0; i < 256; ++i) {
+                uint value = i;
+                for (int bit = 0; bit < 8; ++bit) value = (value >> 1) ^ ((value & 1) != 0 ? 0xedb88320u : 0u);
+                table[i] = value;
+            }
+            return table;
+        }
+        public static void Expand(Stream input, Stream output, long expected) {
+            if (input.Length < 18) throw new InvalidDataException("Truncated compressed update file.");
+            input.Position = 0;
+            if (input.ReadByte() != 31 || input.ReadByte() != 139 || input.ReadByte() != 8 || (input.ReadByte() & 224) != 0)
+                throw new InvalidDataException("Invalid compressed update header.");
+            input.Position = input.Length - 8;
+            var trailer = new byte[8];
+            int position = 0;
+            while (position < trailer.Length) {
+                int read = input.Read(trailer, position, trailer.Length - position);
+                if (read == 0) throw new InvalidDataException("Truncated compressed update trailer.");
+                position += read;
+            }
+            if (BitConverter.ToUInt32(trailer, 4) != expected) throw new InvalidDataException("Compressed update size does not match metadata.");
+            input.Position = 0;
+            uint crc = 0xffffffffu;
+            long total = 0;
+            var buffer = new byte[65536];
+            using (var gzip = new GZipStream(input, CompressionMode.Decompress, true)) {
+                int count;
+                while ((count = gzip.Read(buffer, 0, (int)Math.Min(buffer.Length, expected - total + 1))) != 0) {
+                    total += count;
+                    if (total > expected) throw new InvalidDataException("Unpacked update file exceeds its size limit.");
+                    for (int i = 0; i < count; ++i) crc = CrcTable[(crc ^ buffer[i]) & 255] ^ (crc >> 8);
+                    output.Write(buffer, 0, count);
+                }
+            }
+            if (total != expected || (crc ^ 0xffffffffu) != BitConverter.ToUInt32(trailer, 0))
+                throw new InvalidDataException("Truncated or corrupt compressed update file.");
+        }
+    }
+}
+'@
+    }
+    $null = [IO.Directory]::CreateDirectory($stagePath)
+    $payload = Get-HotdChild $stagePath 'hotd2re'
+    $null = [IO.Directory]::CreateDirectory($payload)
+    [IO.File]::WriteAllBytes((Get-HotdChild $payload 'PACKAGE-MANIFEST.json'), $manifestBytes)
+    [IO.File]::WriteAllBytes((Get-HotdChild $payload 'SHA256SUMS.txt'), $checksumBytes)
+    $stagedContent = @{}; $pending = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $files) {
+        $destination = Get-HotdChild $payload $entry.path
+        $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+        $installed = Get-HotdChild $rootPath $entry.path
+        if ([IO.File]::Exists($installed) -and ([IO.FileInfo]::new($installed)).Length -eq $entry.bytes -and (Get-HotdHash $installed) -ieq $entry.sha256) {
+            Copy-HotdDurable $installed $destination
+            if ((Get-HotdHash $destination) -ine $entry.sha256) { throw 'Installed file changed while staging the update.' }
+            $stagedContent[$entry.sha256] = $destination
+        } else { $pending.Add($entry) }
+    }
+    [long]$downloadBytes = 0; $downloadKeys = @{}
+    foreach ($entry in $pending) {
+        if (!$stagedContent.ContainsKey($entry.sha256) -and !$downloadKeys.ContainsKey($entry.sha256)) {
+            $downloadKeys[$entry.sha256] = $true; $downloadBytes += $entry.packedBytes
+        }
+    }
+    $downloadNumber = 0
+    foreach ($entry in $pending) {
+        $destination = Get-HotdChild $payload $entry.path
+        if ($stagedContent.ContainsKey($entry.sha256)) {
+            Copy-HotdDurable $stagedContent[$entry.sha256] $destination
+            continue
+        }
+        $key = $entry.sha256.ToLowerInvariant()
+        $asset = "hotd2re-file-$key.gz"
+        $blob = Get-HotdChild $stagePath "blobs/$asset"
+        $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($blob))
+        $downloadNumber++
+        $description = 'Downloading changes {0} of {1} ({2:F1} MB total)' -f $downloadNumber, $downloadKeys.Count, ($downloadBytes / 1MB)
+        $null = & $DownloadFile $asset $blob $entry.packedBytes $description
+        $null = Assert-HotdPath $blob
+        $inputStream = [IO.File]::Open($blob, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            if ($inputStream.Length -ne $entry.packedBytes) { throw 'Compressed update file size did not match metadata.' }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $packedHash = ([BitConverter]::ToString($sha.ComputeHash($inputStream))).Replace('-', '').ToLowerInvariant() }
+            finally { $sha.Dispose() }
+            if ($packedHash -ine $entry.packedSha256) { throw 'Compressed update file checksum did not match metadata.' }
+            $outputStream = [IO.FileStream]::new((Assert-HotdPath $destination), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 65536, [IO.FileOptions]::WriteThrough)
+            try { [Hotd2Update.FilePayload]::Expand($inputStream, $outputStream, $entry.bytes); $outputStream.Flush($true) }
+            finally { $outputStream.Dispose() }
+        } finally { $inputStream.Dispose() }
+        if ((Get-HotdHash $destination) -ine $entry.sha256) { throw 'Unpacked update file checksum did not match metadata.' }
+        $stagedContent[$entry.sha256] = $destination
+    }
+    $null = Get-HotdPayload $payload $Architecture $Tag
+    $script:HotdVerifiedPayloads[$payload] = @{ architecture = $Architecture; tag = $Tag; manifestHash = Get-HotdHash (Get-HotdChild $payload 'PACKAGE-MANIFEST.json') }
+    return $payload
 }
 
 function Expand-VerifiedUpdate([string]$Archive, [string]$ExpectedSha256, [string]$Stage, [string]$Architecture, [string]$Tag) {

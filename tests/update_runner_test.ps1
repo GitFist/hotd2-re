@@ -39,6 +39,9 @@ try {
     Check ((ConvertTo-UpdateArgument 'C:\two words\') -ceq '"C:\two words\\"') 'trailing backslash'
     foreach ($address in @(
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x64.files.json',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x86.files.json.sha256',
+        ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-' + ('a' * 64) + '.gz'),
         'https://release-assets.githubusercontent.com/github-production-release-asset/asset?sig=example',
         'https://objects.githubusercontent.com/path')) {
         Assert-UpdateDownloadUri ([Uri]$address)
@@ -49,6 +52,9 @@ try {
         'https://github.com.evil.test/file', 'https://evil.test/file',
         'https://github.com/Other/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64.zip',
         'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.23-a/hotd2re-win-x64-complete.zip',
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-short.gz',
+        ('https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-file-' + ('a' * 64) + '.exe'),
+        'https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-b/hotd2re-win-x64.files.json?redirect=other',
         'https://github.com@evil.test/file', 'https://release-assets.githubusercontent.com:444/file',
         'https://release-assets.githubusercontent.com/file#fragment')) {
         Reject { Assert-UpdateDownloadUri ([Uri]$address) } 'untrusted redirect rejected'

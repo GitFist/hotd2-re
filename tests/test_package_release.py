@@ -1,4 +1,6 @@
 """Synthetic package and read-only game metadata tests; no original game data."""
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -162,6 +164,167 @@ const char* const kUpdateBuildName = "2026 10 23 A";
             digest, relative = line.split("  ", 1)
             self.assertEqual(release.sha256(package / relative), digest)
         self.assertEqual((archive.parent / (archive.name + ".sha256")).read_text().split()[0], release.sha256(archive))
+        index = json.loads((archive.parent / "hotd2re-win-x86.files.json").read_bytes())
+        self.assertEqual({entry["path"] for entry in index["files"]}, {entry["path"] for entry in manifest["files"]})
+        self.assertFalse(any("save.bin" in entry["path"] or "random-sdk" in entry["path"] for entry in index["files"]))
+
+    def test_file_assets_reconstruct_the_exact_legacy_zip_payload(self):
+        for architecture in ("x86", "x64"):
+            with self.subTest(architecture=architecture):
+                exe = fake_pe(self.root / architecture / "hotd2.exe", architecture,
+                              "2026 10 19 NS64" if architecture == "x64" else "2026 10 19 NS32")
+                archive = self.package(architecture=architecture, exe=exe, out=self.root / architecture / "output")
+                package = archive.parent / "hotd2re"
+                index_path = archive.parent / f"hotd2re-win-{architecture}.files.json"
+                index = json.loads(index_path.read_bytes())
+                manifest_bytes = base64.b64decode(index["manifestBase64"], validate=True)
+                checksums_bytes = base64.b64decode(index["checksumsBase64"], validate=True)
+                self.assertEqual(manifest_bytes, (package / "PACKAGE-MANIFEST.json").read_bytes())
+                self.assertEqual(checksums_bytes, (package / "SHA256SUMS.txt").read_bytes())
+                manifest = json.loads(manifest_bytes)
+                self.assertEqual((index["format"], index["architecture"], index["buildLabel"]),
+                                 (1, architecture, manifest["executable"]["buildLabel"]))
+                self.assertEqual([{key: entry[key] for key in ("path", "bytes", "sha256")} for entry in index["files"]],
+                                 manifest["files"])
+                self.assertEqual(index_path.with_name(index_path.name + ".sha256").read_text(),
+                                 f"{release.sha256(index_path)}  {index_path.name}\n")
+                restored = {"PACKAGE-MANIFEST.json": manifest_bytes, "SHA256SUMS.txt": checksums_bytes}
+                for entry in index["files"]:
+                    blob = archive.parent / "file-assets" / f"hotd2re-file-{entry['sha256']}.gz"
+                    compressed = blob.read_bytes()
+                    self.assertEqual(len(compressed), entry["packedBytes"])
+                    self.assertEqual(hashlib.sha256(compressed).hexdigest(), entry["packedSha256"])
+                    restored[entry["path"]] = gzip.decompress(compressed)
+                    self.assertEqual(len(restored[entry["path"]]), entry["bytes"])
+                    self.assertEqual(hashlib.sha256(restored[entry["path"]]).hexdigest(), entry["sha256"])
+                self.assertIn("game/PUT_YOUR_GAME_FILES_HERE.txt", restored)
+                for line in checksums_bytes.decode("ascii").splitlines():
+                    digest, relative = line.split("  ", 1)
+                    self.assertEqual(hashlib.sha256(restored[relative]).hexdigest(), digest)
+                with zipfile.ZipFile(archive) as legacy_zip:
+                    self.assertIsNone(legacy_zip.testzip())
+                    self.assertEqual(set(legacy_zip.namelist()), {"hotd2re/" + name for name in restored})
+                    for name, data in restored.items():
+                        self.assertEqual(legacy_zip.read("hotd2re/" + name), data)
+
+    def test_file_assets_are_deterministic_and_deduplicate_identical_payloads(self):
+        (self.source / "LICENSE").write_bytes((self.source / "THIRD_PARTY_NOTICES.txt").read_bytes())
+        first = self.package(out=self.root / "first")
+        second = self.package(out=self.root / "second")
+        name = "hotd2re-win-x86.files.json"
+        self.assertEqual((first.parent / name).read_bytes(), (second.parent / name).read_bytes())
+        index = json.loads((first.parent / name).read_bytes())
+        entries = {entry["path"]: entry for entry in index["files"]}
+        self.assertEqual(entries["LICENSE-native-code.txt"]["sha256"], entries["THIRD_PARTY_NOTICES.txt"]["sha256"])
+        self.assertEqual(entries["LICENSE-native-code.txt"]["packedSha256"], entries["THIRD_PARTY_NOTICES.txt"]["packedSha256"])
+        blobs = list((first.parent / "file-assets").iterdir())
+        self.assertEqual(len(blobs), len({entry["sha256"] for entry in index["files"]}))
+        for blob in blobs:
+            data = blob.read_bytes()
+            self.assertEqual(data, (second.parent / "file-assets" / blob.name).read_bytes())
+            self.assertEqual(data[:4], b"\x1f\x8b\x08\x00")  # no original filename
+            self.assertEqual(data[4:8], b"\0" * 4)  # deterministic mtime
+
+        # The consumer bounds all rows even though shared blobs download once.
+        maximum = sum(entry["packedBytes"] for entry in index["files"]) - 1
+        self.assertLessEqual(sum(blob.stat().st_size for blob in blobs), maximum)
+        output = self.root / "compressed-limit"
+        output.mkdir()
+        manifest = json.loads((first.parent / "hotd2re/PACKAGE-MANIFEST.json").read_bytes())
+        with patch.object(release, "MAX_FILE_ASSETS_BYTES", maximum):
+            with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                release.write_file_assets(first.parent / "hotd2re", output, manifest["executable"])
+        self.assertFalse((output / name).exists())
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "File-update consumer requires Windows PowerShell")
+    def test_python_file_assets_stage_with_windows_powershell_consumer(self):
+        (self.source / "src/port/tools/play.cpp").write_text(
+            'constexpr uint32_t kBuildId = 2026102400;\nconst char* const kBuildName = "2026 10 24 A";\n')
+        exe = fake_pe(self.root / "interop/hotd2.exe", "x64", "2026 10 24 A")
+        (self.source / "LICENSE").write_bytes((self.source / "THIRD_PARTY_NOTICES.txt").read_bytes())
+        archive = self.package(architecture="x64", exe=exe)
+        index = archive.parent / "hotd2re-win-x64.files.json"
+        installed = self.root / "isolated installation"
+        installed.mkdir()
+        script = self.root / "stage-file-update.ps1"
+        script.write_text(r'''param($Consumer, $Root, $Index, $Hash, $Assets)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+. $Consumer
+$calls = [Collections.Generic.List[string]]::new()
+$download = {
+    param($Asset, $Destination, $MaximumBytes, $Description)
+    $calls.Add($Asset)
+    Copy-Item -LiteralPath (Join-Path $Assets $Asset) -Destination $Destination
+}.GetNewClosure()
+$payload = Expand-VerifiedFileUpdate -Root $Root -IndexPath $Index -ExpectedSha256 $Hash `
+    -Stage (Join-Path $Root '.hotd2-update/stage') -Architecture x64 -Tag 'v2026.10.24-a' -DownloadFile $download
+[pscustomobject]@{ payload = $payload; downloads = $calls.ToArray() } | ConvertTo-Json -Compress
+''', encoding="utf-8")
+        powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        result = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+             "-Consumer", str(release.REPO / "src/port/update/update_transaction.ps1"),
+             "-Root", str(installed), "-Index", str(index), "-Hash", release.sha256(index),
+             "-Assets", str(archive.parent / "file-assets")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = json.loads(result.stdout)
+        payload = Path(output["payload"])
+        expected = {"hotd2re-file-" + entry["sha256"] + ".gz" for entry in json.loads(index.read_bytes())["files"]}
+        self.assertEqual(set(output["downloads"]), expected)
+        self.assertEqual(len(output["downloads"]), len(expected))
+        with zipfile.ZipFile(archive) as contents:
+            restored = {path.relative_to(payload).as_posix(): path.read_bytes() for path in payload.rglob("*") if path.is_file()}
+            self.assertEqual({"hotd2re/" + name for name in restored}, set(contents.namelist()))
+            for name, data in restored.items():
+                self.assertEqual(data, contents.read("hotd2re/" + name), name)
+
+    def test_file_assets_recheck_staged_payload_before_emitting_blobs(self):
+        archive = self.package()
+        package = archive.parent / "hotd2re"
+        manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_bytes())
+        path = package / "hotd2.exe"
+        original = path.read_bytes()
+        for name, changed in (("same-size", bytes([original[0] ^ 1]) + original[1:]), ("wrong-size", original + b"x")):
+            with self.subTest(name=name):
+                path.write_bytes(changed)
+                output = self.root / name
+                output.mkdir()
+                with self.assertRaisesRegex(ValueError, "payload verification failed"):
+                    release.write_file_assets(package, output, manifest["executable"])
+                self.assertEqual(list(output.iterdir()), [])
+        path.write_bytes(original)
+
+    def test_file_asset_bounds_and_player_paths_are_rejected(self):
+        archive = self.package()
+        package = archive.parent / "hotd2re"
+        manifest_path = package / "PACKAGE-MANIFEST.json"
+        original = manifest_path.read_bytes()
+        manifest = json.loads(original)
+        records = manifest["files"]
+        index = archive.parent / "hotd2re-win-x86.files.json"
+        limits = (("MAX_PUBLIC_FILES", len(records) - 1, "payload count"),
+                  ("MAX_PUBLIC_FILE_BYTES", max(entry["bytes"] for entry in records) - 1, "payload size"),
+                  ("MAX_PUBLIC_TOTAL_BYTES", sum(entry["bytes"] for entry in records), "unpacked size limit"),
+                  ("MAX_FILE_INDEX_BYTES", index.stat().st_size - 1, "index exceeds"))
+        for constant, maximum, message in limits:
+            with self.subTest(limit=constant):
+                output = self.root / constant
+                output.mkdir()
+                with patch.object(release, constant, maximum), self.assertRaisesRegex(ValueError, message):
+                    release.write_file_assets(package, output, manifest["executable"])
+                self.assertFalse((output / index.name).exists())
+                self.assertFalse((output / (index.name + ".sha256")).exists())
+        for name in ("hotd2re_settings.ini", "game/Hod2.exe", "../outside.txt", "dxc-licenses/NUL.txt"):
+            with self.subTest(path=name):
+                manifest["files"] = records + [dict(path=name, bytes=0, sha256=hashlib.sha256(b"").hexdigest())]
+                manifest_path.write_text(json.dumps(manifest))
+                output = self.root / ("invalid-path-" + str(len(list(self.root.iterdir()))))
+                output.mkdir()
+                with self.assertRaisesRegex(ValueError, "payload path"):
+                    release.write_file_assets(package, output, manifest["executable"])
+                self.assertEqual(list(output.iterdir()), [])
+        manifest_path.write_bytes(original)
 
     def test_optional_runtime_requires_matching_pe_and_all_notices(self):
         exe = fake_pe(self.root / "vendor/hotd2.exe", "x64", "2026 10 19 NS64")
@@ -258,6 +421,8 @@ const char* const kUpdateBuildName = "2026 10 23 A";
                 checksum = archive.with_name("hotd2re-complete.zip.sha256")
                 self.assertEqual(checksum.read_text(),
                                  f"{release.sha256(archive)}  hotd2re-complete.zip\n")
+                self.assertFalse((archive.parent / "file-assets").exists())
+                self.assertFalse(list(archive.parent.glob("*.files.json*")))
                 with zipfile.ZipFile(archive) as contents:
                     self.assertIsNone(contents.testzip())
                     for entry in entries:
