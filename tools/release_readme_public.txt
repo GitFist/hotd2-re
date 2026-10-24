@@ -42,8 +42,13 @@ Never give your private hotd2re_rejoin.bin ticket to another player.
 Normal hotd2.exe launches enable sound, including custom game paths/options. Switching
 windows keeps gameplay and sound running; use Esc to pause manually when needed.
 Normal launches check the official GitHub release page once in the background. A newer
-version opens a prompt at the local title/main menu, offering Open download page or Later.
-Downloads and installation are manual. --no-update-check disables the check.
+version offers Update and restart, Open download page, or Later at the local title/main
+menu. Update and restart downloads and verifies the matching Windows version, closes
+the game, replaces its program files, and reopens it. Saves, settings, controller
+calibration, original game data and installed packs are kept. Failed installations
+restore the previous program files; an interrupted update is recovered on next launch.
+Keep the .hotd2-update folder if recovery needs another attempt. A writable local game
+folder and Windows PowerShell are required. --no-update-check disables the check.
 
 ONLINE TWO-PLAYER
 Home has Host Online, Browse Lobby and Peer to Peer actions; Online also opens

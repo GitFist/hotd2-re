@@ -5,6 +5,13 @@
 #include <thread>
 
 #include "port/update/update_check.h"
+#include "port/update/update_install.h"
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 namespace {
 int checks = 0, failures = 0;
@@ -18,6 +25,23 @@ std::string Release(const std::string& current, const std::string& tag) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Use Windows' actual parser: spaces, Unicode, embedded quotes and trailing
+    // slashes must survive handing a path to the external updater unchanged.
+    for (const std::wstring value : {L"", L"plain", L"C:\\Games\\House of the Dead 2\\", L"a\\\"b",
+                                     L"a\"b\\\\", L"$(Get-Item .); ' & stuff", L"C:\\Games\\\u6d4b\u8bd5\\"}) {
+        const auto line = L"test.exe " + port::update::QuoteWindowsArgument(value);
+        int count = 0;
+        auto parsed = CommandLineToArgvW(line.c_str(), &count);
+        Check(parsed && count == 2 && value == parsed[1], "updater argument round trip through Windows");
+        if (parsed) LocalFree(parsed);
+    }
+    std::string launchError;
+    Check(!port::update::StartUpdate("v2026.10.24-a\";evil", &launchError) && !launchError.empty(),
+          "invalid update tag cannot launch a helper");
+    Check(!port::update::StartUpdate("v2026.10.24-a", &launchError),
+          "test/development executable cannot replace a player installation");
+#endif
     Check(Release("2026 10 19 W", "v2026.10.19-x") == "v2026.10.19-x", "newer revision is available");
     Check(Release("2026 10 19 W", "v2026.10.19-w").empty(), "equal release is ignored");
     Check(Release("2026 10 19 W", "v2026.10.19-v").empty(), "older revision is ignored");

@@ -1,5 +1,29 @@
 # Stage 6: the native stage 6, the final boss, the ending and the name entry
 
+## Knife thrower runaway (2026-10-23)
+
+The second encounter in scene 0 spawns three actor-0x31 enemies, skeleton 0x18,
+variant 3 (records 0x00977D44 / 0x00977D70 / 0x00977D9C). Killing only one and
+waiting let a survivor exhaust its knives and enter behaviour 30. That behaviour
+was missing from TaskActor31, so the previous walking motion continued indefinitely.
+The still-live actor also remained a camera target, pulling the view away.
+
+Ported the original 0x0044F900 knife-regeneration behaviour: switch to the pose's
+stationary motion, wait for the existing node callback to grow the blades, restore
+only intact empty hands and their hit spheres, then resume behaviour 7. The camera
+needs no separate change. The unrelated generic enemy throw/jump path is unchanged.
+
+`chapter6_encounter_test <game dir>` replays the opening encounter, kills each of
+the three possible first victims in separate runs, waits 3,600 frames, checks that
+survivors stay within the encounter and regenerate knives, then shoots both and
+verifies the camera resumes. Both x64 and x86 pass all three first-kill choices,
+releasing the camera at frames 5105 / 5219 / 5256. A negative control with only the
+behaviour-30 dispatch removed fails at frame 2101 because knife regeneration never
+completes (the earlier position-only check also failed at frame 2301).
+
+Local builds are labelled 2026 10 23 A (x64) / 2026 10 23 NS32 A (x86), with new
+multiplayer compatibility IDs 2026102300 / 2026102301 because simulation changed.
+
 ## Skippable credits (build U, 2026-10-16)
 
 With port features enabled, either player's fresh trigger/click or Start/Enter edge exits

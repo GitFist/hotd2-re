@@ -1,0 +1,5 @@
+#pragma once
+namespace port::update {
+inline constexpr char kTransactionScript[] = R"HOTD2UPD(@HOTD2_TRANSACTION_SCRIPT@)HOTD2UPD";
+inline constexpr char kRunnerScript[] = R"HOTD2UPD(@HOTD2_RUNNER_SCRIPT@)HOTD2UPD";
+}

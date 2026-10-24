@@ -111,8 +111,9 @@ public:
     bool UsableDisplaySize(int* w, int* h) const;
     void SetGameImage(const input::ImageRect& image);
 
-    // Main thread, at the title / main menu: offer the official release page or continue playing.
-    void NotifyUpdate(const std::string& currentBuild, const std::string& availableTag);
+    // Main thread at the local title/main menu; true requests update and restart.
+    bool NotifyUpdate(const std::string& currentBuild, const std::string& availableTag);
+    void NotifyUpdateError(const std::string& message);
 
     // GPU device for the window (fixed back buffer of width x height scaled to the window, or followWindowSize), or an
     // off-screen device when headless.

@@ -13,6 +13,49 @@ int PoseMotion(const Actor31Task& a, int m0, int m1, int m2, int m3) {
     }
 }
 
+// 30: 0x0044F900 regenerate the knives, then resume walking (7). The node callback grows the blades and clears
+// 0x8000000; hold the pose while it runs so the previous walk motion cannot carry the actor out of the encounter.
+void Beh30(World::Impl& w, Actor31Task& a) {
+    switch (a.sub) {
+    case 0: {
+        a.flags34 |= 0x2000;
+        const int motion = PoseMotion(a, 0x208, 0x1FD, 0x1F3, 0x205);
+        if (a.anim.motion[0] != motion) w.AnimBlendTo(a, motion, 0, 5);
+        a.f1384 = 0.0f;
+        a.flags136C |= 0x8000000;
+        ++a.sub;
+        [[fallthrough]];
+    }
+    case 1: {
+        if (a.flags136C & 0x8000000) return;
+        const uint32_t table = w.exe.U32(0x004D032C + static_cast<uint32_t>(a.anim.kind) * 4);
+        auto restore = [&](int hand, int empty, int armed) {
+            EnemyNode& node = a.anim.nodes[hand];
+            if (node.model != empty) return;
+            node.model = armed;
+            const uint32_t row = table + static_cast<uint32_t>(hand - 1) * 0x14;
+            node.radius = F32(w.exe, row + 0x10);
+            for (int i = 0; i < 3; ++i) node.local[i] = F32(w.exe, row + 4 + i * 4);
+            const uint32_t bit = w.exe.U32(0x004C4D18 + static_cast<uint32_t>(hand)) & 0x1F;
+            a.lostParts = static_cast<uint8_t>(a.lostParts & ~(1u << bit));
+        };
+        restore(5, 0x1FF1, 0x1FF3);
+        restore(8, 0x1FED, 0x1FEF);
+        ++a.sub;
+        [[fallthrough]];
+    }
+    case 2:
+        if (w.MotionTicks(a.anim.motion[0]) - 1 <= a.anim.tick[0]) {
+            a.behaviour = 7;
+            a.sub = 0;
+            a.flags34 &= ~0x2000u;
+        }
+        return;
+    default:
+        return;
+    }
+}
+
 // 34: 0x00451480 appear: blink in three steps toward the record point (P word 1 frames first), then P byte 3
 void Beh34(World::Impl& w, Actor31Task& a) {
     if (a.sub > 1) {

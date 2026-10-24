@@ -2083,7 +2083,7 @@ void Beh23(World::Impl& w, Actor31Task& a, Task& t) {
     }
 }
 
-#include "game/world_st6_actor31.inl"  // skeleton 0x18: behaviours 33 / 34 (stage 6)
+#include "game/world_st6_actor31.inl"  // skeleton 0x18: behaviours 30 / 33 / 34 (stage 6)
 
 // 0x00449910
 void TaskActor31(Task& t) {
@@ -2109,6 +2109,7 @@ void TaskActor31(Task& t) {
     case 10: Beh10(w, a); break;
     case 20: Beh20(w, a); break;
     case 26: Beh26(w, a); break;
+    case 30: Beh30(w, a); break;
     case 31: Beh31(w, a); break;
     case 32: Beh32(w, a, t); break;  // stage 4 (skeleton 0x17)
     case 24: Beh24(w, a, t); break;

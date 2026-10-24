@@ -23,11 +23,24 @@ add_library(port_assets STATIC assets/asset_override.cpp)
 target_include_directories(port_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Optional startup release check, independent of SDL and deterministic game / net state.
-add_library(port_update STATIC update/update_check.cpp)
+add_library(port_update STATIC update/update_check.cpp update/update_install.cpp)
 target_include_directories(port_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
 if(WIN32)
+  # Embed the helper so existing packaging picks it up with hotd2.exe. No extra
+  # installed scripts or runtime dependencies beyond Windows PowerShell/.NET.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    update/update_transaction.ps1 update/update_runner.ps1)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/update/update_transaction.ps1" HOTD2_TRANSACTION_SCRIPT)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/update/update_runner.ps1" HOTD2_RUNNER_SCRIPT)
+  # MSVC limits individual string tokens; adjacent per-line literals retain the
+  # exact script bytes without requiring a separate distributed helper file.
+  foreach(script HOTD2_TRANSACTION_SCRIPT HOTD2_RUNNER_SCRIPT)
+    string(REPLACE "\n" ")HOTD2UPD\"\nR\"HOTD2UPD(\n" ${script} "${${script}}")
+  endforeach()
+  configure_file(update/update_scripts.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/update_scripts.h" @ONLY)
+  target_include_directories(port_update PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(port_update PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(port_update PUBLIC winhttp)
+  target_link_libraries(port_update PUBLIC winhttp shell32 ole32)
 endif()
 add_executable(update_check_test ${PROJECT_SOURCE_DIR}/tests/update_check_test.cpp)
 target_link_libraries(update_check_test PRIVATE port_update)

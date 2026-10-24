@@ -79,11 +79,16 @@ records persistently; older clients display abbreviated names. Local records wor
 
 UPDATES AND EXISTING SAVES
 Normal launches check the official GitHub release page once in the background. A newer
-build is offered at the local title/main menu: Open download page or Later. Downloading
-and installation are manual. Offline/failed checks stay silent. Pass --no-update-check
+build is offered at the local title/main menu: Update and restart, Open download page,
+or Later. Update and restart downloads and verifies the matching Windows version,
+closes the game, replaces its program files, and reopens it. Saves, settings, controller
+calibration, original game data and installed packs are kept. Failed installations
+restore the previous program files; an interrupted update is recovered on next launch.
+Keep the .hotd2-update folder if recovery needs another attempt. A writable local game
+folder and Windows PowerShell are required. Offline/failed checks stay silent. Pass --no-update-check
 to disable this check. Scripted/headless/direct gameplay launches skip it.
 
-When updating, close the game and extract the ENTIRE new ZIP into a separate writable
+If updating manually, close the game and extract the ENTIRE new ZIP into a separate writable
 folder. Keep its new executable, all accompanying DLLs, licenses and scenes together.
 Replacing only hotd2.exe can leave older, incompatible graphics runtimes installed.
 To retain your progress and preferences, copy these files from your old hotd2re folder

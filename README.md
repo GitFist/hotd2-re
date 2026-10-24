@@ -18,7 +18,7 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 - **Graphics options:** fullscreen/windowed display, AA and texture filtering, render scaling, optional lighting effects, CRT, red/green blood and separate optional 2× textures. Supported x64 hardware can use vendor upscaling/frame generation and experimental ray shadows.
 - Graphics reset, menu opacity, Hide UI for live inspection, and saved gameplay crosshair visibility. The system mouse cursor hides during play; manual pause remains available while switching windows keeps the game and sound running.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
-- Background update notifications at the title/main menu, with a link to the official download page.
+- Background update notifications with **Update and restart**, preserving saves, settings and installed packs, with recovery if installation is interrupted.
 
 ## Getting started
 
@@ -30,13 +30,15 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-Build E adds automatic online-name entry after completed runs, working shared leaderboards with 12-character names, all 38 named music tracks, the Extras model viewer and audio library, master and attraction volume controls, visible scroll hints, and host-controlled online difficulty. Menus stay sharp independently of gameplay render scale, and the startup window stays hidden until its first frame is ready. Earlier Night Shift features and the creature, Emperor, smoke, scenery and skipped-dialogue corrections remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+The October 23 update adds **Update and restart** and fixes Chapter 6 knife throwers running out of reach and pulling the camera away after one enemy is killed. The previous Night Shift audio, Extras, leaderboard and menu improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
-The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. Choose **Open download page** or **Later**. Downloads and installation are manual; failed checks stay silent. Launch with `--no-update-check` to disable the check.
+The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update and restart** downloads and verifies the matching Windows client, closes the game, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.
 
-Close the game and extract the **entire new ZIP into a fresh writable folder**. Keep the new executable, accompanying DLLs, licenses and `scenes` together. Replacing only the executable can leave incompatible older runtimes installed.
+**Later** keeps you playing, and **Open download page** remains available for manual installation. Failed checks stay silent. Launch with `--no-update-check` to disable the check. Versions before October 23 need one manual update to gain the updater; follow the instructions below for that first update.
+
+For a manual update, close the game and extract the **entire new ZIP into a fresh writable folder**. Keep the new executable, accompanying DLLs, licenses and `scenes` together. Replacing only the executable can leave incompatible older runtimes installed.
 
 Before launching, copy your existing `hotd2re_settings.ini`, `hotd2re_save.bin`, and any `hotd2re_horde_records.txt`, `hotd2re_lightguns.ini` and `hotd2re_wii.ini` into the new `hotd2re` folder, replacing its supplied default settings. Copy installed visual-pack folders if your settings select them. Keep the old folder as a backup until you have checked the new version. Both online players should update together and create a new room.
 
