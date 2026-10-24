@@ -591,6 +591,51 @@ void NightShiftMenuFrame(World::Impl& w) {
     LoadSprites(w,spriteStart);
 }
 
+void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,8>& labels,
+                                const std::string& difficulty) {
+    w.hud.menuPanels.clear();
+    w.hud.menuText.clear();
+    const size_t first=w.hudSprites.size();
+    // The classic font table pads short difficulty names to a fixed column.
+    const auto firstLetter=difficulty.find_first_not_of(' ');
+    const std::string difficultyLabel=firstLetter==std::string::npos?"":difficulty.substr(firstLetter);
+    Panel(w,0,0,640,480,0xEC090D10);
+    Panel(w,0,0,640,94,0x6505090B);
+    Panel(w,26,65,614,67,0xFF92272D);
+    Panel(w,0,440,640,480,0xC8090D10);
+    Text(w,26,20,"MULTIPLAYER LOBBY",1.2f);
+    Text(w,28,80,"CONNECTED / SELECT A GAME MODE",.43f,0xFFB9AA91);
+
+    Panel(w,26,130,164,339,0x95101315);
+    Panel(w,26,130,164,132,0xFF92272D);
+    Text(w,40,146,"YOUR PARTY",.48f,0xFFB9AA91);
+    Text(w,40,183,"PLAYER 1",.68f);
+    Text(w,40,207,"HOST",.46f,0xFFB9AA91);
+    Panel(w,40,240,150,241,0x354E514E);
+    Text(w,40,263,"PLAYER 2",.68f);
+    Text(w,40,287,"CONNECTED",.46f,0xFFB9AA91);
+
+    // Match the existing lockstep pointer bands exactly, including their gaps.
+    for(size_t i=0;i<labels.size();++i) {
+        const float top=(5.f+float(i)*1.1f)*24.f+10.f;
+        const bool selected=int(i)==w.front.menuCursor;
+        Button(w,184,top,600,top+24,i==6?"DIFFICULTY":labels[i],selected,.67f);
+        if(i==6) {
+            Text(w,420,top+5,difficultyLabel,.67f,selected?0xFFFFF4E5:0xFFD1CCC2);
+            if(selected) {
+                Text(w,395,top+5,"<",.67f);
+                Text(w,580,top+5,">",.67f);
+            }
+        }
+    }
+    Panel(w,184,365,600,419,0x75101315);
+    Text(w,198,378,"UNLIMITED CONTINUES",.53f,0xFFB9AA91);
+    Text(w,546,375,w.cfg.creditSetting<0?"ON":"OFF",.67f);
+    Text(w,198,402,"PLAYER 1 CHOOSES THE MODE AND DIFFICULTY",.40f,0xFFB2B3AB);
+    Text(w,28,454,"HOST: ARROWS SELECT / ADJUST   ENTER / SHOOT CONFIRM   ESC LEAVES ROOM",.40f,0xFFB2B3AB);
+    LoadSprites(w,first);
+}
+
 void NightShiftGameOptionsFrame(World::Impl& w,const std::vector<NightShiftOptionRow>& rows,int cursor,
                                 const std::string& help) {
     w.hud.menuPanels.clear();

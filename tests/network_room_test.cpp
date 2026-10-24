@@ -1,4 +1,6 @@
 // Connected room lifecycle: P1 authority, all modes, repeat games, and deterministic replay.
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +29,38 @@ static void ShootDifficulty(game::World& w, int p) {
     gun.fired = true; gun.pressed = gun.held = 4;
     w.SetInput(p, gun); w.Step(); Step(w);
 }
+static bool HasMenuText(const game::World& w, const char* text, bool ignoreCase = false) {
+    for (const auto& line : w.Hud().menuText) {
+        if (line.text == text) return true;
+        if (ignoreCase && line.text.size() == std::strlen(text) &&
+            std::equal(line.text.begin(), line.text.end(), text, [](unsigned char a, unsigned char b) {
+                return std::toupper(a) == std::toupper(b);
+            })) return true;
+    }
+    return false;
+}
+static void ModernRoom(const game::World& w, const char* difficulty) {
+    Require(w.Hud().nightShiftPage == 10 && !w.Hud().menuPanels.empty() && !w.Hud().menuText.empty(),
+            "connected room exposes the Night Shift panel and text presentation");
+    for (const char* label : {"ARCADE", "ORIGINAL", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "LEAVE ROOM", "DIFFICULTY"})
+        Require(HasMenuText(w, label), "modern room retains its mode, difficulty and leave labels");
+    Require(HasMenuText(w, difficulty, true), "modern room displays the effective shared difficulty");
+    int selected = 0;
+    bool matchesCursor = false;
+    const float centerY = (5.0f + w.Hud().menuCursor * 1.1f) * 24.0f + 22.0f;
+    for (const auto& panel : w.Hud().menuPanels) {
+        if (panel.color != 0xED8F2026) continue;
+        ++selected;
+        matchesCursor = panel.left == 184 && panel.right == 600 && panel.top <= centerY && panel.bottom > centerY;
+    }
+    Require(selected == 1 && matchesCursor, "one red room button follows the selected clickable row");
+}
+static void Aim(game::World& w, int x, int y, uint32_t buttons = 0, bool shot = false) {
+    game::WorldInput gun;
+    gun.kind = 1; gun.x = x; gun.y = y;
+    gun.pressed = gun.held = buttons; gun.fired = shot;
+    w.SetInput(0, gun); w.SetInput(1, {}); w.Step();
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     Require(play::WorldKeyboardBits(8, true, true) == 4, "Enter confirms, not pauses");
@@ -51,19 +85,32 @@ int main(int argc, char** argv) {
     Step(w, 90);
     Require(w.NetworkLobby(), "room does not automatically start");
     Require(w.GetPortGameOptions().difficulty == 2, "room starts with shared saved difficulty");
+    ModernRoom(w, "NORMAL");
+    Aim(w, 320, 168);
+    Require(w.Hud().menuCursor == 1, "host aim selects the displayed Original row");
+    Aim(w, 320, 168, 0x20); Aim(w, 320, 168);
+    Require(w.Hud().menuCursor == 2, "parked room pointer preserves keyboard navigation");
+    ModernRoom(w, "NORMAL");
+    Aim(w, 630, 465, 4, true);
+    Require(w.NetworkLobby() && w.Hud().menuCursor == 2, "blank room shot cannot start the focused mode");
+    Aim(w, 320, 142);
+    Require(w.Hud().menuCursor == 0, "moving room pointer selects Arcade again");
     for (int i = 0; i < 6; ++i) Tap(w, 0, 0x20);
     Require(w.Hud().menuCursor == 6, "difficulty follows the six existing mode rows");
+    ModernRoom(w, "NORMAL");
     Tap(w, 1, 0xCC); ShootDifficulty(w, 1);
     Require(w.NetworkLobby() && w.Hud().menuCursor == 6 && w.GetPortGameOptions().difficulty == 2,
             "guest keyboard and gun cannot change difficulty or start a game");
     Tap(w, 0, 0x80);
     Require(w.GetPortGameOptions().difficulty == 3 && w.NetworkLobby(), "host right selects Hard without starting");
+    ModernRoom(w, "HARD");
     Tap(w, 0, 0x40);
     Require(w.GetPortGameOptions().difficulty == 2, "host left selects previous difficulty");
     Tap(w, 0, 4);
     Require(w.GetPortGameOptions().difficulty == 3 && w.NetworkLobby(), "host Enter cycles difficulty");
     ShootDifficulty(w, 0);
     Require(w.GetPortGameOptions().difficulty == 4 && w.NetworkLobby(), "host click or shot cycles difficulty");
+    ModernRoom(w, "VERY HARD");
     Tap(w, 0, 0x80);
     Require(w.GetPortGameOptions().difficulty == 0, "difficulty wraps from Very Hard to Very Easy");
     Tap(w, 0, 0x40);
@@ -75,8 +122,11 @@ int main(int argc, char** argv) {
     for (int choice : {0, 1, 2, 3, 5, 0}) {
         for (int i = 0; i < choice; ++i) { Input(w, 0, 0x20); w.Step(); Step(w); }
         Require(w.Hud().menuCursor == choice, "host navigates room");
+        ModernRoom(w, "HARD");
         Input(w, 0, 4); w.Step(); Step(w, 500);
         Require(w.GameMode() == 6, "selected mode starts");
+        Require(w.Hud().nightShiftPage != 10 && w.Hud().menuPanels.empty() && w.Hud().menuText.empty(),
+                "room presentation clears when the selected game starts");
         Require(w.Hud().gameType == ((choice == 1 || choice == 5) ? 1 : choice >= 2 ? 3 : 0), "correct mode type");
         Require((w.Hud().randomizerSeed != 0) == (choice == 5), "randomizer is isolated from other modes");
         Require(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5, "both reserved players start together");
@@ -107,8 +157,7 @@ int main(int argc, char** argv) {
                 "return preserves room and timeline, clears pause");
         Require(w.Hud().menuCursor == 0, "room resets to Arcade");
         Require(w.GetPortGameOptions().difficulty == 3, "difficulty persists between games in the same room");
-        Require(w.Hud().texFiles.empty() && w.Hud().sprites.size() > 100,
-                "returning lobby font and background remain visible after stage texture residency");
+        ModernRoom(w, "HARD");
         printf("PASS mode %d: both players start and return to the same room\n", choice);
     }
     // A fresh replay includes difficulty changes before both games. Each peer
@@ -153,7 +202,22 @@ int main(int argc, char** argv) {
     Require(finite.StartNetworkGame(finiteCfg), "finite room starts");
     Tap(finite, 0, 4); Step(finite, 100);
     Require(finite.GameMode() == 6 && finite.Hud().credits > 0, "finite room continues survive saved free play");
+    game::World classic;
+    Require(classic.Load(argv[1]), "classic room world loads");
+    auto classicCfg = cfg;
+    classicCfg.portModernMenu = false;
+    Require(classic.StartNetworkGame(classicCfg), "classic connected room starts");
+    Step(classic, 2);
+    Require(classic.NetworkLobby() && classic.Hud().nightShiftPage < 0 && classic.Hud().menuPanels.empty() &&
+            classic.Hud().menuText.empty() && classic.Hud().sprites.size() > 100,
+            "Classic connected room retains its original sprite presentation");
+    Tap(classic, 0, 4); Step(classic, 100);
+    Require(classic.GameMode() == 6, "Classic connected room still starts Arcade");
+    classic.RequestTitle(); Step(classic);
+    Require(classic.NetworkLobby() && classic.Hud().nightShiftPage < 0 && classic.Hud().menuPanels.empty() &&
+            classic.Hud().menuText.empty() && classic.Hud().sprites.size() > 100,
+            "Classic room presentation returns after gameplay");
     w.LeaveNetworkRoom(); Step(w);
     Require(!w.NetworkRoom() && w.GameMode() == 3, "explicit leave ends room");
-    printf("PASS keyboard mappings, host difficulty authority, applied ranks, room rules, repeat games, and 1300 replay frames\n");
+    printf("PASS modern/Classic room presentation, pointer focus, host difficulty authority, applied ranks, room rules, repeat games, and 1300 replay frames\n");
 }

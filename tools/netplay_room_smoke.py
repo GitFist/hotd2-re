@@ -87,10 +87,9 @@ def run(exe, relay=False, endpoint=None, rejoin=False, night_shift=False):
     guest = [(1000, 32), (1020, 8), (2280, 4096), (2400, 4096)]
     if night_shift:
         host[0]=(1500,8)
-        # Return is after both existing device-setup rows in the current pause
-        # page. Keep this fixture's navigation aligned with the actual menu.
-        host += [(2440,32),(2450,32)]
-        host.sort()
+        # Pause now has Resume, Options, Return to Lobby: two Down presses.
+        # Keep the existing Enter, Right, Enter confirmation and checkpoints.
+        host = [(frame, bits) for frame, bits in host if frame not in (2480, 2490, 2500)]
         guest=guest[2:]
     try:
         for role, events in (('host', host), ('join', guest)):

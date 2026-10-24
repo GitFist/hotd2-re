@@ -3583,9 +3583,10 @@ int main(int argc, char** argv) {
             const auto lobbyHud = ModernLobbyHud(lobby, net);
             play::AppendNightShiftPanels(lobbyHud, sprites, viewportAspect, volumes.display.menuOpacity);
             uiFont.Append(lobbyHud.menuText, sprites, port::ViewportXScale(viewportAspect));
-        } else if (world.NetworkLobby()) {
+        } else if (world.NetworkLobby() && world.Hud().nightShiftPage < 0) {
             // A connected lobby is a complete 2D screen, independent of the last stage's
-            // camera, near plane, models and texture residency (as with the pause menu).
+            // camera, near plane, models and texture residency. Night Shift rooms
+            // use the panels and native text in the modern-menu branch below.
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             sprites = scene.MakeSpriteDraws(world.Hud().sprites, 0.001f, nullptr);
@@ -3697,7 +3698,7 @@ int main(int argc, char** argv) {
                 if (uiFont.Available()) uiFont.Append(world.Hud().menuText, sprites, port::ViewportXScale(viewportAspect));
                 for (const auto& hint : world.Hud().menuScrollHints)
                     play::AppendMenuScrollHint(hint, sprites, viewportAspect);
-                if (!world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
+                if (world.NetworkLobby() || !world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
             }
         } else {
             vp = scene.BuildFromWorld(renderer, world);

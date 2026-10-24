@@ -152,9 +152,11 @@ void World::Impl::FrontStep() {
     hud.menuCursor = front.menuCursor;
     hud.gameType = front.gameType;
     hud.nightShiftPage = cfg.portFeatures && (cfg.portModernMenu || (gameMode == 4 && front.nightShiftPage == 9))
-                            ? (gameMode == 4 ? front.nightShiftPage : gameMode == 12 ? 7 : -1)
+                            ? (gameMode == 4 ? front.nightShiftPage : gameMode == 12 ? 7
+                               : gameMode == 15 && cfg.portNetworkRoom ? 10 : -1)
                             : -1;
-    hud.nightShiftRow = gameMode == 12 && modes ? modes->optCursor : front.nightShiftRow;
+    hud.nightShiftRow = gameMode == 15 && cfg.portNetworkRoom ? front.menuCursor
+                       : gameMode == 12 && modes ? modes->optCursor : front.nightShiftRow;
     hud.portLobbyRequests = front.portLobbyRequests;
     hud.portModelViewerRequests = front.modelViewerRequests;
     hud.portLobbyAction = front.portLobbyAction;

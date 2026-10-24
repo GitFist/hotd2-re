@@ -8,6 +8,7 @@
 #include "game/world_modes.h"
 #include "game/menu_text.h"
 #include "game/menu_pointer.h"
+#include "game/world_nightshift.h"
 
 namespace game {
 
@@ -87,14 +88,19 @@ void RoomFrame(World::Impl& w) {
         w.Note("network room: host selected " + std::to_string(choice));
         return;
     }
+    static const std::array<const char*, rows> labels = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "", "LEAVE ROOM" };
+    const std::string difficultyName = w.exe.CStr(0x00569758 + static_cast<uint32_t>(w.cfg.difficulty) * 10);
+    if (w.cfg.portFeatures && w.cfg.portModernMenu) {
+        NightShiftNetworkRoomFrame(w, labels, difficultyName);
+        return;
+    }
     game::MenuBackground(w.hudSprites);
     auto text = [&](float x, float y, const char* s, uint32_t flags) {
         MenuText(w.exe, x, y, s, flags, w.hudSprites);
     };
     text(0, 1.7f, "MULTIPLAYER LOBBY", 2);
     text(0, 3.3f, "PLAYER 1 HOST", 0x42);
-    static const char* labels[] = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "", "LEAVE ROOM" };
-    const std::string difficulty = "DIFFICULTY: " + w.exe.CStr(0x00569758 + static_cast<uint32_t>(w.cfg.difficulty) * 10);
+    const std::string difficulty = "DIFFICULTY: " + difficultyName;
     for (int i = 0; i < rows; ++i)
         text(12, rowStart + i * rowStep, i == difficultyRow ? difficulty.c_str() : labels[i], i == w.front.menuCursor ? 0x10 : 1);
     text(0, 14.0f, w.cfg.creditSetting < 0 ? "UNLIMITED CONTINUES ON" : "UNLIMITED CONTINUES OFF", 0x42);
