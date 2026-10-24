@@ -423,11 +423,20 @@ function Install-Update([string]$Root, [string]$Payload, [scriptblock]$FaultInje
         $oldManifest = Get-HotdChild $rootPath 'PACKAGE-MANIFEST.json'
         if ([IO.File]::Exists($oldManifest)) {
             $old = Get-HotdJson $oldManifest
-            if ($old.format -ne 1 -or @($old.files).Count -gt 512) { throw 'Existing package manifest is invalid.' }
+            # Complete downloads also list the player's original game data.
+            # Packaging allows up to 10,000 such records; they never become
+            # update targets. Keep the smaller bound for managed program files
+            # and for all downloaded client payloads.
+            $complete = $old.PSObject.Properties['packageKind'] -and $old.packageKind -ceq 'complete'
+            $maximumOldFiles = if ($complete) { 10512 } else { 512 }
+            if ($old.format -ne 1 -or @($old.files).Count -gt $maximumOldFiles) { throw 'Existing package manifest is invalid.' }
+            $managedFiles = 0
             foreach ($entry in @($old.files)) {
                 if ($entry.path -isnot [string]) { throw 'Invalid old package record.' }
                 $name = Assert-HotdRelative $entry.path
-                if (!(Test-HotdManaged $name) -or $records.ContainsKey($name) -or $name -ieq 'hotd2.exe') { continue }
+                if (!(Test-HotdManaged $name)) { continue }
+                if (++$managedFiles -gt 512) { throw 'Existing package has too many managed program files.' }
+                if ($records.ContainsKey($name) -or $name -ieq 'hotd2.exe') { continue }
                 $path = Get-HotdChild $rootPath $name
                 if ([IO.File]::Exists($path)) {
                     if ($entry.sha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or (Get-HotdHash $path) -ine $entry.sha256) { throw "Obsolete program file was modified: $name" }

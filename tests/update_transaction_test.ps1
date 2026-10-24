@@ -145,6 +145,44 @@ try {
     Assert (![IO.File]::Exists((Join-Path $root 'dxcompiler.dll'))) 'Obsolete managed runtime was left installed.'
     Assert-PlayerFiles $root
 
+    # Complete installations inventory thousands of player-owned game assets.
+    # Their old inventory must not inherit the small public update payload limit.
+    $root = New-TestInstallation completeinventory
+    [IO.File]::WriteAllText((Join-Path $root 'dxcompiler.dll'), 'old runtime')
+    $completeRecords = @(
+        @{ path = 'dxcompiler.dll'; sha256 = Get-HotdHash (Join-Path $root 'dxcompiler.dll') },
+        @{ path = 'game/Hod2.exe'; sha256 = '0' * 64 },
+        @{ path = 'hotd2re_settings.ini'; sha256 = '0' * 64 }
+    )
+    $completeRecords += @(0..599 | ForEach-Object { @{ path = "game/asset-$_.bin"; sha256 = '0' * 64 } })
+    [IO.File]::WriteAllText((Join-Path $root 'PACKAGE-MANIFEST.json'), (@{
+        format = 1; packageKind = 'complete'; originalGameDataIncluded = $true; files = $completeRecords
+    } | ConvertTo-Json -Depth 8))
+    $payload = Expand-TestPackage $root
+    Install-Update $root $payload
+    Assert ((Get-HotdHash (Join-Path $root 'hotd2.exe')) -ceq (Get-HotdHash (Join-Path $payload 'hotd2.exe'))) 'Complete installation was not updated.'
+    Assert (![IO.File]::Exists((Join-Path $root 'dxcompiler.dll'))) 'Complete inventory retained an obsolete managed runtime.'
+    Assert (!(Test-UpdatePending $root)) 'Complete installation left a pending transaction.'
+    Assert-PlayerFiles $root
+
+    $root = New-TestInstallation oversizedmanagedinventory
+    $managedRecords = @(0..512 | ForEach-Object { @{ path = "vendor-licenses/nvidia/old-$_.txt"; sha256 = '0' * 64 } })
+    [IO.File]::WriteAllText((Join-Path $root 'PACKAGE-MANIFEST.json'), (@{
+        format = 1; packageKind = 'complete'; originalGameDataIncluded = $true; files = $managedRecords
+    } | ConvertTo-Json -Depth 8))
+    $payload = Expand-TestPackage $root
+    Assert-Throws { Install-Update $root $payload } 'Complete inventory bypassed the managed-file limit.'
+    Assert-OldInstallation $root
+
+    $root = New-TestInstallation unsafeoldinventory
+    $unsafeRecords = @($completeRecords) + @(@{ path = 'game/../outside.txt'; sha256 = '0' * 64 })
+    [IO.File]::WriteAllText((Join-Path $root 'PACKAGE-MANIFEST.json'), (@{
+        format = 1; packageKind = 'complete'; originalGameDataIncluded = $true; files = $unsafeRecords
+    } | ConvertTo-Json -Depth 8))
+    $payload = Expand-TestPackage $root
+    Assert-Throws { Install-Update $root $payload } 'Unsafe old inventory path was accepted.'
+    Assert-OldInstallation $root
+
     foreach ($kind in @('traversal', 'duplicate', 'link', 'reserved', 'ads', 'settings')) {
         $root = New-TestInstallation $kind x64 $kind
         Assert-Throws { Expand-TestPackage $root } "Unsafe $kind package was accepted."
@@ -224,7 +262,7 @@ try {
     Assert (!(Test-UpdatePending $root)) 'Committed transaction did not finalize.'
     Assert-PlayerFiles $root
 
-    Write-Output 'PASS: update package validation, player file preservation, stale runtime removal, rollback, launch failure, locked files, interruption recovery, and committed recovery.'
+    Write-Output 'PASS: update package validation, complete-install inventories, player file preservation, stale runtime removal, rollback, launch failure, locked files, interruption recovery, and committed recovery.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($script:Scratch)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

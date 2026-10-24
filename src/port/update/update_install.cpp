@@ -138,8 +138,8 @@ bool Launch(bool recover, const std::string& tag, std::string* error) {
             L" -RequestPath " + QuoteWindowsArgument((session / L"request.json").wstring());
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
-        startup.dwFlags = STARTF_USESHOWWINDOW;
-        startup.wShowWindow = SW_HIDE;
+        // Hide only the console. SW_HIDE also overrides the helper's first
+        // ShowWindow call and makes its WinForms progress dialog invisible.
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(powershell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
                 nullptr, root.c_str(), &startup, &process))
@@ -147,7 +147,8 @@ bool Launch(bool recover, const std::string& tag, std::string* error) {
         Handle child{process.hProcess}, thread{process.hThread};
         const auto deadline = GetTickCount64() + 10000;
         for (;;) {
-            // The helper is not allowed to install while this process is alive.
+            // The helper has shown its progress window before signaling ready,
+            // and is not allowed to install while this process is alive.
             if (fs::is_regular_file(session / L"ready") && WaitForSingleObject(child.value, 0) == WAIT_TIMEOUT)
                 return true;
             if (WaitForSingleObject(child.value, 50) == WAIT_OBJECT_0) {

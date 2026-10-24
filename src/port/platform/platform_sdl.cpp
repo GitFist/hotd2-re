@@ -531,12 +531,14 @@ void Platform::SetGameImage(const input::ImageRect& image) {
 bool Platform::NotifyUpdate(const std::string& currentBuild, const std::string& availableTag) {
     if (!impl_->window) return false;
     const std::string message = "HOTD2RE " + availableTag + " is available.\n\nYou are running " + currentBuild +
-        ".\n\nUpdate and restart downloads and installs it for you. Your saves, settings and installed packs will be kept."
-        "\n\nChoose Later to keep playing.";
+        ".\n\nUpdate now closes the game and opens an update progress window."
+        "\nThe game restarts when the update is complete."
+        "\nYour saves, settings and installed packs will be kept."
+        "\n\nChoose Download for manual installation, or Later to keep playing.";
     const SDL_MessageBoxButtonData buttons[] = {
         { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later" },
-        { 0, 2, "Open download page" },
-        { 0, 1, "Update and restart" }
+        { 0, 2, "Download" },
+        { 0, 1, "Update now" }
     };
     const SDL_MessageBoxData box = {
         SDL_MESSAGEBOX_INFORMATION, impl_->window, "HOTD2RE - Update available", message.c_str(), 3, buttons, nullptr

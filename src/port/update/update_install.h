@@ -4,8 +4,9 @@
 
 namespace port::update {
 
-// Returns true only after the helper has acquired the installation lock and is
-// waiting for this process to exit. The caller must then quit normally.
+// Returns true only after the helper has acquired the installation lock, shown
+// its progress window, and is waiting for this process to exit. The caller must
+// then quit normally.
 bool StartUpdate(const std::string& tag, std::string* error);
 
 enum class Recovery { None, Started, Failed };

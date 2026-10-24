@@ -120,6 +120,27 @@ function Get-UpdateMutexName([string]$Root) {
 function Initialize-UpdateWindow {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+    if (-not ('Hotd2Update.ProgressWindow' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Hotd2Update {
+    public static class ProgressWindow {
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+        public static void Show(IntPtr window) {
+            // Form.Visible can be true even when STARTUPINFO hid the native
+            // window. A second explicit show repairs that inherited state.
+            ShowWindow(window, 5);
+            if (!IsWindowVisible(window))
+                throw new InvalidOperationException("The update progress window could not be shown. You can keep playing and try again.");
+        }
+    }
+}
+'@
+    }
     [Windows.Forms.Application]::EnableVisualStyles()
     $script:UpdateForm = New-Object Windows.Forms.Form
     $script:UpdateForm.Text = 'The House of the Dead 2 - Update'
@@ -137,6 +158,7 @@ function Initialize-UpdateWindow {
     $script:UpdateForm.Controls.Add($script:UpdateStatus)
     $script:UpdateForm.Controls.Add($script:UpdateProgress)
     $script:UpdateForm.Show()
+    [Hotd2Update.ProgressWindow]::Show($script:UpdateForm.Handle)
     [Windows.Forms.Application]::DoEvents()
 }
 
@@ -352,7 +374,12 @@ function Start-UpdateGame($Request) {
 }
 
 function Show-UpdateMessage([string]$Message) {
-    [void][Windows.Forms.MessageBox]::Show($Message, 'The House of the Dead 2 - Update', 'OK', 'Warning')
+    if ($null -ne $script:UpdateForm) {
+        [Hotd2Update.ProgressWindow]::Show($script:UpdateForm.Handle)
+        [void][Windows.Forms.MessageBox]::Show($script:UpdateForm, $Message, 'The House of the Dead 2 - Update', 'OK', 'Warning')
+    } else {
+        [void][Windows.Forms.MessageBox]::Show($Message, 'The House of the Dead 2 - Update', 'OK', 'Warning')
+    }
 }
 
 function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScriptRoot) {
@@ -406,12 +433,13 @@ function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScrip
         }.GetNewClosure()
         Install-Update -Root $request.root -Payload $payload -BeforeCommit $beforeCommit
         $installed = $true
-        Set-UpdateStatus 'Starting the updated game...'
+        Set-UpdateStatus 'Update complete. Starting the game...' 100
         $launchState.child.Resume()
         $launchState.child.Dispose()
         $launchState.child = $null
         return 0
     } catch {
+        $failureReason = $_.Exception.GetBaseException().Message
         if ($null -ne $launchState.child) {
             try { $launchState.child.Terminate() } catch { $preserveState = $true }
             $launchState.child.Dispose()
@@ -442,8 +470,8 @@ function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScrip
         } else {
             $message = 'The update could not be completed. Your previous version, saves, and settings have been kept. Check your connection and available disk space, then try again. The game will reopen.'
         }
-        if ($null -ne $script:UpdateForm) { $script:UpdateForm.Hide() }
-        Show-UpdateMessage $message
+        Set-UpdateStatus 'The update needs your attention.'
+        Show-UpdateMessage ($message + "`n`nReason: " + $failureReason)
         if ($parentExited -and -not $rollbackFailed -and -not $installed -and -not $request.recover) {
             try { Start-UpdateGame $request } catch {
                 Show-UpdateMessage 'Windows could not restart the game. Please launch it again.'
