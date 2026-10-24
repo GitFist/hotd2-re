@@ -52,6 +52,7 @@ class RankingServiceTest(unittest.TestCase):
         response = self.service.handle(self.header(2,version)+struct.pack("<IB",build or self.build,table)+self.cookie(version=version),self.addr)
         self.assertLessEqual(len(response),217 if version==2 else 127)
         self.assertEqual(response[:6],b"H2RK"+bytes([version,102]))
+        self.assertEqual(struct.unpack_from("<IB",response,10),(build or self.build,table))
         self.assertEqual(response[15],0)
         row = rankings.ROW_V2 if version==2 else rankings.ROW
         self.assertEqual(len(response),17+response[16]*row.size)
@@ -155,6 +156,50 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.submit(run=run),1)
         self.refill();self.assertEqual(self.submit(run=run,score=200),2)
         self.refill();self.assertEqual(len(self.query()),1)
+
+    def test_compatible_releases_share_existing_records_without_rewriting(self):
+        # Model a database populated before the fix, including both architectures
+        # and separate run IDs from the same display name. Opening/querying must
+        # neither migrate nor deduplicate those independently completed runs.
+        builds = (2026102200,2026102201,2026102300,2026102301)
+        records = [(bytes([index+1])*16,build,0,b"GITFIST",100+index,0,2,1,12345+index)
+                   for index,build in enumerate(builds)]
+        with self.service.db:
+            self.service.db.executemany("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",records)
+        self.service.close();self.service=rankings.Rankings(self.path)
+        for build in (*builds,rankings.LEADERBOARD_COMPATIBILITY_ID):
+            self.refill()
+            self.assertEqual([row[1] for row in self.query(build=build,version=2)],[103,102,101,100])
+        self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),records)
+        # Legacy retries still match their original build and consume no write
+        # token. Reusing their identity for a different build remains a conflict.
+        self.refill()
+        self.assertEqual(self.submit(build=builds[0],name=b"GITFIST",score=100,run=records[0][0],version=2),1)
+        self.assertEqual(self.submit(build=rankings.LEADERBOARD_COMPATIBILITY_ID,name=b"GITFIST",score=100,run=records[0][0],version=2),2)
+        self.assertEqual(self.submit(build=rankings.LEADERBOARD_COMPATIBILITY_ID,name=b"NEW",score=200,version=2),0)
+        self.refill()
+        self.assertEqual([row[1] for row in self.query(build=builds[0])],[200,103,102,101,100])
+        # Unknown/explicitly incompatible namespaces and different game modes
+        # must not accidentally join the current board.
+        self.assertEqual(self.query(build=2,version=2),[])
+        self.refill();self.assertEqual(self.query(build=2026102400,version=2),[])
+        self.assertEqual(self.query(table=1,build=rankings.LEADERBOARD_COMPATIBILITY_ID,version=2),[])
+
+    def test_compatible_boards_merge_before_sorting_and_limiting(self):
+        builds = (2026102200,2026102301,rankings.LEADERBOARD_COMPATIBILITY_ID)
+        for index in range(12):
+            build=builds[index%len(builds)]
+            for board,score,rounds in ((0,100+index,0),(2,1000-index,index+1),(3,100+index,0)):
+                self.assertEqual(self.service._submit(build,board,b"RUN",score,rounds,2,1,secrets.token_bytes(16)),0)
+        self.assertEqual([row[1] for row in self.query(build=builds[0])],list(range(111,101,-1)))
+        self.assertEqual([row[2] for row in self.query(table=2,build=builds[1])],list(range(12,2,-1)))
+        self.refill()
+        self.assertEqual([row[1] for row in self.query(table=3,build=builds[2])],list(range(100,110)))
+        # Per-source retention is unchanged: an update does not prune away
+        # older releases' records, even as new scores fill the stable board.
+        with patch.object(rankings,"MAX_ROWS_PER_BOARD",1):
+            self.assertEqual(self.service._submit(builds[2],0,b"TOP",999,0,2,1,secrets.token_bytes(16)),0)
+        self.assertEqual(self.service.db.execute("SELECT COUNT(*) FROM rankings_v1 WHERE build=? AND board=0",(builds[0],)).fetchone()[0],4)
 
     def test_eligibility_and_fixed_bounds(self):
         cases = [dict(score=0),dict(table=13),dict(name=b"a!?"),dict(name=b"   "),dict(table=2),

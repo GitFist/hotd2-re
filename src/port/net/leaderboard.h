@@ -13,6 +13,10 @@
 namespace port::net {
 
 inline constexpr size_t kLeaderboardMaxNameLength = 12;
+// Shared score compatibility is independent of release dates, CPU architecture,
+// and multiplayer synchronization. Keep this ID across routine updates; change
+// it only when scoring or eligibility changes make existing records incomparable.
+inline constexpr uint32_t kLeaderboardCompatibilityId = 1;
 
 struct LeaderboardEntry {
     std::string name;          // 1..12 uppercase ASCII characters; local save initials remain three characters
@@ -38,6 +42,7 @@ public:
 
     // Resolves DNS on a worker; returns immediately. No request goes out until
     // Query or Submit. Reconfigure invalidates outstanding requests and results.
+    // The protocol's legacy "build" field carries kLeaderboardCompatibilityId.
     bool Configure(const std::string& host, uint16_t port, uint32_t build, std::string* error = nullptr);
     void Query(int table);   // replaces an old query; ignored while a submission is pending
     bool Submit(const LeaderboardSubmission& entry, std::string* error = nullptr);

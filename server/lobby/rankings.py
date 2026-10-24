@@ -18,6 +18,13 @@ MAX_BUILDS = 32
 MAX_TRACKED_IPS = 2048
 MAX_PACKET = 128
 COOKIE_SECONDS = 300
+# Independent of multiplayer's release/architecture IDs. Only incompatible
+# scoring or eligibility changes should create a new leaderboard namespace.
+# These released clients used kBuildId before that separation. Keep their
+# records and retry identities intact; query the compatible IDs together.
+LEADERBOARD_COMPATIBILITY_ID = 1
+COMPATIBLE_BUILDS = (LEADERBOARD_COMPATIBILITY_ID,
+                     2026102200, 2026102201, 2026102300, 2026102301)
 ROW = struct.Struct("<3sIHBB")  # initials, score/60-Hz time, rounds, difficulty/stage, players
 ROW_V2 = struct.Struct("<12sIHBB")
 SUBMIT = struct.Struct("<IB3sIHBB16s")
@@ -98,7 +105,9 @@ class Rankings:
     def _query(self, build, board):
         if not self.db:
             return []
-        return self.db.execute("SELECT name,score,rounds,difficulty,players FROM rankings_v1 WHERE build=? AND board=? ORDER BY " + self._order(board) + " LIMIT 10",(build,board)).fetchall()
+        builds = COMPATIBLE_BUILDS if build in COMPATIBLE_BUILDS else (build,)
+        placeholders = ",".join("?" for _ in builds)
+        return self.db.execute("SELECT name,score,rounds,difficulty,players FROM rankings_v1 WHERE build IN (" + placeholders + ") AND board=? ORDER BY " + self._order(board) + " LIMIT 10",(*builds,board)).fetchall()
 
     def _submit(self, build, board, name, score, rounds, difficulty, players, run):
         if not self.db:

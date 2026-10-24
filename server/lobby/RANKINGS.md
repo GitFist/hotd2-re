@@ -25,8 +25,19 @@ FULL synchronous durability. Board storage is bounded to 1000 results per board/
 the server transactionally widens an existing three-byte `name` constraint to 1–12 bytes,
 preserving the `rankings_v1` table name, run IDs, scores, metadata and timestamps. The table
 rename, copy and index restoration commit together; failure leaves the old table intact.
-No manual data rewrite is required. The game
-partitions results by compatibility build ID. Different scoring/rules builds do not mix.
+No manual data rewrite is required.
+
+Leaderboard compatibility is independent of multiplayer compatibility. New clients use
+`kLeaderboardCompatibilityId = 1` on both architectures; routine game releases keep it.
+Change it only when scoring or run eligibility becomes incompatible. The server queries
+that ID together with the compatible October 22 E and October 23 A legacy IDs
+(`2026102200`, `2026102201`, `2026102300`, `2026102301`). Existing scores become visible
+to both those released clients and new clients without changing stored rows, run IDs or
+retry behavior. Results are sorted together before taking the top ten. Other IDs remain
+isolated, including future multiplayer IDs that have not been explicitly admitted.
+Per-source-build retention limits stay unchanged so joining the boards does not delete
+older scores. Deploy the updated service against its existing database before shipping
+clients using the stable ID; a client-only update cannot restore the old boards.
 
 For a deliberate Docker deployment, the optional overlay adds a persistent named volume:
 
@@ -105,7 +116,7 @@ leave the unsent candidate editable.
 ## Client and verification
 
 `src/port/net/leaderboard.h` exposes `LeaderboardClient`. Configure once with the selected
-lobby hostname, port and build. DNS runs on a worker; requests, retries and receive polling
+lobby hostname, port and leaderboard compatibility ID (not the multiplayer build). DNS runs on a worker; requests, retries and receive polling
 are nonblocking. Each operation has a six-second deadline. `Query` replaces an old query,
 but is ignored during an explicit submission so its acknowledgement is preserved. On a
 finished submission, the UI can report the result and refresh the currently selected board.

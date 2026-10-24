@@ -21,11 +21,17 @@ with tempfile.TemporaryDirectory(prefix="hotd2-rank-client-") as tmp:
         server=None
         try:
             server=lobby.Server("127.0.0.1",0,str(Path(tmp)/"records.sqlite3"))
+            # The stable-ID native client must decode a record saved by a
+            # released client, not just its own freshly submitted records.
+            assert server.rankings._submit(2026102200,6,b"OLD_RELEASE",2468,0,2,1,b"L"*16)==0
             server.sock.settimeout(.1);port.append(server.sock.getsockname()[1]);ready.set()
             while not stop.is_set():
                 try: packet,address=server.sock.recvfrom(65536)
                 except socket.timeout: continue
                 ranking_header=packet[:5] in (b"H2RK\x01",b"H2RK\x02")
+                if ranking_header and packet[5:6] in (b"\x02",b"\x03") and len(packet)>=14:
+                    if struct.unpack_from("<I",packet,10)[0]!=1:
+                        raise AssertionError("client sent a release-specific build instead of stable rankings ID 1")
                 if ranking_header and packet[5:6]==b"\x01" and len(packet)==10:
                     # This fixture exercises independent names/runs in one burst;
                     # rate limiting has separate service tests.

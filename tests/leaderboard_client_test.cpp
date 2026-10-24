@@ -32,7 +32,7 @@ int main(int argc,char** argv) {
     const int port=std::atoi(argv[1]);Require(port>0 && port<65536,"invalid local test port");
     port::net::LeaderboardClient client;
     std::string error;
-    Require(client.Configure("127.0.0.1",static_cast<uint16_t>(port),2026102001,&error),error.c_str());
+    Require(client.Configure("127.0.0.1",static_cast<uint16_t>(port),port::net::kLeaderboardCompatibilityId,&error),error.c_str());
     if (argc>2 && std::strcmp(argv[2],"unavailable")==0) {
         port::net::LeaderboardSubmission pending;pending.table=0;pending.name="AAA";pending.score=100;pending.completionToken=1;
         Require(client.Submit(pending,&error),"valid unavailable-service candidate did not start");Complete(client);
@@ -40,6 +40,10 @@ int main(int argc,char** argv) {
         pending.name="LONG_NAME-12";Require(client.Submit(pending,&error),"hello-only failure incorrectly froze an unsent candidate's name");
         std::puts("PASS unavailable UDP service is bounded, fabricates no records and leaves unsent names editable");return 0;
     }
+    client.Query(6);Complete(client);
+    Require(client.Ready() && client.Error().empty() && client.Entries().size()==1 &&
+            client.Entries()[0].name=="OLD_RELEASE" && client.Entries()[0].score==2468,
+            "stable leaderboard ID did not recover the previous release's record");
     client.Query(7);Complete(client);
     Require(client.Ready() && client.Error().empty() && client.Entries().empty(),"fresh board query failed");
     port::net::LeaderboardSubmission entry;
