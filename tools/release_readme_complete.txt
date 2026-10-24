@@ -80,14 +80,16 @@ records persistently; older clients display abbreviated names. Local records wor
 
 UPDATES AND EXISTING SAVES
 Normal launches check the official GitHub release page once in the background. A newer
-build is offered at the local title/main menu: Update and restart, Open download page,
-or Later. Update and restart downloads and verifies the matching Windows version,
-closes the game, replaces its program files, and reopens it. Saves, settings, controller
+build is offered at the local title/main menu: Update now, Download, or Later.
+Update now opens a visible progress window, closes the game, downloads and verifies
+the matching Windows version, replaces its program files, and reopens it. Saves, settings, controller
 calibration, original game data and installed packs are kept. Failed installations
 restore the previous program files; an interrupted update is recovered on next launch.
 Keep the .hotd2-update folder if recovery needs another attempt. A writable local game
 folder and Windows PowerShell are required. Offline/failed checks stay silent. Pass --no-update-check
 to disable this check. Scripted/headless/direct gameplay launches skip it.
+October 23 Builds A and B need one manual update to receive this updater fix if their
+update window stays hidden or installation fails. Follow the manual steps below.
 
 If updating manually, close the game and extract the ENTIRE new ZIP into a separate writable
 folder. Keep its new executable, all accompanying DLLs, licenses and scenes together.
