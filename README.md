@@ -78,6 +78,8 @@ Home's **Leaderboard** page offers local Arcade, Original, Horde and individual 
 | Back | Esc or Backspace |
 | Quit | Main menu **Exit** or close the window |
 
+**Score display code:** at the title screen or main menu (Night Shift Home or Classic), press **Left, Left, Right, Right, Right, Left, Right, Enter**. A message confirms the toggle; repeat the code to turn it off. Scores appear in each active player's upper corner during gameplay. This preference lasts until you close the game and does not change scoring or leaderboard eligibility.
+
 Open **Options > Game Options > Light Guns** or **Pause > Light Guns** to switch between mouse/touchpad input and light guns, assign Player 1 and Player 2, remap buttons, calibrate aim, and test both guns. Classic menus retain **Options > Light Guns**. See the [light-gun setup guide](docs/LIGHT-GUNS.md).
 
 Open **Extras** below **Online** on Home to preview the audio library (Classic also has an Extras entry). All **38 music tracks** retain their original preview numbers and have descriptive names. **Standard** and **Alternate** distinguish the two recordings of a theme; for example, 01 and 17 are the two Chapter 1 versions. Click or shoot a recording, or select it with the arrows and press Enter, to play it once. Wheel scrolling and the Prev/Next buttons browse each list without stopping playback. Each song has **Play** to start/resume, **Pause**, and **Reset** to rewind and stop; selecting its name restarts it. Left/right moves between music controls and the effects list. Effect names come from the game's audio files. Escape, reload or **Back** stops previews and returns to the main menu. Audio volumes remain in Game Options.

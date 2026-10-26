@@ -68,6 +68,7 @@
 #include "port/play/home_lobby_preview.h"
 #include "port/play/attraction_audio.h"
 #include "port/play/keyboard.h"
+#include "port/play/score_display_code.h"
 #include "port/play/lightgun_menu.h"
 #include "port/play/local_leaderboard.h"
 #include "port/play/night_shift_menu.h"
@@ -620,11 +621,13 @@ std::vector<ScriptLine> LoadScript(const std::string& path) {
 }
 
 // World::Hud -> game::HudState (the HUD layouts read the original's globals; see game/hud.h for each field).
-game::HudState MakeHudState(const game::World& world, const game::WorldInput in[2], int modeAge, uint32_t blink, bool freePlay) {
+game::HudState MakeHudState(const game::World& world, const game::WorldInput in[2], int modeAge, uint32_t blink, bool freePlay,
+                           bool showScores = false) {
     const auto& h = world.Hud();
     const auto options = world.GetPortGameOptions();
     game::HudState s;
     s.gameMode = h.gameMode;
+    s.showScores = showScores;
     if (h.prototype) s.weaponMode = 1;
     s.letterbox = static_cast<int8_t>(h.letterbox);
     s.canShoot = h.canShoot ? 1 : 0;
@@ -641,6 +644,7 @@ game::HudState MakeHudState(const game::World& world, const game::WorldInput in[
         auto& d = s.player[p];
         d.state = static_cast<int16_t>(w.state);
         d.lives = static_cast<int16_t>(w.lives);
+        d.score = w.score;
         d.aimX = w.aim[0];
         d.aimY = w.aim[1];
         d.ammo = static_cast<int16_t>(w.ammo);
@@ -1652,6 +1656,8 @@ int main(int argc, char** argv) {
     std::vector<game::WorldDraw> lastSceneDraws;  // the last unpaused frame's draws: behind the pause menu's display page
     const bool menuEnabled = (!headless && script.empty()) || getenv("HOTD2_PLAY_MENU") != nullptr;  // debug: also with scripts / headless
     uint32_t menuPrevKeys = 0;
+    play::ScoreDisplayCode scoreDisplay;
+    int scoreNoticeUntil = -1;
     // The display settings page over the Options screen (its port-only "Display Settings" row, WorldHud::
     // portDisplayRequests): play.exe draws the page as the whole frame and takes the input while it is open.
     play::LightgunMenu lightgunPage;
@@ -2197,6 +2203,7 @@ int main(int argc, char** argv) {
                     fflush(stdout);
                     if (!active) {
                         g_keys = menuPrevKeys = 0;
+                        scoreDisplay.ResetSequence();
                         typed.clear();
                         typedBackspace = false;
                         wiiMouse = {};
@@ -2255,6 +2262,7 @@ int main(int argc, char** argv) {
                 if (quit) break;
                 if (sndDriver) sndDriver->OnActivate(true);
                 g_keys = menuPrevKeys = 0;
+                scoreDisplay.ResetSequence();
                 typed.clear();
                 typedBackspace = false;
                 lightguns.ReleaseButtons();
@@ -2335,7 +2343,14 @@ int main(int argc, char** argv) {
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
-            const uint32_t scriptedKeyEdges = g_keys & ~menuPrevKeys;
+            const bool scoreCodeEligible = (active || headless) && !netplay && !net.CatchingUp() &&
+                lobby.page == Lobby::kOff && !namePromptWasOpen && !menu.IsOpen() && !optionsPage.IsOpen() &&
+                !wiiPage.IsOpen() && !lightgunPage.IsOpen() && !modelGallery.IsOpen() &&
+                play::ScoreDisplayCode::FrontEnd(world.GameMode(), world.Hud().nightShiftPage);
+            const auto scoreInput = scoreDisplay.Update(g_keys, scoreCodeEligible);
+            const uint32_t frameKeys = scoreInput.keys;
+            if (scoreInput.toggled) scoreNoticeUntil = frame + 150;
+            const uint32_t scriptedKeyEdges = frameKeys & ~menuPrevKeys;
             int menuPausePlayer = 0;
             if (menuEnabled && !net.CatchingUp() && !namePromptWasOpen) {
                 const game::WorldHud& hh = world.Hud();
@@ -2361,7 +2376,7 @@ int main(int argc, char** argv) {
                 menuWasOpen = menu.IsOpen();
                 menuPausePlayer = hh.pausePlayer;
                 if (menuWasOpen && !menuClosing && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
-                    const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
+                    const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
                     std::vector<uint32_t> menuSounds;
                     const play::Settings before = volumes;
                     const bool pageWasOpen = menu.DisplayOpen();
@@ -2415,8 +2430,8 @@ int main(int argc, char** argv) {
             // takes the keys and the device buttons (the world gets no input, so the screen stays as it is).
             bool pageWasOpen = wiiPage.IsOpen() || lightgunPage.IsOpen();
             if ((active || headless) && menuEnabled && wiiPage.IsOpen() && !wiiOpenedThisFrame) {
-                auto mi = menuInput(g_keys & ~menuPrevKeys, 0);
-                if ((g_keys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
+                auto mi = menuInput(frameKeys & ~menuPrevKeys, 0);
+                if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
                 for (int dev = 0; dev < 2; ++dev) {
                     const auto ps = play::DisplayPointer(focusedGuns.Player(dev), volumes.display.graphics.crtCurvature);
                     if (ps.connected && (ps.pressed || ps.menuPressed)) {
@@ -2444,8 +2459,8 @@ int main(int argc, char** argv) {
                 wiiMouse = {};
             }
             if ((active || headless) && menuEnabled && lightgunPage.IsOpen() && !lightgunOpenedThisFrame) {
-                auto mi = menuInput(g_keys & ~menuPrevKeys, 0);
-                if ((g_keys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
+                auto mi = menuInput(frameKeys & ~menuPrevKeys, 0);
+                if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
                 bool deviceAction = false;
                 for (int dev = 0; dev < 2; ++dev) {
                     const auto ps = play::DisplayPointer(focusedGuns.Player(dev), volumes.display.graphics.crtCurvature);
@@ -2495,7 +2510,7 @@ int main(int argc, char** argv) {
             }
             if (menuEnabled && optionsPage.IsOpen() && !pageWasOpen && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
-                const play::MenuInput mi = menuInput(g_keys & ~menuPrevKeys, 0);
+                const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
                 const play::Settings before = volumes;
                 bindOptionValues(optionsPage);
@@ -2536,7 +2551,7 @@ int main(int argc, char** argv) {
                     // machine's keyboard and first device belong to the local player, whichever index that is; the
                     // other player's input comes over the network.
                     static uint32_t prevKeys = 0;
-                    const uint32_t rawKeys = p == kb ? g_keys : 0;
+                    const uint32_t rawKeys = p == kb ? frameKeys : 0;
                     const bool inGame = world.GameMode() == 6 && !world.Hud().stageResults.active && (world.Hud().flags5900 & 0x18) == 0;
                     const bool activePlayer = world.Hud().player[p].state == 5;
                     const uint32_t keys = play::WorldKeyboardBits(rawKeys, inGame, activePlayer);
@@ -2582,7 +2597,7 @@ int main(int argc, char** argv) {
                 const int p = keyboardPlayer();
                 const bool inGame = world.GameMode() == 6 && !world.Hud().stageResults.active && (world.Hud().flags5900 & 0x18) == 0;
                 in[p] = game::WorldInput{};
-                in[p].held = play::WorldKeyboardBits(g_keys, inGame, world.Hud().player[p].state == 5);
+                in[p].held = play::WorldKeyboardBits(frameKeys, inGame, world.Hud().player[p].state == 5);
                 in[p].pressed = play::WorldKeyboardBits(scriptedKeyEdges, inGame, world.Hud().player[p].state == 5);
                 if (menuWasOpen || pageWasOpen) in[p].held = in[p].pressed = 0;
                 netPresent[p] = true;
@@ -2590,7 +2605,7 @@ int main(int argc, char** argv) {
             if (!netplay && headless && !keyScript.empty() && !menuWasOpen && !pageWasOpen) {
                 const int p = keyboardPlayer();
                 const bool playing = world.GameMode() == 6;
-                in[p].held |= play::WorldKeyboardBits(g_keys, playing, world.Hud().player[p].state == 5);
+                in[p].held |= play::WorldKeyboardBits(frameKeys, playing, world.Hud().player[p].state == 5);
                 in[p].pressed |= play::WorldKeyboardBits(scriptedKeyEdges, playing, world.Hud().player[p].state == 5);
             }
             if (!headless && !active && script.empty()) {
@@ -3172,7 +3187,7 @@ int main(int argc, char** argv) {
                 static bool loaded = (tables.Load(assets.Exe()), true);
                 (void)loaded;
                 game::HudState ls =
-                    MakeHudState(world, in, modeAge, world.Hud().paused ? blink : world.Hud().frameCounter, credits < 0);
+                    MakeHudState(world, in, modeAge, world.Hud().paused ? blink : world.Hud().frameCounter, credits < 0, scoreDisplay.Enabled());
                 std::vector<game::SpriteDef> all = WorldSprites(world.Hud());
                 const auto hud = HudSprites(ls, world.Hud(), volumes.display.showCrosshairs);
                 all.insert(all.end(), hud.begin(), hud.end());
@@ -3708,7 +3723,7 @@ int main(int argc, char** argv) {
             }
         } else {
             vp = scene.BuildFromWorld(renderer, world);
-            game::HudState hs = MakeHudState(world, in, modeAge, blink, credits < 0);
+            game::HudState hs = MakeHudState(world, in, modeAge, blink, credits < 0, scoreDisplay.Enabled());
             std::vector<game::SpriteDef> defs = noHud ? std::vector<game::SpriteDef>() : WorldSprites(world.Hud());
             const auto hud = noHud ? std::vector<game::SpriteDef>() : HudSprites(hs, world.Hud(), volumes.display.showCrosshairs);
             defs.insert(defs.end(), hud.begin(), hud.end());
@@ -3734,6 +3749,14 @@ int main(int argc, char** argv) {
                 if (!world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
             }
         }
+        if (!noHud && !modelGallery.IsOpen() && !previewHidden && world.Frame() < scoreNoticeUntil &&
+            play::ScoreDisplayCode::FrontEnd(world.GameMode(), world.Hud().nightShiftPage)) {
+            std::vector<game::SpriteDef> status;
+            game::MenuText(assets.Exe(), 0, 17.5f, scoreDisplay.Enabled() ? "SCORE DISPLAY ON" : "SCORE DISPLAY OFF", 3, status);
+            for (auto& s : status) s.flags |= 0x700;
+            const auto overlay = scene.MakeSpriteDraws(status, 0.0001f, nullptr);
+            sprites.insert(sprites.end(), overlay.begin(), overlay.end());
+        }
         if (!modelGallery.IsOpen() && !previewHidden && ((!networkNotice.empty() && plat.Seconds() < networkNoticeUntil) ||
                                (netplay && (net.PlayingAlone() || net.CatchingUp() || net.SecondsSinceRemote() > 1)))) {
             std::vector<game::SpriteDef> status;
@@ -3755,9 +3778,10 @@ int main(int argc, char** argv) {
         }
         if (volumes.display.statistics && !noHud && !previewHidden && !modelGallery.IsOpen()) {
             std::vector<game::SpriteDef> stats;
-            game::MenuTextScaled(assets.Exe(), 12, 10, perfLabel, 0, .5f, stats);
-            game::MenuTextScaled(assets.Exe(), 12, 27, perfDetail, 0, .42f, stats);
-            game::MenuTextScaled(assets.Exe(), 12, 43, netStalled ? "NETWORK WAIT" : perfVendor, 0, .42f, stats);
+            const float scoreSpace = scoreDisplay.Enabled() && world.GameMode() == 6 ? 24.0f : 0.0f;
+            game::MenuTextScaled(assets.Exe(), 12, 10 + scoreSpace, perfLabel, 0, .5f, stats);
+            game::MenuTextScaled(assets.Exe(), 12, 27 + scoreSpace, perfDetail, 0, .42f, stats);
+            game::MenuTextScaled(assets.Exe(), 12, 43 + scoreSpace, netStalled ? "NETWORK WAIT" : perfVendor, 0, .42f, stats);
             for (auto& s : stats) {
                 s.flags |= 0x700;
                 s.depth = .00001f;

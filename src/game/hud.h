@@ -35,6 +35,7 @@ struct HudPlayer {
     float ammoZoom = 0;         // 0x007C2120[p]: frames of letterbox opening (bullets zoom in; HudAmmoAdvance)
     uint32_t credits = 0;       // 0x009C8E60 + p*8 (credit count; slot p only when 0x009C8E74 != 0)
     int coinState = 0;          // 0x009C8E64 + p*8: 0 "INSERT COIN", 1 0x5BC, 2 "PRESS START"
+    int score = 0;             // Current gameplay score, for the optional port score display.
 };
 
 struct HudState {
@@ -55,6 +56,7 @@ struct HudState {
     int16_t language = 0;       // 0x009C911E (1 selects image subtitles / message 0x8FF->2 variant)
     int32_t continueCount = 0;  // 0x009A2BB8 CONTINUE countdown (0x9FFF, -0x2D per frame; digit = count >> 12)
     HudPlayer player[2];
+    bool showScores = false;   // Port-only score-code toggle; leaves the original HUD unchanged when off.
 };
 
 // --- Player HUD (Player_Task 0x00413E90, state 5) ---------------------------------------------------------------
@@ -67,8 +69,11 @@ void HudAmmoAdvance(HudState& s, int p);
 // 0x004174A0 Hud_DrawLives: label 0x5B9 / 0x5BA and torches 0x6C2.. / 0x6CA.. (letterbox 2), or the blinking skip
 // prompt 0x5B8 (letterbox 4).
 std::vector<SpriteDef> HudLives(const HudState& s, int p);
+// Optional gameplay scores in the upper corners, using the original numeric glyphs. Hidden during
+// letterboxing and non-shooting scenes, and for players who are not actively playing.
+std::vector<SpriteDef> HudScore(const HudState& s, int p);
 // Player_Task's 2D part in order: crosshair; unless mode 5 / 9: (lives > 0) ammo if canShoot, lives. Applies
-// HudAmmoAdvance. Lives / state transitions are not modelled here.
+// HudAmmoAdvance, then appends the optional port score. Lives / state transitions are not modelled here.
 std::vector<SpriteDef> HudPlayerTask(HudState& s, int p);
 
 // --- Credits (0x00406CE0 Hud_DrawCreditLine) ---------------------------------------------------------------------

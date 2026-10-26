@@ -235,6 +235,23 @@ std::vector<SpriteDef> HudLives(const HudState& s, int p) {
     return out;
 }
 
+std::vector<SpriteDef> HudScore(const HudState& s, int p) {
+    std::vector<SpriteDef> out;
+    if (!s.showScores || s.gameMode != 6 || s.letterbox != 2 || s.canShoot == 0) return out;
+    const HudPlayer& pl = s.player[p];
+    if (pl.state != 5 || pl.lives <= 0) return out;
+
+    const std::string digits = std::to_string(pl.score < 0 ? 0 : pl.score);
+    // Keep the centre clear for boss health and Horde round text. Match the native credit glyph size;
+    // right-anchor P2 so gaining another digit never pushes its score outside the safe screen margin.
+    for (size_t i = 0; i < digits.size(); ++i) {
+        const float x = p == 0 ? 24.0f + 12.0f * static_cast<float>(i)
+                               : 616.0f - 12.0f * static_cast<float>(digits.size() - 1 - i);
+        out.push_back(Simple(0x59 + digits[i] - '0', x, 8.0f, kDepth098, kScale085, kScale085, p == 0 ? 5 : 7));
+    }
+    return out;
+}
+
 std::vector<SpriteDef> HudPlayerTask(HudState& s, int p) {
     std::vector<SpriteDef> out = HudCrosshair(s, p);
     if (s.gameMode != 9 && s.gameMode != 5 && s.player[p].lives != 0) {
@@ -246,6 +263,8 @@ std::vector<SpriteDef> HudPlayerTask(HudState& s, int p) {
         const auto l = HudLives(s, p);
         out.insert(out.end(), l.begin(), l.end());
     }
+    const auto score = HudScore(s, p);
+    out.insert(out.end(), score.begin(), score.end());
     return out;
 }
 
