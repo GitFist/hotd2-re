@@ -1,3 +1,7 @@
+# Update requests
+
+- When the user asks to update the game or GitHub, complete the full release: test and build, commit and push, publish the next public release with verified in-game updater assets, and update the user's local client to that same build. A source-code push alone is not a completed update. Honor any explicit request to limit the scope.
+
 # Release versioning
 
 - Public release numbering starts at **1.0**. Every subsequent release advances by **0.1**: 1.1, 1.2, ... 1.9, 2.0, 2.1. Use one decimal digit, not 1.10. Check the latest published public version before assigning the next number; the initial transition from date-only versions is 1.0.

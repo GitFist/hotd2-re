@@ -27,6 +27,12 @@ Extras includes all 38 named music tracks, effects/dialogue previews, and a mode
 Master volume has a gradual scale with quieter low levels. Attraction volume controls the
 background menu loop separately from gameplay music, gunfire and effects.
 
+SCORE DISPLAY CODE
+At the title or main menu (Night Shift Home or Classic), press Left, Left, Right,
+Right, Right, Left, Right, Enter. A message confirms the toggle; repeat to turn it off.
+Each active player's score appears during gameplay. The setting lasts until you
+close the game and does not change scoring or rankings.
+
 ONLINE TWO-PLAYER
 Both players should use this same package.
 1. Use Home > Host Online to host, or Online to open all network choices.

@@ -4,7 +4,7 @@
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring online co-op, additional game modes, and modern controls and display options.
 
-**[Download 1.1 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/HOTD2RE-1.1-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.2 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-a/HOTD2RE-1.2-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -24,17 +24,17 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.1-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.24-d/HOTD2RE-1.1-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.2-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-a/HOTD2RE-1.2-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-**Version 1.1** provides one complete x64 download on the release page. Install it once, then use in-game updates for future releases. Selective updates and full-download fallback are handled automatically through a separate update feed. It includes the Night Shift multiplayer lobby, visible update progress, automatic restart and interrupted-install recovery. The Challenges, shared-leaderboard, Chapter 6 knife-thrower, and previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+**Version 1.2** adds the score display code: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
-The current release is **1.1**. Later releases advance by **0.1**: 1.2, 1.3,
+The current release is **1.2**. Later releases advance by **0.1**: 1.3, 1.4,
 and so on, with 2.0 after 1.9.
 
 The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update now** opens a visible progress window, closes the game, downloads and verifies the matching Windows client, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.

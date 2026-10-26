@@ -13,6 +13,9 @@ This folder contains the port and any accompanying redistributable runtime compo
 
 Controls (mouse / touchpad / light gun): left button = trigger, right button = reload, middle button or Enter = start.
 Keyboard in menus: arrows, Enter (confirm), Esc / Backspace (back). Esc pauses/resumes during play and never quits.
+Score display: at the title or main menu, press Left, Left, Right, Right, Right,
+Left, Right, Enter. Repeat to turn it off. The setting lasts until you close the game.
+Each active player's score appears during gameplay; scoring and rankings are unchanged.
 The pause menu has volume and Graphics Options settings. Settings are kept in hotd2re_settings.ini,
 your rankings in hotd2re_save.bin (both created here).
 Touchpad users: if clicks do nothing in the game, open hotd2re_settings.ini and set  input=mouse
