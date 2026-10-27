@@ -31,6 +31,15 @@ inline void PlaySoundEvent(SoundDriver& driver, const SoundTable& table, const W
     case World::kOptionFeedback:
         PlayOptionSound(driver, table, s.id);
         break;
+    case World::kStrengthChainsawSound: {
+        if (s.id != 0x4D17A9) break;
+        const auto request = ResolveSound(table, s.id, {s.gameMode, s.gameType});
+        // Dreamcast HOD2DC: SND.AFS entry 8, sample 2, playback 0x37 (command A9 17 4D 00).
+        // The intro plays once; only the final 3620 frames sustain until the existing motor-off cue.
+        if (request.action == SoundAction::PlayFile && request.channel == kSndAutoChannel && !request.stopLoopedSe)
+            driver.PlayFile(request.path, true, request.channel, request.dupId, {9542, 13162, 22050});
+        break;
+    }
     case World::kPreviewMusicStart:
         driver.PreviewMusic(table, s.id, true);
         break;

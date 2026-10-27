@@ -96,6 +96,12 @@ At most ten rows are returned. Result status is 0 enabled, 3 disabled or 5 busy.
 underscore and hyphen; empty, all-space, non-ASCII and overlength names are rejected.
 Existing three-character names remain valid in both versions.
 
+Leaderboard responses replace case-insensitive occurrences of `nigga`, `nigger`,
+`n1gger`, `n1gg3r` and `n1gga` with `FUNNY`, preserving the rest of the name.
+For example, `NIGGER JONES` displays as `FUNNY JONES`. This presentation filter
+also covers existing records; submitted names, stored rows, scores and retry
+identities are unchanged. Legacy three-character responses abbreviate the filtered name.
+
 The HMAC cookie binds the source address and UDP port to a five-minute bucket, accepting
 the current/previous bucket. It proves receipt at that endpoint, reducing spoofed requests
 and amplification. It does not authenticate a player. A new hello precedes every operation.

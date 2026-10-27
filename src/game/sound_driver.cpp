@@ -17,7 +17,9 @@ void SoundDriver::PushRing(int ch, uint32_t id) {
 }
 
 // 0x004AC020
-bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint32_t id) {
+bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint32_t id, LoopRegion region) {
+    const bool customLoop = region.startFrame || region.endFrame || region.sampleRate;
+    if (customLoop && (!loop || !region.sampleRate || region.startFrame >= region.endFrame)) return false;
     if (channel == kSndBgmChannel) {
         bgmLoop_ = loop;
         previewMusicId_ = 0;
@@ -58,12 +60,6 @@ bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint
         b_.Open(ch, path, false);  // result ignored by the original
         cat_[ch] = Classify(ch, path);  // port volume setting
         ApplyGain(ch);
-        PushRing(ch, id);
-        if (loop && nLoops_ < 6) {
-            loops_[nLoops_].channel = ch;
-            loops_[nLoops_].id = id;
-            ++nLoops_;
-        }
     } else {
         if (b_.IsPlaying(channel)) {
             b_.Pause(channel);
@@ -73,6 +69,18 @@ bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint
         b_.Open(channel, path, channel == kSndBgmChannel);  // BGM: Snd_OpenChannel(15, path, 1, 3000)
         cat_[channel] = Classify(channel, path);  // port volume setting
         ApplyGain(channel);
+    }
+    if (customLoop && !b_.SetLoopRegion(ch, region.startFrame, region.endFrame, region.sampleRate)) {
+        b_.Release(ch);
+        return false;
+    }
+    if (channel == kSndAutoChannel) {
+        PushRing(ch, id);
+        if (loop && nLoops_ < 6) {
+            loops_[nLoops_].channel = ch;
+            loops_[nLoops_].id = id;
+            ++nLoops_;
+        }
     }
     return b_.Play(ch, loop);
 }
@@ -117,6 +125,8 @@ void SoundDriver::Command(uint32_t cmd) {
             }
         }
         for (int ch = 0; ch < kSndSeChannels; ++ch) b_.Release(ch);
+        // Released channels must not occupy the loop registry or stop unrelated sounds after reuse.
+        nLoops_ = 0;
         return;
     default:
         return;  // 0x100A0 (all sound off), 0x800A0 / 0x900A0 (stereo / mono?) are ignored on PC
@@ -136,6 +146,7 @@ void SoundDriver::StopSlot(int slot) {
     } else {
         for (int ch = 0; ch < kSndChannels; ++ch)
             if (b_.IsPlaying(ch)) b_.Stop(ch);
+        nLoops_ = 0;
     }
 }
 

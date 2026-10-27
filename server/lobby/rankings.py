@@ -6,6 +6,7 @@ must be labelled unverified. No source IP or private room token is persisted.
 """
 import hashlib
 import hmac
+import re
 import secrets
 import sqlite3
 import struct
@@ -38,6 +39,14 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS rankings_v1 (
     difficulty INTEGER NOT NULL CHECK(difficulty BETWEEN 0 AND 6),
     players INTEGER NOT NULL CHECK(players BETWEEN 1 AND 2),
     created INTEGER NOT NULL)"""
+
+_DISPLAY_NAME_WORDS = re.compile(rb"nigga|nigger|n1gger|n1gg3r|n1gga", re.IGNORECASE)
+
+
+def leaderboard_display_name(name):
+    # Presentation only: preserve the original name in storage and retry payloads.
+    # Every replacement is no longer than its match, keeping both wire limits.
+    return _DISPLAY_NAME_WORDS.sub(b"FUNNY", name)
 
 
 class Rankings:
@@ -155,6 +164,7 @@ class Rankings:
                 status = 0 if self.db else 3
             except sqlite3.Error:
                 rows,status = [],5
+            rows = [(leaderboard_display_name(name),*values) for name,*values in rows]
             # Status distinguishes an empty enabled board from an undeployed service.
             out = magic+bytes([102])+request+struct.pack("<IBBB",build,board,status,len(rows))
             if modern:

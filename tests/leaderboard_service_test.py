@@ -83,6 +83,29 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.query()[0][0],b"AMS")
         self.assertEqual(self.query(version=2)[0][0],b"   AMS_LONG")
 
+    def test_leaderboard_display_name_replaces_literal_substrings(self):
+        cases = ((b"NIGGA",b"FUNNY"),(b"NIGGER JONES",b"FUNNY JONES"),
+                 (b"N1GGER",b"FUNNY"),(b"N1GG3R",b"FUNNY"),(b"N1GGA",b"FUNNY"),
+                 (b"xNiGgAz",b"xFUNNYz"),(b"Hi n1Gg3R X",b"Hi FUNNY X"),
+                 (b"NIGGERNIGGER",b"FUNNYFUNNY"),(b"Night Shift",b"Night Shift"),
+                 (b"LONG_NAME-12",b"LONG_NAME-12"),(b"N1GG4",b"N1GG4"))
+        for name,expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(rankings.leaderboard_display_name(name),expected)
+
+    def test_name_substitution_is_query_only_and_precedes_legacy_abbreviation(self):
+        run=secrets.token_bytes(16)
+        original=b"NIGGER JONES"
+        self.assertEqual(self.submit(name=original,score=900,difficulty=3,players=2,run=run,version=2),0)
+        self.assertEqual(self.submit(name=b"AMS",score=100,version=2),0)
+        stored=self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall()
+        self.assertEqual(next(row for row in stored if row[0]==run)[3],original)
+        self.assertEqual(self.query(version=2),[(b"FUNNY JONES",900,0,3,2),(b"AMS",100,0,2,1)])
+        self.assertEqual(self.query(),[(b"FUN",900,0,3,2),(b"AMS",100,0,2,1)])
+        self.refill()
+        self.assertEqual(self.submit(name=original,score=900,difficulty=3,players=2,run=run,version=2),1)
+        self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),stored)
+
     def test_v2_length_characters_and_padding(self):
         for name in (b"",b" "*12,b"lower",b"A!B",b"A\xffB",b"A\0B",b"A\tB"):
             self.refill();self.assertEqual(self.submit(name=name,version=2),2)

@@ -163,6 +163,8 @@ if(HOTD2_SDL3)
   # Channel semantics of the SDL sound backend on SDL's disk audio driver (tests/sdl_audio_test.cpp).
   add_executable(sdl_audio_test ${CMAKE_SOURCE_DIR}/tests/sdl_audio_test.cpp)
   target_link_libraries(sdl_audio_test PRIVATE port_audio_sdl)
+  add_executable(audio_loop_region_test ${CMAKE_SOURCE_DIR}/tests/audio_loop_region_test.cpp)
+  target_link_libraries(audio_loop_region_test PRIVATE port_audio_sdl)
 
   add_library(port_platform STATIC platform/platform_sdl.cpp)
   target_include_directories(port_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "audio_output.h"
+#include "loop_region.h"
 
 struct IXAudio2;
 struct IXAudio2MasteringVoice;
@@ -28,6 +29,7 @@ public:
     bool Open(int ch, const std::string& path, bool streamed) override;
     bool Duplicate(int src, int dst) override;
     bool Play(int ch, bool loop) override;
+    bool SetLoopRegion(int ch, uint32_t startFrame, uint32_t endFrame, uint32_t sourceRate) override;
     void Pause(int ch) override;
     void Stop(int ch) override;
     void Release(int ch) override;
@@ -46,6 +48,7 @@ private:
         bool queued = false;   // buffer submitted (position valid)
         bool running = false;  // started
         bool loop = false;
+        PcmLoopRegion loopRegion;
         float gain = 1.0f;     // port volume setting, applied to each new source voice
     };
     void DestroyVoice(Channel& c);

@@ -747,6 +747,39 @@ int ThrowHand(World::Impl& w, Actor31Task& a) {
 
 void SpawnWeapon31(World::Impl& w, Actor31Task& a);  // 0x004504E0 (end of this file)
 
+// 29: 0x0044F7A0 replace Ryan's throwing weapons. Motion 5 holds him in place while the empty hands are restored
+// halfway through; leaving the prior walking motion active would carry him out of the encounter indefinitely.
+void Beh29(World::Impl& w, Actor31Task& a) {
+    if (a.sub == 0) {
+        a.flags34 |= 0x2000;
+        w.AnimBlendTo(a, 5, 0, 5);
+        ++a.sub;
+    } else if (a.sub != 1) {
+        return;
+    }
+    const int ticks = w.MotionTicks(a.anim.motion[0]);
+    if (a.anim.tick[0] == ticks / 2 && a.anim.kind == 0x16) {
+        const uint32_t table = w.exe.U32(0x004D0384);
+        auto restore = [&](int hand, int empty, int armed) {
+            EnemyNode& node = a.anim.nodes[hand];
+            if (node.model != empty) return;
+            node.model = armed;
+            const uint32_t row = table + static_cast<uint32_t>(hand - 1) * 0x14;
+            node.radius = F32(w.exe, row + 0x10);
+            for (int i = 0; i < 3; ++i) node.local[i] = F32(w.exe, row + 4 + i * 4);
+            const uint32_t bit = w.exe.U32(0x004C4D18 + static_cast<uint32_t>(hand)) & 0x1F;
+            a.lostParts = static_cast<uint8_t>(a.lostParts & ~(1u << bit));
+        };
+        restore(5, 0x1F9F, 0x1FA2);
+        restore(8, 0x1F9B, 0x1F9E);
+    }
+    if (ticks - 1 <= a.anim.tick[0]) {
+        a.behaviour = 7;
+        a.sub = 0;
+        a.flags34 &= ~0x2000u;
+    }
+}
+
 // 31: 0x0044FAF0 throw a weapon at the players (motion 0x00592A00[variant][hand != 5], the weapon leaves at the
 // entry's tick: 0x004504E0), then walk (7)
 void Beh31(World::Impl& w, Actor31Task& a) {
@@ -2109,6 +2142,7 @@ void TaskActor31(Task& t) {
     case 10: Beh10(w, a); break;
     case 20: Beh20(w, a); break;
     case 26: Beh26(w, a); break;
+    case 29: Beh29(w, a); break;
     case 30: Beh30(w, a); break;
     case 31: Beh31(w, a); break;
     case 32: Beh32(w, a, t); break;  // stage 4 (skeleton 0x17)

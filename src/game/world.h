@@ -600,6 +600,7 @@ public:
         kPreviewMusicReset = 8,
         kPreviewEffect = 9,
         kPreviewStop = 10,
+        kStrengthChainsawSound = 11,  // Strength's motor uses the Dreamcast sample loop region.
     };
     struct SoundEvent {
         uint32_t id;

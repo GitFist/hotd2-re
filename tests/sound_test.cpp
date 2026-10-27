@@ -86,10 +86,12 @@ struct FakeBackend : SoundBackend {
         std::string path;
         int position = 0;
         bool paused = false;
+        SoundDriver::LoopRegion region = {};
     };
     Ch ch[kSndChannels];
     std::set<std::string> missing;
     int opens = 0, dups = 0;
+    bool acceptLoopRegions = true;
     float gains[kSndChannels] = {};
     bool Open(int c, const std::string& p, bool s) override {
         // Missing files are fixture data, not a naming rule: DRIVE_OFF_22.wav is a real playable recording.
@@ -111,6 +113,11 @@ struct FakeBackend : SoundBackend {
         ch[c].playing = true;
         ch[c].loop = loop;
         ch[c].paused = false;
+        return true;
+    }
+    bool SetLoopRegion(int c, uint32_t start, uint32_t end, uint32_t rate) override {
+        if (!acceptLoopRegions || !ch[c].buffer || ch[c].playing) return false;
+        ch[c].region = {start, end, rate};
         return true;
     }
     void Pause(int c) override { ch[c].paused = ch[c].playing; ch[c].playing = false; }
@@ -334,6 +341,71 @@ static void DriverScenarios(const SoundTable& t) {
         d.PlayGameSound(t, 0x80000002);
         CHECK(!b.ch[16].buffer);
     }
+}
+
+static void StrengthSoundDispatch(const SoundTable& table) {
+    for (int kind : {World::kStrengthChainsawSound, World::kPlayGameSound}) {
+        FakeBackend backend;
+        backend.missing.insert(ResolveSound(table, 0x004E17A9).path);
+        SoundDriver driver(backend);
+        PlaySoundEvent(driver, table, {0x004D17A9, 0, kind, 6, 3});
+        CHECK(backend.ch[1].playing && backend.ch[1].path == "Sound\\SE\\COMMON2\\CHAIN_SAW_22.wav");
+        CHECK(backend.ch[1].loop && driver.LoopCount() == 1);
+        const auto& region = backend.ch[1].region;
+        if (kind == World::kStrengthChainsawSound)
+            CHECK(region.startFrame == 9542 && region.endFrame == 13162 && region.sampleRate == 22050);
+        else CHECK(region.startFrame == 0 && region.endFrame == 0 && region.sampleRate == 0);
+        backend.FinishAll();
+        CHECK(backend.ch[1].playing);  // The selected region sustains until the authored motor-off cue.
+        PlaySoundEvent(driver, table, {0x004E17A9, 0, World::kPlayGameSound, 6, 3});
+        CHECK(!backend.ch[1].playing && driver.LoopCount() == 0);
+    }
+    FakeBackend unsupported;
+    unsupported.acceptLoopRegions = false;
+    SoundDriver driver(unsupported);
+    PlaySoundEvent(driver, table, {0x004D17A9, 0, World::kStrengthChainsawSound, 6, 3});
+    CHECK(!unsupported.ch[1].playing && !unsupported.ch[1].buffer && driver.LoopCount() == 0);
+}
+
+static void LoopResetScenarios(const SoundTable& table) {
+    constexpr uint32_t chainsawOn = 0x004D17A9, chainsawOff = 0x004E17A9;
+    // Repeated scene clears / focus losses must not consume the loop registry with released channels.
+    for (int reset = 0; reset < 3; ++reset) {
+        FakeBackend backend;
+        backend.missing.insert(ResolveSound(table, chainsawOff).path);
+        SoundDriver driver(backend);
+        auto playingLoops = [&] {
+            int count = 0;
+            for (int ch = 0; ch < kSndSeChannels; ++ch)
+                count += backend.ch[ch].playing && backend.ch[ch].loop;
+            return count;
+        };
+        for (int restart = 0; restart < 6; ++restart) {
+            driver.PlayGameSound(table, chainsawOn);
+            CHECK(playingLoops() == 1);
+            if (reset == 0) driver.StopAll();
+            else if (reset == 1) driver.PlayGameSound(table, 0x80000001);
+            else { driver.OnActivate(false); driver.OnActivate(true); }
+            CHECK(playingLoops() == 0);
+        }
+        driver.PlayGameSound(table, chainsawOn);
+        CHECK(playingLoops() == 1);
+        driver.PlayGameSound(table, chainsawOff);
+        CHECK(playingLoops() == 0);
+    }
+    // An old loop's channel can be reused for a different sound after a scene clear. A later OFF must not
+    // stop that unrelated one-shot just because its channel number used to belong to the chainsaw.
+    FakeBackend backend;
+    backend.missing.insert(ResolveSound(table, chainsawOff).path);
+    SoundDriver driver(backend);
+    driver.PlayGameSound(table, chainsawOn);
+    driver.StopAll();
+    for (int i = 0; i < 7; ++i)
+        CHECK(driver.PlayFile("Sound\\SE\\ONE_SHOT.WAV", false, kSndAutoChannel, 0x1000u + i));
+    driver.PlayGameSound(table, chainsawOff);
+    int remaining = 0;
+    for (int ch = 0; ch < kSndSeChannels; ++ch) remaining += backend.ch[ch].playing;
+    CHECK(remaining == 7);
 }
 
 static void GameplayPauseScenarios(const SoundTable& table) {
@@ -586,6 +658,8 @@ int main(int argc, char** argv) {
     OptionFeedbackScenarios(exe, t);
     PreviewScenarios(exe, t);
     DriverScenarios(t);
+    StrengthSoundDispatch(t);
+    LoopResetScenarios(t);
     GameplayPauseScenarios(t);
     CutsceneSkipScenarios();
     for (int i = 2; i + 4 < argc; ++i)

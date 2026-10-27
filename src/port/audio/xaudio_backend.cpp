@@ -25,6 +25,7 @@ void XAudioBackend::Shutdown() {
     for (Channel& c : ch_) {
         DestroyVoice(c);
         c.pcm.reset();
+        c.loopRegion = {};
     }
     if (master_) master_->DestroyVoice();
     master_ = nullptr;
@@ -63,6 +64,7 @@ bool XAudioBackend::Open(int ch, const std::string& path, bool streamed) {
     memcpy(pcm->fmt, &fx, sizeof(fx));
     c.pcm = pcm;
     c.streamed = streamed;
+    c.loopRegion = {};
     return true;
 }
 
@@ -71,7 +73,17 @@ bool XAudioBackend::Duplicate(int src, int dst) {
     if (ch_[dst].pcm || !ch_[src].pcm || ch_[src].streamed) return false;
     ch_[dst].pcm = ch_[src].pcm;
     ch_[dst].streamed = false;
+    ch_[dst].loopRegion = {};
     return true;
+}
+
+bool XAudioBackend::SetLoopRegion(int ch, uint32_t startFrame, uint32_t endFrame, uint32_t sourceRate) {
+    Channel& c = ch_[ch];
+    if (!c.pcm || c.queued) return false;
+    WAVEFORMATEX fmt = {};
+    memcpy(&fmt, c.pcm->fmt, sizeof(fmt));
+    return fmt.nBlockAlign && ResolveLoopRegion(startFrame, endFrame, sourceRate, fmt.nSamplesPerSec,
+                                               c.pcm->bytes.size() / fmt.nBlockAlign, c.loopRegion);
 }
 
 bool XAudioBackend::Submit(Channel& c, bool loop) {
@@ -83,6 +95,10 @@ bool XAudioBackend::Submit(Channel& c, bool loop) {
     b.pAudioData = c.pcm->bytes.data();
     b.Flags = XAUDIO2_END_OF_STREAM;
     b.LoopCount = loop ? XAUDIO2_LOOP_INFINITE : 0;
+    if (loop && c.loopRegion.Active()) {
+        b.LoopBegin = c.loopRegion.begin;
+        b.LoopLength = c.loopRegion.end - c.loopRegion.begin;
+    }
     if (FAILED(c.voice->SubmitSourceBuffer(&b))) return false;
     c.queued = true;
     c.loop = loop;
@@ -124,6 +140,7 @@ void XAudioBackend::SetGain(int ch, float gain) {
 void XAudioBackend::Release(int ch) {
     DestroyVoice(ch_[ch]);
     ch_[ch].pcm.reset();
+    ch_[ch].loopRegion = {};
 }
 
 // 0x004A3280

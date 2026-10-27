@@ -1,4 +1,5 @@
 #include "sdl_audio_backend.h"
+#include "loop_region.h"
 
 #include <SDL3/SDL.h>
 
@@ -23,6 +24,7 @@ public:
     bool Open(int ch, const std::string& path, bool streamed) override;
     bool Duplicate(int src, int dst) override;
     bool Play(int ch, bool loop) override;
+    bool SetLoopRegion(int ch, uint32_t startFrame, uint32_t endFrame, uint32_t sourceRate) override;
     void Pause(int ch) override;
     void Stop(int ch) override;
     void Release(int ch) override;
@@ -43,6 +45,7 @@ private:
         size_t pos = 0;        // next byte of pcm to feed
         bool feeding = false;  // started and not at the end
         bool loop = false;
+        PcmLoopRegion loopRegion;
         // Main thread only.
         bool queued = false;   // started since the last (re)start / stop: position valid
         bool running = false;  // device resumed
@@ -71,6 +74,7 @@ void SdlAudioBackend::Shutdown() {
     for (Channel& c : ch_) {
         DestroyStream(c);
         c.pcm.reset();
+        c.loopRegion = {};
     }
     if (master_) SDL_CloseAudioDevice(master_);
     master_ = 0;
@@ -82,14 +86,17 @@ void SDLCALL SdlAudioBackend::Feed(void* user, SDL_AudioStream* stream, int addi
     Channel& c = *static_cast<Channel*>(user);  // the stream lock is held
     if (!c.feeding || !c.pcm || c.pcm->bytes.empty() || additional <= 0) return;
     const Pcm& p = *c.pcm;
+    const bool regionLoop = c.loop && c.loopRegion.Active();
+    const size_t end = regionLoop ? size_t(c.loopRegion.end) * p.frameBytes : p.bytes.size();
+    const size_t restart = regionLoop ? size_t(c.loopRegion.begin) * p.frameBytes : 0;
     size_t need = (static_cast<size_t>(additional) + p.frameBytes - 1) / p.frameBytes * p.frameBytes;
     while (need > 0) {
-        if (c.pos >= p.bytes.size()) c.pos = 0;  // looped (one-shots stop below)
-        const size_t n = std::min(need, p.bytes.size() - c.pos);
+        if (c.pos >= end) c.pos = restart;  // prefix once, then the loop region (one-shots stop below)
+        const size_t n = std::min(need, end - c.pos);
         SDL_PutAudioStreamData(stream, p.bytes.data() + c.pos, static_cast<int>(n));
         c.pos += n;
         need -= n;
-        if (c.pos >= p.bytes.size() && !c.loop) {
+        if (c.pos >= end && !c.loop) {
             // End of a one-shot buffer: flush the resampler's held-back frames so the rest plays out and the queue
             // drains to zero (IsPlaying).
             c.feeding = false;
@@ -132,6 +139,7 @@ bool SdlAudioBackend::Open(int ch, const std::string& path, bool streamed) {
     pcm->frameBytes = std::max<size_t>(1, w.blockAlign);
     c.pcm = pcm;
     c.streamed = streamed;
+    c.loopRegion = {};
     if (!CreateStream(c)) {
         c.pcm.reset();
         return false;
@@ -144,10 +152,23 @@ bool SdlAudioBackend::Duplicate(int src, int dst) {
     if (ch_[dst].pcm || !ch_[src].pcm || ch_[src].streamed) return false;
     ch_[dst].pcm = ch_[src].pcm;
     ch_[dst].streamed = false;
+    ch_[dst].loopRegion = {};
     if (!CreateStream(ch_[dst])) {
         ch_[dst].pcm.reset();
         return false;
     }
+    return true;
+}
+
+bool SdlAudioBackend::SetLoopRegion(int ch, uint32_t startFrame, uint32_t endFrame, uint32_t sourceRate) {
+    Channel& c = ch_[ch];
+    if (!c.pcm || !c.stream || c.queued) return false;
+    PcmLoopRegion region;
+    if (!ResolveLoopRegion(startFrame, endFrame, sourceRate, static_cast<uint32_t>(c.pcm->spec.freq),
+                           c.pcm->bytes.size() / c.pcm->frameBytes, region)) return false;
+    SDL_LockAudioStream(c.stream);
+    c.loopRegion = region;
+    SDL_UnlockAudioStream(c.stream);
     return true;
 }
 
@@ -195,6 +216,7 @@ void SdlAudioBackend::Stop(int ch) {
 void SdlAudioBackend::Release(int ch) {
     DestroyStream(ch_[ch]);
     ch_[ch].pcm.reset();
+    ch_[ch].loopRegion = {};
 }
 
 // 0x004A3280

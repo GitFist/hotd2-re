@@ -263,7 +263,8 @@ void SetupPoints(World::Impl& w, Boss4Task& b) {
 void SoundOn(World::Impl& w, Boss4Task& b) {
     if (!(b.c.flags & 0x400)) {
         b.c.flags |= 0x410;
-        w.Sound(0x4D17A9);
+        // Keep the authored on/off timing, but sustain only the Dreamcast loop region in the client.
+        w.SoundCall(w.cfg.portFeatures ? World::kStrengthChainsawSound : World::kPlayGameSound, 0x4D17A9);
     }
 }
 void SoundOff(World::Impl& w, Boss4Task& b) {
