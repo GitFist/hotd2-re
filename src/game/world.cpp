@@ -170,7 +170,7 @@ void World::Impl::SoundCall(int kind, uint32_t id) {
         RandomizerClearSubtitles(*this);
     if (kind == World::kPlayGameSound) id = RandomizerVoiceSound(*this, id);
     sounds.push_back({ id, CurrentSerial(), kind, gameMode, cfg.gameType });
-    // the current BGM 0x009C8FB8 (replayed when the pause ends): set by every BGM play (0x1xxxxxxx), cleared by
+    // the current BGM 0x009C8FB8: set by every BGM play (0x1xxxxxxx), cleared by
     // 0x80000000 and Snd_StopAll
     if (kind == World::kStopAll || (kind == World::kPlayGameSound && id == 0x80000000u)) currentBgm = 0;
     else if (kind == World::kPlayGameSound && (id >> 28) == 1) currentBgm = id;

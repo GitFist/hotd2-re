@@ -53,6 +53,31 @@ int main() {
     CHECK(UpdatePlayerGun(on, true, gun) == game::TriggerAction::None);  // empty: no shot
     // Not connected -> nothing fires.
     CHECK(!MakeShotInput(DeviceSample{}).fired);
+
+    // A complete tap between frames is still a distinct edge on the next frame,
+    // even when the previous frame also contained a tap or a held trigger.
+    DevicePlayer device;
+    device.connected = true;
+    device.pressed = 1;
+    uint8_t previous = 0;
+    CHECK(DeviceWorldInput(device, 5, previous).fired);
+    CHECK(DeviceWorldInput(device, 5, previous).fired);
+    device.held = 1;
+    CHECK(DeviceWorldInput(device, 5, previous).fired);
+    device.pressed = 0;
+    CHECK(!DeviceWorldInput(device, 5, previous).fired);  // held input never repeats
+    device.pressed = 1;
+    CHECK(DeviceWorldInput(device, 5, previous).fired);  // release/repress between frames
+    device.held = 0;
+    device.pressed = 2;
+    CHECK(DeviceWorldInput(device, 5, previous).offscreen);
+    CHECK(DeviceWorldInput(device, 5, previous).offscreen);
+    device.pressed = 1;
+    CHECK(DeviceWorldInput(device, 9, previous).pressed & 8);
+    CHECK(DeviceWorldInput(device, 9, previous).pressed & 8);  // fresh trigger can join again
+    device.pressed = 4;
+    CHECK(DeviceWorldInput(device, 5, previous).pressed & 8);
+    CHECK(DeviceWorldInput(device, 5, previous).pressed & 8);  // fresh start edge
     printf("%s (%d failures)\n", failures ? "FAIL" : "OK", failures);
     return failures ? 1 : 0;
 }

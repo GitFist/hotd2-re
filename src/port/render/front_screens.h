@@ -12,7 +12,8 @@
 // six tiles, the masked pixels are filled by iterative averaging from their unmasked neighbours until converged, with
 // a little mirrored high-frequency detail from the nearest boundary on top, and the result goes back into the cached
 // tiles. Nothing is written to disk. An asset-pack override of any of the tiles switches the cleanup off (the pack's
-// own background is shown as it is).
+// own background is shown as it is). Classic uses the original background and opaque highlight bitmaps as one
+// matching set: legacy packs replace the background with label-free art intended for the modern menu.
 
 #include <memory>
 #include <string>
@@ -27,7 +28,7 @@ class FrontScreens {
 public:
     explicit FrontScreens(std::string gameDir) : dir_(std::move(gameDir)) {}
     std::vector<ModelRenderer::SpriteDraw> Draws(const game::WorldHud& h);
-    // The mode-select background without the baked labels (see above). Drops the cached hod2title tiles on a change.
+    // The mode-select background without the baked labels (see above). Drops cached menu bitmaps on a change.
     // Classic port menus also remove the old Training label so World can draw Challenges.
     void SetModernMenu(bool on, bool renameChallenges = false);
     bool ModernMenu() const { return modernMenu_; }

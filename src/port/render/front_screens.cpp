@@ -33,6 +33,15 @@ constexpr int kLabelX0 = 0xE0, kLabelStep = 0x40, kLabelSize = 64;
 constexpr int kBodyDiff = 28, kHaloRadius = 3, kHaloLum = 40, kDilate = 2;
 constexpr float kDetailGain = 0.5f;  // mirrored detail on top of the smooth fill (0 = smooth only)
 
+bool ClassicMenuBitmap(const std::string& name) {
+    for (const char* tile : kMenuTile)
+        if (name == tile) return true;
+    for (const char* label : kLabelBase)
+        for (char tile = '0'; tile <= '2'; ++tile)
+            if (name == std::string(label) + tile + ".bin") return true;
+    return false;
+}
+
 struct Rect {
     int x0 = kBgW, y0 = kBgH, x1 = 0, y1 = 0;  // [x0, x1) x [y0, y1)
     void Add(int x, int y) {
@@ -73,7 +82,7 @@ void FrontScreens::SetModernMenu(bool on, bool renameChallenges) {
     renameChallenges_ = renameChallenges;
     cleaned_ = false;
     cache_.erase(std::remove_if(cache_.begin(), cache_.end(),
-                                [](const auto& e) { return e.first.compare(0, 13, "tex\\hod2title") == 0; }),
+                                [](const auto& e) { return ClassicMenuBitmap(e.first); }),
                  cache_.end());
 }
 
@@ -117,7 +126,13 @@ std::unique_ptr<RgbaImage> FrontScreens::Load(const std::string& name) {
             // replaces the pixels (any size, upright); blits keep the BMP's own size.
             const size_t slash = name.find_last_of("\\/");
             const std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
-            if (const std::string o = AssetOverride("bmp/" + base + ".png"); !o.empty()) {
+            // Classic highlights are opaque crops of the original background,
+            // whose grey labels also supply the unselected entries. The legacy
+            // 2x pack replaces that background with label-free screenshot art.
+            // Keep this coupled set of thirty bitmaps together in Classic mode;
+            // all other screens and game textures still use the selected pack.
+            const bool classicMenu = !modernMenu_ && ClassicMenuBitmap(name);
+            if (const std::string o = classicMenu ? std::string{} : AssetOverride("bmp/" + base + ".png"); !o.empty()) {
                 PngImage png;
                 if (ReadPngFile(o, png)) {
                     img->logicalWidth = img->width;

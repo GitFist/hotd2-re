@@ -96,6 +96,10 @@ public:
     // cannot change SDL's process-wide cursor; their visibility query returns the default visible state.
     bool SetCursorVisible(bool visible);
     bool CursorVisible() const;
+    // Confine the desktop pointer to the client area during gameplay. SDL releases
+    // the native grab while unfocused; menus and shutdown explicitly clear it.
+    // Raw lightgun coordinates remain unclipped, including off-screen reloads.
+    bool SetCursorConfined(bool confined);
 
     // Display settings of play.exe (notes/agents/display.md). Fullscreen = SDL's borderless desktop fullscreen;
     // SetWindowSize sets the windowed client size; UsableDisplaySize = the usable bounds of the window's display (the

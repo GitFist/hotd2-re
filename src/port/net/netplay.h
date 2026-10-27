@@ -12,8 +12,9 @@
 // In-game rooms have two paths to the other player: direct (the endpoints the lobby server saw and the local ones,
 // hole-punched with hellos) and the lobby's authenticated relay (both players send to the server, which forwards
 // H2NP datagrams unchanged). Hellos go out directly at once and through the relay from a second later; the first
-// path a peer packet arrives on is used (direct wins when it works: lower latency, nothing through the VPS), and a
-// path silent for two seconds hands over to the other - both sides apply the same rule, so they converge. A relay
+// path a peer packet arrives on is provisional until the welcome and inputs get through. Relay fallback stays
+// available during that handshake, including one-way direct connections. A connected path silent for two seconds
+// hands over to the other - both sides apply the same rule, so they converge. A relay
 // keepalive every five seconds keeps the room alive and the fallback warm while playing directly. The input delay
 // is measured: hellos carry a timestamp the other side echoes (pong), and the host sets the delay from the round
 // trip before it sends the welcome (SetDelayPolicy). The lockstep remains on the two PCs.
@@ -253,6 +254,7 @@ private:
 
     uintptr_t sock_ = kNoSocket;
     bool host_ = false, connected_ = false, peerLeft_ = false, peerKnown_ = false;
+    bool peerInputSeen_ = false;  // handshake traffic alone cannot confirm a usable gameplay path
     uint8_t peer_[32] = {};  // sockaddr_in
     int peerLen_ = 0;
     std::vector<std::array<uint8_t, 16>> candidates_;  // sockaddr_in each, until the first packet fixes peer_

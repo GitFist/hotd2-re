@@ -19,6 +19,7 @@ void SoundDriver::PushRing(int ch, uint32_t id) {
 // 0x004AC020
 bool SoundDriver::PlayFile(const std::string& path, bool loop, int channel, uint32_t id) {
     if (channel == kSndBgmChannel) {
+        bgmLoop_ = loop;
         previewMusicId_ = 0;
         previewMusicPaused_ = previewResumeOnActivate_ = false;
     }
@@ -103,7 +104,7 @@ void SoundDriver::Command(uint32_t cmd) {
         b_.Pause(kSndBgmChannel);
         return;
     case 0x3A0:
-        b_.Play(kSndBgmChannel, previewMusicId_ == 0);
+        b_.Play(kSndBgmChannel, bgmLoop_);
         return;
     case 0x300A0:
     case 0x1100A0:

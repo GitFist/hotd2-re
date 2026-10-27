@@ -1,6 +1,7 @@
 #include "input/lightguns.h"
 #include "game/menu_audio.h"
 #include "play/lightgun_menu.h"
+#include "play/gun_input.h"
 #include "play/pause_menu.h"
 #include <cmath>
 #include <cstdio>
@@ -199,6 +200,32 @@ int main(){
     raw.ProcessMouse(reinterpret_cast<HANDLE>(1),report);
     Check(Near(native.Player(0).x,.25)&&Near(native.Player(0).y,.5),"actual RawInput adapter forwards absolute aim");
     report.lLastX=49152;raw.ProcessMouse(reinterpret_cast<HANDLE>(2),report);Check(Near(native.Player(1).x,.75),"RawInput adapter keeps two devices separate");
+    uint8_t previous[2]{};
+    auto worldInput = [&](int p) {
+        const auto state = native.Player(p);
+        play::DevicePlayer device;
+        device.connected = state.connected;device.x = state.x;device.y = state.y;device.onScreen = state.onScreen;
+        device.held = state.held;device.pressed = state.pressed;
+        return play::DeviceWorldInput(device,5,previous[p]);
+    };
+    Check(worldInput(0).fired&&worldInput(1).fired,"both raw devices fire in the same game frame");
+    for(int tap=0;tap<3;++tap){
+        native.BeginFrame();
+        // Alternate which gun reports first; button-only reports retain each gun's absolute aim.
+        for(int p:{tap%2,1-tap%2}){
+            report.usFlags=0;report.lLastX=report.lLastY=0;report.usButtonFlags=RI_MOUSE_LEFT_BUTTON_UP;
+            raw.ProcessMouse(reinterpret_cast<HANDLE>(intptr_t(p+1)),report);
+            report.usButtonFlags=RI_MOUSE_LEFT_BUTTON_DOWN;
+            raw.ProcessMouse(reinterpret_cast<HANDLE>(intptr_t(p+1)),report);
+        }
+        auto p1=worldInput(0),p2=worldInput(1);
+        Check(p1.fired&&p2.fired,"simultaneous repeated raw trigger edges survive consecutive game frames");
+        Check(p1.x==160&&p2.x==480,"simultaneous shooting retains independent aim");
+    }
+    native.BeginFrame();
+    report.usButtonFlags=RI_MOUSE_LEFT_BUTTON_UP;raw.ProcessMouse(reinterpret_cast<HANDLE>(2),report);
+    report.usButtonFlags=RI_MOUSE_LEFT_BUTTON_DOWN;raw.ProcessMouse(reinterpret_cast<HANDLE>(2),report);
+    Check(!worldInput(0).fired&&worldInput(1).fired,"P1 held trigger does not suppress P2 fresh shot");
     native.BeginFrame();report.usFlags=0;report.lLastX=report.lLastY=0;report.usButtonFlags=RI_MOUSE_BUTTON_4_DOWN;raw.ProcessMouse(reinterpret_cast<HANDLE>(1),report);
     Check(native.Player(0).menuPressed==8&&Near(native.Player(0).x,.25),"button-only report preserves absolute aim and confirm mapping");
     raw.RemoveDevice(reinterpret_cast<HANDLE>(1));Check(!native.Player(0).connected&&native.Player(1).connected,"native removal preserves P2");

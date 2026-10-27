@@ -39,6 +39,14 @@ int main(int argc, char** argv) {
     Check(a->IsPlaying(0), "playing at 0.2 s");
     SDL_Delay(1000);
     Check(!a->IsPlaying(0), "finished at 1.2 s (0.76 s sound)");
+    Check(a->Play(0, false), "restart one-shot for resume-position check");
+    SDL_Delay(400);
+    a->Pause(0);
+    Check(!a->IsPlaying(0), "one-shot paused before its end");
+    SDL_Delay(300);
+    Check(a->Play(0, false), "resume paused one-shot");
+    SDL_Delay(500);
+    Check(!a->IsPlaying(0), "resume finishes remaining audio instead of replaying the 0.76 s recording");
     Check(a->Play(0, true), "play looped (restart)");
     SDL_Delay(2000);
     Check(a->IsPlaying(0), "loop still playing at 2.0 s");

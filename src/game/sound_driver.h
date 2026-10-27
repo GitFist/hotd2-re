@@ -49,7 +49,8 @@ public:
     bool PlayFile(const std::string& path, bool loop, int channel, uint32_t id);
     // 0x004AC220 Snd_StopLoopedSe: Snd_StopChannel on every remembered looped SE channel, then forget them.
     void StopLoopedSe();
-    // 0x004ABF80 Snd_Command(_, cmd, _): 0x2A0 pause BGM, 0x3A0 resume BGM (looped), 0x300A0 / 0x1100A0 stop and
+    // 0x004ABF80 Snd_Command(_, cmd, _): 0x2A0 pause BGM, 0x3A0 resume BGM with its original loop mode,
+    // 0x300A0 / 0x1100A0 stop and
     // release SE channels 0..14; everything else (0x100A0, 0x800A0, 0x900A0) does nothing.
     void Command(uint32_t cmd);
     // 0x00401000 (via 0x0041D4F0): 0 -> stop + release BGM, 1 -> stop + release voice, other -> stop all playing.
@@ -96,6 +97,7 @@ private:
     Slot loops_[6] = {};     // 0x00810150
     int nLoops_ = 0;         // 0x008101F8
     uint32_t curBgm_ = 0;    // 0x009C8FB8
+    bool bgmLoop_ = false;  // keep one-shot jingles/previews one-shot across pause or focus loss
     int slotBgm_ = 0;        // 0x009C90A8 (set to 0 by 0x0040AD70)
     int slotVoice_ = 1;      // 0x009C90AC (set to 1 by 0x0040AD70)
     uint32_t previewMusicId_ = 0;

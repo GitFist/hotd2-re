@@ -185,15 +185,14 @@ void World::Impl::PauseFrame() {
         }
     }
     if (toggle) {
-        // pause: 0x004A56E0, Snd_StopSlot 0x0041D4F0(0x009C90A8 = 0: BGM / 0x009C90AC = 1: voice), 0x0049DF80; resume:
-        // 0x0041D940(0x1B8), Snd_PlayGameSound(0x009C8FB8: the current BGM, from its start), 0x004A56F0, 0x0049DFA0
-        // (timer side effects, not modelled)
+        // The original released BGM here and reopened currentBgm on resume, restarting the track. Keep its
+        // buffer and playback position through the sound driver's pause/resume commands instead.
         paused = !paused;
         if (paused) {
-            SoundCall(World::kStopSlot, 0);
+            SoundCall(World::kCommand, 0x2A0);
             SoundCall(World::kStopSlot, 1);
         } else {
-            Sound(currentBgm);
+            SoundCall(World::kCommand, 0x3A0);
         }
     }
     // while paused: the dark overlay (near plane 1e-5 0x004194C0, identity view-space matrix, T(0, 0, -0.0005),

@@ -196,6 +196,7 @@ Platform::Impl* Platform::Impl::activeImpl = nullptr;
 Platform::Platform() : impl_(std::make_unique<Impl>()) {}
 
 Platform::~Platform() {
+    SetCursorConfined(false);
     SetCursorVisible(true);
 #ifdef _WIN32
     if (impl_->sdlVideo) SDL_SetWindowsMessageHook(nullptr, nullptr);
@@ -412,6 +413,10 @@ bool Platform::SetCursorVisible(bool visible) {
 }
 bool Platform::CursorVisible() const {
     return !impl_->sdlVideo || !impl_->window || SDL_CursorVisible();
+}
+bool Platform::SetCursorConfined(bool confined) {
+    if (!impl_->sdlVideo || !impl_->window) return false;
+    return SDL_SetWindowMouseGrab(impl_->window, confined);
 }
 bool Platform::SetInput(Input mode, std::string* error) {
     auto& m=*impl_;

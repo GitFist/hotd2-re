@@ -18,18 +18,22 @@ from netplay_relay_smoke import REPO, lobby, script
 
 
 def rejoin_script():
-    events = [(100, 1), (104, 0), (200, 4), (204, 0), (300, 4), (304, 0)]
+    events = [(100, 1), (104, 0), (200, 4), (204, 0)]
     for frame in range(320, 365, 8):
         events += [(frame, 16), (frame + 4, 0)]
     events += [(400, 1), (404, 0), (450, 16), (454, 0), (458, 16), (462, 0),
                (466, 16), (470, 0), (490, 1), (494, 0)]
     lines = []
     for frame, buttons in events:
-        lines.extend(f'{frame} {p} .5 .5 {buttons}' for p in (0, 1))
+        # Keep the parked pointer outside rows while navigating, then shoot the
+        # visible Rejoin row (the fourth lobby entry) to confirm it.
+        x, y = (.5, 232 / 480) if frame >= 490 else (.1, .1)
+        lines.extend(f'{frame} {p} {x} {y} {buttons}' for p in (0, 1))
     return '\n'.join(lines) + '\n'
 
 
-def run(exe, departed, relay, crash=False, loss=False, outage=False, live_lobby=None):
+def run(exe, departed, relay, crash=False, loss=False, outage=False, live_lobby=None, game=None):
+    game = game or REPO / 'game'
     output = Path(tempfile.mkdtemp(prefix=f'hotd2_rejoin_{departed}_'))
     print(f'rejoin {departed}, relay={relay}, crash={crash}, loss={loss}: {output}', flush=True)
     server = lobby.Server('127.0.0.1', 0)
@@ -98,7 +102,23 @@ def run(exe, departed, relay, crash=False, loss=False, outage=False, live_lobby=
         folder.mkdir(exist_ok=True)
         label = role + ('-return' if returning else '')
         inputs = folder / (label + '.txt')
+        # These recorded navigation events target the Classic front end. Pin the
+        # theme explicitly instead of depending on the client's current default.
+        settings = folder / 'smoke-settings.ini'
+        settings.write_text('menu=classic\n')
         text = rejoin_script() if returning else script('public', role == 'host')
+        if not returning:
+            # Confirm the visible lobby rows. A shot in the padding above the
+            # text no longer activates the keyboard-selected row.
+            aim = {1000: 142, 1004: 142, 1080: 202, 1084: 202} if role == 'host' else {
+                1040: 172, 1044: 172, 1200: 104, 1204: 104}
+            lines = []
+            for line in text.splitlines():
+                values = line.split()
+                if int(values[0]) in aim:
+                    values[3] = str(aim[int(values[0])] / 480)
+                lines.append(' '.join(values))
+            text = '\n'.join(lines) + '\n'
         # Aim, fire, reload and pause/resume after the rejoin; both copies must stay synchronized.
         for frame, buttons in ((4000, 1), (4001, 0), (4050, 2), (4051, 0), (4140, 4), (4141, 0), (4160, 4), (4161, 0)):
             text += f'{frame} {0 if role == "host" else 1} {.2 if role == "host" else .8} .7 {buttons}\n'
@@ -110,10 +130,10 @@ def run(exe, departed, relay, crash=False, loss=False, outage=False, live_lobby=
         log = (output / (label + '.log')).open('w')
         logs.append(log)
         final = '2600' if role == departed and not returning and not crash and not outage else '4300'
-        args = [str(exe), str(REPO / 'game'), '--scene', str(REPO / 'scenes/st1_play.scene'),
+        args = [str(exe), str(game), '--scene', str(REPO / 'scenes/st1_play.scene'),
                 '--script', str(inputs), '--pace', '--trace', '--screenshot', str(folder / (label + '-%d.png')),
                 '--every', '200', '--every-from', '2400', '--frame', final, '--port', '0', '--lobby', endpoint,
-                '--width', '640', '--height', '480']
+                '--width', '640', '--height', '480', '--settings', str(settings)]
         p = subprocess.Popen(args, cwd=folder, env=env, stdout=log, stderr=subprocess.STDOUT,
                              creationflags=subprocess.CREATE_NO_WINDOW)
         processes.append(p)
@@ -187,6 +207,7 @@ def run(exe, departed, relay, crash=False, loss=False, outage=False, live_lobby=
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--exe', type=Path, default=REPO / 'build/src/port/Release/play.exe')
+    ap.add_argument('--game', type=Path, default=REPO / 'game', help='original game data directory')
     ap.add_argument('--departed', choices=['host', 'join'], default='join')
     ap.add_argument('--relay', action='store_true')
     ap.add_argument('--crash', action='store_true')
@@ -196,4 +217,4 @@ if __name__ == '__main__':
     args = ap.parse_args()
     if args.lobby and (args.loss or args.outage):
         ap.error('loss/outage injection requires the isolated local server')
-    run(args.exe.resolve(), args.departed, args.relay, args.crash, args.loss, args.outage, args.lobby)
+    run(args.exe.resolve(), args.departed, args.relay, args.crash, args.loss, args.outage, args.lobby, args.game.resolve())

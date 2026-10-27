@@ -189,20 +189,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.3";
+const char* const kReleaseVersion = "1.4";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026102302;
-const char* const kBuildName = "2026 10 26 B";
+const char* const kBuildName = "2026 10 27 A";
 #else
 constexpr uint32_t kBuildId = 2026102303;
-const char* const kBuildName = "2026 10 26 NS32 B";
+const char* const kBuildName = "2026 10 27 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 26 B";
+const char* const kUpdateBuildName = "2026 10 27 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -2034,7 +2034,9 @@ int main(int argc, char** argv) {
     auto updateSystemCursor = [&] {
         const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
-        plat.SetCursorVisible(play::SystemCursorVisible(world.Hud(), context));
+        const bool visible = play::SystemCursorVisible(world.Hud(), context);
+        plat.SetCursorConfined(!visible);
+        plat.SetCursorVisible(visible);
     };
     for (;;) {
         int steps = 1;

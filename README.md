@@ -4,7 +4,7 @@
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring online co-op, additional game modes, and modern controls and display options.
 
-**[Download 1.3 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-b/HOTD2RE-1.3-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.4 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.27-a/HOTD2RE-1.4-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -36,13 +36,13 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.3-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-b/HOTD2RE-1.3-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.4-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.27-a/HOTD2RE-1.4-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-**Version 1.3** adds the score display code: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+**Version 1.4** fixes music resuming after pause, rapid light-gun presses, cursor confinement, online connection fallback and Classic menu artwork. The score display code remains: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Online play
 

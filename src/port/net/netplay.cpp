@@ -353,6 +353,14 @@ void Session::SendRaw(const std::vector<uint8_t>& p) {
         SendRelayed(p);
         return;
     }
+    // A HELLO/PONG may get through a one-way route even when the welcome (which includes the save) or inputs
+    // cannot. Keep the fallback open until gameplay packets confirm it in both directions.
+    if ((!connected_ || !peerInputSeen_) && path_ != Path::Relay) {
+        SendDirect(p);
+        if (RelayAvailable() && std::chrono::duration<double>(Clock::now() - helloStart_).count() >= kRelayHelloAfter)
+            SendRelayed(p);
+        return;
+    }
     switch (path_) {
     case Path::Direct: SendDirect(p); break;
     case Path::Relay: SendRelayed(p); break;
@@ -819,7 +827,7 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
                 if (reinterpret_cast<const sockaddr_in*>(c.data())->sin_addr.s_addr == a->sin_addr.s_addr) known = true;
         }
         if (!known) return;  // somebody else
-        if (path_ != Path::Relay && memcmp(peer_, from, sizeof(sockaddr_in)) != 0) {
+        if (memcmp(peer_, from, sizeof(sockaddr_in)) != 0) {
             memcpy(peer_, from, sizeof(sockaddr_in));
             peerLen_ = sizeof(sockaddr_in);
             if (LogOn()) fprintf(stderr, "net %.1f: direct peer fixed to port %d\n", LogSeconds(), ntohs(static_cast<const sockaddr_in*>(from)->sin_port));
@@ -854,7 +862,7 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
         const Path was = path_;
         path_ = viaRelay ? Path::Relay : Path::Direct;
         probing_ = false;
-        if (viaRelay && was == Path::None) {
+        if (viaRelay && !peerKnown_) {
             memcpy(peer_, lobbyAddr_, sizeof(lobbyAddr_));
             peerLen_ = sizeof(sockaddr_in);
             peerKnown_ = true;
@@ -915,6 +923,12 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
         if (40 + saveLen > n - 4) break;
         c.save.assign(d + 40, d + 40 + saveLen);
         if (BuildMismatch()) break;  // never connected: the lobby says why
+        // Prefer the route that delivered the complete welcome over an earlier small HELLO/PONG. Once the
+        // relay rescued this handshake, a delayed direct duplicate must not send the guest back to a bad route.
+        if (!peerInputSeen_ && (!connected_ || viaRelay)) {
+            path_ = viaRelay ? Path::Relay : Path::Direct;
+            probing_ = false;
+        }
         if (!connected_) {
             config_ = c;  // the first welcome decides (repeats are identical)
             connectedAt_ = now;
@@ -927,14 +941,20 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
         if (n < 23 || Get32(d + 2) != inputEpoch_) break;
         const int player = d[0];
         if (player != RemotePlayer()) break;
-        if (host_ && !connected_ && !BuildMismatch()) {  // the joiner has the welcome: it is sending
-            connected_ = true;
-            connectedAt_ = now;
-        }
         const uint32_t ack = Get32(d + 6), hashFrame = Get32(d + 10), hash = Get32(d + 14), first = Get32(d + 18);
         const int count = d[22];
         if (count > kMaxRecords || 23 + static_cast<size_t>(count) * kRecord != n || first > UINT32_MAX - count) break;
         if (historyStarted_ && first > std::max({HistoryEnd(), advertisedEnd_, resumeFrame_}) + 1200) break;
+        if (!peerInputSeen_) {
+            if (BuildMismatch()) break;
+            path_ = viaRelay ? Path::Relay : Path::Direct;
+            probing_ = false;
+            peerInputSeen_ = true;
+        }
+        if (host_ && !connected_ && !BuildMismatch()) {  // the joiner has the welcome and sent valid input
+            connected_ = true;
+            connectedAt_ = now;
+        }
         if (ack > ackedByRemote_) ackedByRemote_ = ack;  // the other side needs nothing below ack
         for (int i = 0; i < count; ++i) {
             const uint32_t frame = first + static_cast<uint32_t>(i);
@@ -1117,6 +1137,7 @@ void Session::Reset() {
     Abandon();
     Close();
     host_ = connected_ = peerLeft_ = peerKnown_ = false;
+    peerInputSeen_ = false;
     memset(peer_, 0, sizeof(peer_));
     peerLen_ = 0;
     localCode_.clear();

@@ -309,7 +309,11 @@ static void DriverScenarios(const SoundTable& t) {
         CHECK(b.ch[15].playing && !b.ch[15].loop);
         d.OnActivate(false);
         CHECK(!b.ch[15].playing && b.ch[15].buffer);
-        d.OnActivate(true);  // resume always loops (0x3A0 -> Snd_PlayChannel(15, 1))
+        d.OnActivate(true);  // preserve one-shot jingles across focus loss
+        CHECK(b.ch[15].playing && !b.ch[15].loop);
+        d.PlayGameSound(t, 0x10000001);
+        d.OnActivate(false);
+        d.OnActivate(true);
         CHECK(b.ch[15].playing && b.ch[15].loop);
         d.PlayGameSound(t, 0x80000000);
         CHECK(!b.ch[15].buffer && d.CurrentBgm() == 0);
@@ -330,6 +334,52 @@ static void DriverScenarios(const SoundTable& t) {
         d.PlayGameSound(t, 0x80000002);
         CHECK(!b.ch[16].buffer);
     }
+}
+
+static void GameplayPauseScenarios(const SoundTable& table) {
+    for (uint32_t bgm : {0x10000001u, 0x10000009u}) for (int player : {0, 1}) {
+        World::Impl world;
+        world.gameMode = 6;
+        world.subState = 2;
+        world.flags5900 = 0;
+        world.player[0].state = world.player[1].state = 5;
+        FakeBackend backend;
+        SoundDriver driver(backend);
+        auto dispatch = [&] {
+            for (const auto& sound : world.sounds) PlaySoundEvent(driver, table, sound);
+            world.sounds.clear();
+        };
+        world.Sound(bgm);
+        world.Sound(0x2000009D); // existing voice and SE still stop on pause
+        world.Sound(0x004616A9);
+        dispatch();
+        auto& music = backend.ch[kSndBgmChannel];
+        const bool loop = music.loop;
+        const int opens = backend.opens;
+        music.position = 54321;
+        const std::string path = music.path;
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            world.pressed = player == 0 ? 8 : 0x80000;
+            world.PauseFrame();
+            dispatch();
+            CHECK(world.paused && world.pausePlayer == player);
+            CHECK(music.buffer && music.paused && !music.playing && music.position == 54321);
+            CHECK(!backend.ch[kSndVoiceChannel].buffer);
+            for (int ch = 0; ch < kSndSeChannels; ++ch) CHECK(!backend.ch[ch].buffer);
+            world.pressed = 0;
+            for (int frame = 0; frame < 3; ++frame) { world.PauseFrame(); dispatch(); }
+            CHECK(music.buffer && music.paused && music.position == 54321 && backend.opens == opens);
+            world.pressed = player == 0 ? 8 : 0x80000;
+            world.PauseFrame();
+            dispatch();
+            CHECK(!world.paused && music.playing && !music.paused);
+            CHECK(music.position == 54321 && music.loop == loop && music.path == path && backend.opens == opens);
+            CHECK(driver.CurrentBgm() == bgm && world.currentBgm == bgm);
+            world.pressed = 0;
+            for (int frame = 0; frame < 3; ++frame) { world.PauseFrame(); dispatch(); }
+        }
+    }
+    puts("Gameplay pause: both players resume the existing BGM position and loop mode without reopening");
 }
 
 static void CutsceneSkipScenarios() {
@@ -536,6 +586,7 @@ int main(int argc, char** argv) {
     OptionFeedbackScenarios(exe, t);
     PreviewScenarios(exe, t);
     DriverScenarios(t);
+    GameplayPauseScenarios(t);
     CutsceneSkipScenarios();
     for (int i = 2; i + 4 < argc; ++i)
         if (std::string(argv[i]) == "--cutscene-replay")
