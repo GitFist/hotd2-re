@@ -1,4 +1,4 @@
-![HOTD2RE main menu](docs/images/hotd2re-header.png)
+![HOTD2RE Night Shift main menu with example online rooms](docs/images/hotd2re-header.png)
 
 # HOTD2RE
 
@@ -19,6 +19,18 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 - Graphics reset, menu opacity, Hide UI for live inspection, and saved gameplay crosshair visibility. The system mouse cursor hides during play; manual pause remains available while switching windows keeps the game and sound running.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
 - Background update notifications with **Update and restart**, preserving saves, settings and installed packs, with recovery if installation is interrupted.
+
+## Screenshots
+
+| Play menu | Settings |
+| --- | --- |
+| ![Night Shift Play menu](docs/images/hotd2re-play.png) | ![Night Shift settings](docs/images/hotd2re-settings.png) |
+
+**Online Arcade leaderboard**
+
+![Online Arcade leaderboard](docs/images/hotd2re-arcade-leaderboard.png)
+
+The main-menu preview uses example online rooms.
 
 ## Getting started
 
