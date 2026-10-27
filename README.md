@@ -1,4 +1,4 @@
-![HOTD2RE Night Shift main menu with example online rooms](docs/images/hotd2re-header.png)
+![HOTD2RE Night Shift main menu with example online rooms](docs/images/hotd2re-night-shift-main-menu.png)
 
 # HOTD2RE
 
