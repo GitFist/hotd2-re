@@ -2,8 +2,9 @@
 
 // Optional client-reported shared records, independent of deterministic gameplay.
 // The service uses the configured lobby endpoint, but a distinct socket/protocol.
-// Names are display names, not authenticated identities. Only an explicit user
-// publish action should call Submit; reading this client never uploads old saves.
+// Names are display names, not authenticated identities. Completed live runs may
+// be submitted automatically; reading rankings never uploads historical saves.
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -31,7 +32,13 @@ struct LeaderboardSubmission : LeaderboardEntry {
     // new token even when every visible value matches. Retrying this token is
     // idempotent; once sent, its original name/payload remain frozen.
     uint64_t completionToken = 0;
+    // Persist this before sending queued runs. A supplied ID survives client
+    // restarts and does not depend on process-local completion-token ordering.
+    std::array<uint8_t,16> runId{};
 };
+
+bool ValidLeaderboardSubmission(const LeaderboardSubmission& entry);
+std::array<uint8_t,16> NewLeaderboardRunId();
 
 class LeaderboardClient {
 public:
@@ -51,6 +58,8 @@ public:
     bool Ready() const;       // completed query, including a reported error
     bool SubmissionFinished() const;
     bool LastSubmitAccepted() const; // stored or duplicate acknowledgement
+    bool LastSubmitRetryable() const; // unavailable/busy; rejected and below-cutoff runs are terminal
+    uint8_t LastSubmitStatus() const; // wire status 0..5, or 255 for a transport failure
     uint64_t Revision() const;
     int Table() const;
     const std::vector<LeaderboardEntry>& Entries() const;

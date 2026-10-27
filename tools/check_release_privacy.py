@@ -29,7 +29,7 @@ SECRETS = re.compile(
     rb"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"
 )
 PRIVATE_NAME = re.compile(
-    r"(?:^|/)(?:\.env(?:\.[^/]*)?|\.git|\.ssh|hotd2re_(?:save|rejoin)\.bin)(?:/|$)"
+    r"(?:^|/)(?:\.env(?:\.[^/]*)?|\.git|\.ssh|hotd2re_(?:(?:save|rejoin)\.bin|scores_pending\.txt(?:\.(?:tmp|lock))?))(?:/|$)"
     r"|\.(?:pdb|dmp|log|pem|key)$",
     re.IGNORECASE,
 )

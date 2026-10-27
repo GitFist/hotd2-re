@@ -197,7 +197,7 @@ struct WorldHud {
     struct MenuText { float x, y; std::string text; float scale; uint32_t color; };
     std::vector<MenuText> menuText;
     std::vector<MenuScrollHint> menuScrollHints;
-    int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 Publish online name, 5 Options, 6 Online, 7 Game Options, 8 Pause, 9 Extras, 10 Connected room
+    int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 local username overlay, 5 Options, 6 Online, 7 Game Options, 8 Pause, 9 Extras, 10 Connected room
     int nightShiftRow = 0;
     int portLobbyRequests = 0, portLobbyAction = 0;  // existing network pages: 1 Create, 2 Browse, 3 Peer
     uint32_t portLobbyRoom = 0;  // action 4: a real waiting room selected on Home
@@ -495,8 +495,8 @@ public:
     void SetPortHordeLeaderboard(const std::vector<HordeLeaderboardEntry>& entries);
     HordeRunSnapshot PortHordeRun() const;
     void SetPortSharedLeaderboard(int table, const std::vector<SharedLeaderboardEntry>& entries, const std::string& status);
-    void SetPortLeaderboardPublishable(bool on, const std::string& status = "");
-    void EditPortLeaderboardName(const std::string& text, bool backspace = false);  // active online name dialog only
+    void SetPortLeaderboardPublishable(bool on, const std::string& status = "");  // legacy flag ignored; automatic-submission status only
+    void EditPortLeaderboardName(const std::string& text, bool backspace = false);  // retired compatibility API; username is client-owned
     void SetPortLeaderboardRecording(bool on);  // port disables this for scripts, replay and debug runs
     LeaderboardRunSnapshot PortLeaderboardRun() const;
     // The port supplies only compatible real waiting rooms; at most two are displayed.

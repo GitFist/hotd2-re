@@ -19,22 +19,9 @@ constexpr Row kHomeRows[]={{"PLAY",kPlay},{"PRACTICE",kPractice},{"LEADERBOARD",
 constexpr int kHomeCount = int(std::size(kHomeRows));
 constexpr Row kPlayRows[]={{"ARCADE",0},{"ORIGINAL",1},{"CHALLENGES",2},{"BOSS MODE",3},{"HORDE MODE",kHorde},{"RANDOMIZER",kRandomizer},{"BACK",kHome}};
 constexpr Row kPracticeRows[]={{"SCENE SELECT",kScene},{"BACK",kHome}};
-constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"PUBLISH NEW RUN",kPublish},{"BACK",kHome}};
+constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"BACK",kHome}};
 constexpr const char* kBoss[] = {"JUDGMENT","HIEROPHANT A","HIEROPHANT B","TOWER A","TOWER B","STRENGTH A","STRENGTH B","MAGICIAN","EMPEROR","BOSS RUSH"};
-constexpr char kOnlineNameKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-";
 constexpr size_t kOnlineNameLimit = 12;
-std::string TrimOnlineName(const std::string& name) {
-    const auto first=name.find_first_not_of(' ');
-    if(first==std::string::npos)return {};
-    return name.substr(first,name.find_last_not_of(' ')-first+1);
-}
-void EditOnlineName(std::string& name,const std::string& text,bool backspace) {
-    if(backspace&&!name.empty())name.pop_back();
-    for(char c:text) {
-        if(c>='a'&&c<='z')c=char(c-'a'+'A');
-        if(c&&std::strchr(kOnlineNameKeys,c)&&name.size()<kOnlineNameLimit)name+=c;
-    }
-}
 
 void Panel(World::Impl& w,float l,float t,float r,float b,uint32_t color) { w.hud.menuPanels.push_back({l,t,r,b,color}); }
 void Text(World::Impl& w,float x,float y,const std::string& s,float scale=0.72f,uint32_t color=0xFFEDE9DF) {
@@ -107,7 +94,7 @@ void Confirm(World::Impl& w,int action) {
     case kBossPrev: f.nightShiftTable=3+(f.nightShiftTable-3+9)%10; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kBossNext: f.nightShiftTable=3+(f.nightShiftTable-3+1)%10; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kBoardSource: f.nightShiftShared=!f.nightShiftShared; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
-    case kPublish: if(f.leaderboardPublishable) {f.publishCursor=0;page(4);} return;
+    case kPublish: return;  // Reserved legacy action; completed runs now submit in the local client.
     case kOnline: case kHost: case kBrowse: case kPeer:
         f.portLobbyRoom=0;
         f.portLobbyAction=action==kHost?1:action==kBrowse?2:action==kPeer?3:0;
@@ -424,61 +411,6 @@ void ExtrasPage(World::Impl& w) {
     Text(w,24,465,col?"EACH RECORDING PLAYS ONCE":"PLAY RESUMES   NAME RESTARTS   RESET REWINDS + STOPS   EACH TRACK PLAYS ONCE",.35f,0xFFB9AA91);
 }
 
-void PublishPage(World::Impl& w) {
-    auto& f=w.front;
-    const uint32_t buttons=(w.pressed&0xFFF)|((w.pressed>>16)&0xFFF);
-    // Forty character keys, followed by Delete, Clear, Publish and Cancel.
-    constexpr int erase=40,clear=41,publish=42,cancel=43;
-    auto& cursor=f.publishCursor;
-    cursor=std::clamp(cursor,0,cancel);
-    if(buttons&0x40)cursor=(cursor+43)%44;
-    if(buttons&0x80)cursor=(cursor+1)%44;
-    if(buttons&0x10)cursor=cursor>=40?30+(cursor-40)*3:cursor>=10?cursor-10:40+std::min(3,cursor/3);
-    if(buttons&0x20)cursor=cursor>=40?(cursor-40)*3:cursor<30?cursor+10:40+std::min(3,(cursor-30)/3);
-    int action=-1;
-    for(int p=0;p<2;++p) {
-        const auto& in=w.input[p];if(in.kind!=1||!in.fired)continue;
-        for(int i=0;i<40;++i) {
-            const float x=64+(i%10)*52.f,y=188+(i/10)*40.f;
-            if(Hit(in,x,y,x+44,y+32))action=i;
-        }
-        for(int i=0;i<4;++i)if(Hit(in,64+i*130.f,368,186+i*130.f,408))action=40+i;
-    }
-    if(buttons&2)action=cancel;
-    else if((buttons&0xC)&&!w.input[0].fired&&!w.input[1].fired)action=cursor;
-    if(action>=0)cursor=action;
-    if(action>=0&&action<40)EditOnlineName(f.leaderboardInitials,std::string(1,kOnlineNameKeys[action]),false);
-    else if(action==erase)EditOnlineName(f.leaderboardInitials,{},true);
-    else if(action==clear)f.leaderboardInitials.clear();
-    else if(action==publish&&f.leaderboardPublishable&&!TrimOnlineName(f.leaderboardInitials).empty()) {
-        f.leaderboardInitials=TrimOnlineName(f.leaderboardInitials);
-        ++f.portLeaderboardPublishRequests;f.leaderboardPublishable=false;
-        f.nightShiftPage=3;f.nightShiftRow=5;
-    } else if(action==cancel){f.nightShiftPage=3;f.nightShiftRow=5;}
-    w.pressed&=~0xC000C;
-    Panel(w,44,74,596,432,0xED0B1012);
-    Text(w,64,86,"ONLINE NAME",1.f);
-    Text(w,474,102,std::to_string(f.leaderboardInitials.size())+" / 12",.5f,0xFFB9AA91);
-    Panel(w,64,128,576,168,0xFF182225);
-    Text(w,80,136,f.leaderboardInitials.empty()?"ENTER YOUR NAME":f.leaderboardInitials,.86f,
-         f.leaderboardInitials.empty()?0xFF8B9698:0xFFFFF4E5);
-    for(int i=0;i<40;++i) {
-        const float x=64+(i%10)*52.f,y=188+(i/10)*40.f;
-        const std::string label=kOnlineNameKeys[i]==' '?"SP":std::string(1,kOnlineNameKeys[i]);
-        Button(w,x,y,x+44,y+32,label.c_str(),cursor==i,.65f);
-    }
-    const char* actions[]={"DELETE","CLEAR","PUBLISH","CANCEL"};
-    for(int i=0;i<4;++i) {
-        const bool enabled=i!=2||(f.leaderboardPublishable&&!TrimOnlineName(f.leaderboardInitials).empty());
-        if(enabled)Button(w,64+i*130.f,368,186+i*130.f,408,actions[i],cursor==40+i,.6f);
-        else {
-            Panel(w,64+i*130.f,368,186+i*130.f,408,0x75101315);
-            Text(w,78+i*130.f,382,actions[i],.6f,0xFF677072);
-        }
-    }
-    Text(w,64,416,"ONLINE: 1-12 CHARACTERS    LOCAL INITIALS: 3",.38f,0xFFB9AA91);
-    Text(w,24,453,"TYPE A NAME OR SELECT KEYS   ENTER: SELECT   ESC / RELOAD: BACK",.43f,0xFFB2B3AB);
-}
 } // namespace
 
 void NightShiftMenuFrame(World::Impl& w) {
@@ -490,13 +422,14 @@ void NightShiftMenuFrame(World::Impl& w) {
     Panel(w,0,0,640,480,0x3503090B);
     Panel(w,0,440,640,480,0xC8090D10);
     Logo(w,f.nightShiftPage!=0);
-    if(f.nightShiftPage==4) {PublishPage(w);LoadSprites(w,spriteStart);return;}
+    // Older snapshots may still refer to the retired manual-publish page.
+    if(f.nightShiftPage==4) {f.nightShiftPage=3;f.nightShiftRow=0;}
     if(f.nightShiftPage==9) {ExtrasPage(w);LoadSprites(w,spriteStart);return;}
     const Row* rows=kHomeRows; int count=kHomeCount;
     float left=24,right=322,top=158,pitch=37,height=32,scale=1.05f;
     if(f.nightShiftPage==1) {rows=kPlayRows;count=int(std::size(kPlayRows));Text(w,26,83,"PLAY",1.45f);top=136;pitch=40;height=35;}
     else if(f.nightShiftPage==2) {rows=kPracticeRows;count=int(std::size(kPracticeRows));Text(w,26,83,"PRACTICE",1.45f);top=140;pitch=52;height=44;}
-    else if(f.nightShiftPage==3) {rows=kBoardRows;count=7;Text(w,26,78,"LEADERBOARD",.81f);top=130;pitch=40;height=35;right=187;scale=.60f;}
+    else if(f.nightShiftPage==3) {rows=kBoardRows;count=int(std::size(kBoardRows));Text(w,26,78,"LEADERBOARD",.81f);top=130;pitch=40;height=35;right=187;scale=.60f;}
     const int roomCount=f.nightShiftPage==0?int(f.homeRooms.size()):0;
     const int total=count+(f.nightShiftPage==0?3+roomCount:0);
     f.nightShiftRow=std::clamp(f.nightShiftRow,0,total-1);
@@ -550,8 +483,7 @@ void NightShiftMenuFrame(World::Impl& w) {
     for(int i=0;i<count;++i) {
         const bool boardSel=f.nightShiftPage==3&&i>0&&i<5&&(f.nightShiftTable==i-1||(i==4&&f.nightShiftTable>=3));
         const char* label=f.nightShiftPage==3&&i==0?(f.nightShiftShared?"SOURCE: ONLINE":"SOURCE: LOCAL"):rows[i].label;
-        const bool disabled=f.nightShiftPage==3&&i==5&&!f.leaderboardPublishable;
-        Button(w,left,top+i*pitch,right,top+i*pitch+height,label,!disabled&&f.nightShiftRow==i,scale,boardSel);
+        Button(w,left,top+i*pitch,right,top+i*pitch+height,label,f.nightShiftRow==i,scale,boardSel);
     }
     if(f.nightShiftPage==0) {
         Panel(w,366,158,612,159,0xFF726B58);
@@ -585,7 +517,7 @@ void NightShiftMenuFrame(World::Impl& w) {
         Text(w,350,239,"REPLAY A CHAPTER",.65f);
     } else if(f.nightShiftPage==3) {
         Leaderboard(w);
-        if(f.nightShiftRow==5)Text(w,24,421,(f.leaderboardPublishStatus.empty()?"COMPLETE A NEW RUN FIRST":f.leaderboardPublishStatus).substr(0,50),.45f,0xFFB9AA91);
+        Text(w,24,466,(f.leaderboardPublishStatus.empty()?"ELIGIBLE RUNS SUBMIT AUTOMATICALLY":f.leaderboardPublishStatus).substr(0,50),.40f,0xFFB9AA91);
     }
     Text(w,24,453,"ARROWS SELECT   ENTER / SHOOT CONFIRM   ESC / RELOAD BACK",.48f,0xFFB2B3AB);
     LoadSprites(w,spriteStart);
@@ -685,14 +617,13 @@ void World::SetPortSharedLeaderboard(int table,const std::vector<SharedLeaderboa
     f.sharedLeaderboardStatus=status.substr(0,32);
 }
 void World::SetPortLeaderboardPublishable(bool on,const std::string& status) {
-    impl_->front.leaderboardPublishable=on;
+    (void)on;  // Legacy API: only the local client's automatic-submission status is displayed.
+    impl_->front.leaderboardPublishable=false;
     impl_->front.leaderboardPublishStatus=status.substr(0,50);
 }
-void World::EditPortLeaderboardName(const std::string& text,bool backspace) {
-    auto& w=*impl_;
-    if(!w.cfg.portFeatures||w.gameMode!=4||w.front.nightShiftPage!=4)return;
-    EditOnlineName(w.front.leaderboardInitials,text,backspace);
-    w.front.publishCursor=42;  // typing followed by Enter publishes the completed name
+void World::EditPortLeaderboardName(const std::string&,bool) {
+    // Kept for compatibility with callers and snapshots from the manual-publish UI.
+    // The saved username is local presentation state, outside the deterministic World.
 }
 void PortLeaderboardBegin(World::Impl& w) {
     w.portRunRecorded=false;

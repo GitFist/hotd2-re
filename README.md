@@ -4,7 +4,7 @@
 
 A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring online co-op, additional game modes, and modern controls and display options.
 
-**[Download 1.2 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-a/HOTD2RE-1.2-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.3 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-b/HOTD2RE-1.3-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -24,17 +24,17 @@ A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring onl
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.2-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-a/HOTD2RE-1.2-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.3-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.26-b/HOTD2RE-1.3-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-**Version 1.2** adds the score display code: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+**Version 1.3** adds the score display code: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Updates
 
-The current release is **1.2**. Later releases advance by **0.1**: 1.3, 1.4,
+The current release is **1.3**. Later releases advance by **0.1**: 1.4, 1.5,
 and so on, with 2.0 after 1.9.
 
 The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update now** opens a visible progress window, closes the game, downloads and verifies the matching Windows client, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.
@@ -62,7 +62,7 @@ Use **Pause → Return to Lobby** to choose another mode together. After a disco
 
 Connections use a direct route when available, with an automatic server relay fallback.
 
-Home's **Leaderboard** page offers local Arcade, Original, Horde and individual Boss Mode records. After an eligible run's results and local initials screens finish, an online-name prompt appears automatically in both menu styles. Enter up to 12 characters using typing or the on-screen keyboard, then **Publish** or **Skip**. The prompt shows submission success or an error with a retry; opening it never uploads a score. Local initials remain three characters. Online names allow letters, numbers, spaces, periods, underscores and hyphens. Shared records are unverified and stored persistently; **Publish New Run** remains available as a manual fallback. Local records work offline.
+Home's **Leaderboard** page offers local Arcade, Original, Horde and individual Boss Mode records. On your first launch, choose a public username of 1-12 characters using typing or the on-screen keyboard. Eligible finished runs submit automatically under that name. Change it in **Options > Gameplay > Username**; previous and queued runs keep their original name. Offline scores are saved in your game folder and retried quietly, including after restarting, without duplicate submissions. Keep `hotd2re_scores_pending.txt` alongside your settings. Existing save records are not uploaded. Names allow letters, numbers, spaces, periods, underscores and hyphens; they are display names, not unique accounts. Shared records are unverified. Local initials remain three characters and local records work offline.
 
 ## Controls
 

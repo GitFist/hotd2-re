@@ -75,7 +75,36 @@ struct Resolution {
     std::atomic<int> state{0}; // release/acquire publishes address
     sockaddr_in address{};
 };
+std::shared_ptr<Resolution> Resolve(const std::string& host,uint16_t port) {
+    auto result=std::make_shared<Resolution>();
+    // The shared result outlives cancellation; shutdown never waits for OS DNS.
+    std::thread([result,host,port] {
+        SocketRuntime runtime;
+        if (!runtime.ok) { result->state.store(-1,std::memory_order_release);return; }
+        addrinfo hints{};hints.ai_family=AF_INET;hints.ai_socktype=SOCK_DGRAM;
+        addrinfo* addresses=nullptr;
+        if (getaddrinfo(host.c_str(),nullptr,&hints,&addresses)!=0 || !addresses) {
+            result->state.store(-1,std::memory_order_release);return;
+        }
+        result->address=*reinterpret_cast<const sockaddr_in*>(addresses->ai_addr);
+        result->address.sin_port=htons(port);freeaddrinfo(addresses);
+        result->state.store(1,std::memory_order_release);
+    }).detach();
+    return result;
+}
 } // namespace
+
+bool ValidLeaderboardSubmission(const LeaderboardSubmission& entry) { return Valid(entry); }
+std::array<uint8_t,16> NewLeaderboardRunId() {
+    std::random_device random;
+    std::array<uint8_t,16> id{};
+    for(size_t n=0;n<id.size();n+=4) {
+        const uint32_t value=random();
+        for(size_t byte=0;byte<4;++byte)id[n+byte]=uint8_t(value>>(byte*8));
+    }
+    if(std::all_of(id.begin(),id.end(),[](uint8_t b){return b==0;}))id[0]=1;
+    return id;
+}
 
 struct LeaderboardClient::Impl {
     SocketRuntime runtime;
@@ -84,6 +113,10 @@ struct LeaderboardClient::Impl {
     uint32_t build=0,request=0;
     int table=0,operation=0,phase=0; // operation1=query2=submit; phase1=hello2=operation
     bool queryReady=false,submitReady=false,accepted=false;
+    uint8_t submitStatus=255;
+    std::string host;
+    uint16_t port=0;
+    bool reconnect=false;
     uint64_t revision=0;
     std::string error;
     std::vector<LeaderboardEntry> entries;
@@ -95,11 +128,16 @@ struct LeaderboardClient::Impl {
     std::mt19937 random{std::random_device{}()};
     ~Impl() { CloseSocket(socket); }
     void Finish(const std::string& message={}) {
+        if(!message.empty()&&submitStatus==255)reconnect=true;
         error=message; queryReady=operation==1; submitReady=operation==2;
         operation=phase=0; ++revision;
     }
     void Start(int op) {
         operation=op;phase=1;queryReady=submitReady=accepted=false;error.clear();
+        submitStatus=255;
+        if(reconnect&&!host.empty()) {
+            CloseSocket(socket);socket=kNoSocket;resolution=Resolve(host,port);reconnect=false;
+        }
         request=random(); if (!request) request=1;
         outgoing=Header(1,request);started=Clock::now();lastSent={};
     }
@@ -137,46 +175,33 @@ bool LeaderboardClient::Configure(const std::string& host,uint16_t port,uint32_t
         if (error) *error="Invalid ranking endpoint or socket initialization failed"; return false;
     }
     CloseSocket(i.socket);i.socket=kNoSocket;i.operation=i.phase=0;i.queryReady=i.submitReady=false;i.entries.clear();i.error.clear();
-    i.build=build;i.submission={};i.run={};i.haveSubmission=i.submissionSent=false;i.resolution=std::make_shared<Resolution>();
-    auto result=i.resolution;
-    // The shared result outlives cancellation; shutdown never waits for OS DNS.
-    std::thread([result,host,port] {
-        SocketRuntime runtime;
-        if (!runtime.ok) { result->state.store(-1,std::memory_order_release);return; }
-        addrinfo hints{};hints.ai_family=AF_INET;hints.ai_socktype=SOCK_DGRAM;
-        addrinfo* addresses=nullptr;
-        if (getaddrinfo(host.c_str(),nullptr,&hints,&addresses)!=0 || !addresses) {
-            result->state.store(-1,std::memory_order_release);return;
-        }
-        result->address=*reinterpret_cast<const sockaddr_in*>(addresses->ai_addr);
-        result->address.sin_port=htons(port);freeaddrinfo(addresses);
-        result->state.store(1,std::memory_order_release);
-    }).detach();
+    i.build=build;i.submission={};i.run={};i.haveSubmission=i.submissionSent=false;
+    i.host=host;i.port=port;i.reconnect=false;i.resolution=Resolve(host,port);
     return true;
 }
 void LeaderboardClient::Query(int table) {
     auto& i=*impl_;
-    if (i.operation==2) return; // keep an explicitly published result's acknowledgement
+    if (i.operation==2) return; // keep the in-flight result's acknowledgement
     i.table=table;i.entries.clear();i.Start(1);
     if (table<0 || table>12 || !i.resolution) i.Finish("RANKING SERVICE NOT CONFIGURED");
 }
 bool LeaderboardClient::Submit(const LeaderboardSubmission& entry,std::string* error) {
     auto& i=*impl_;
-    if (!Valid(entry) || !entry.completionToken || !i.resolution) { if (error) *error="Result is not eligible for this shared board";return false; }
+    const bool persistentId=std::any_of(entry.runId.begin(),entry.runId.end(),[](uint8_t b){return b!=0;});
+    if (!Valid(entry) || (!persistentId&&!entry.completionToken) || !i.resolution) { if (error) *error="Result is not eligible for this shared board";return false; }
     if (i.operation) { if (error) *error="A ranking request is already running";return false; }
     const auto& old=i.submission;
     const bool samePayload=old.table==entry.table && old.name==entry.name && old.score==entry.score &&
         old.rounds==entry.rounds && old.difficulty==entry.difficulty && old.players==entry.players;
-    if(i.haveSubmission&&entry.completionToken<old.completionToken) {if(error)*error="RESULT IS FROM AN OLDER COMPLETED RUN";return false;}
-    const bool sameRun=i.haveSubmission&&entry.completionToken==old.completionToken;
+    if(!persistentId&&i.haveSubmission&&entry.completionToken<old.completionToken) {if(error)*error="RESULT IS FROM AN OLDER COMPLETED RUN";return false;}
+    const bool sameRun=i.haveSubmission&&(persistentId?entry.runId==i.run:entry.completionToken==old.completionToken);
     if(sameRun&&i.submissionSent&&!samePayload) {if(error)*error="RUN ALREADY SENT AS "+old.name+"; RETRY THAT NAME";return false;}
     i.table=entry.table;i.submission=entry;
     // A manual retry after an unavailable/lost acknowledgement uses the same
     // run ID, even after acceptance. Equal scores from a newer completion are
     // distinct runs. DNS/hello failures do not freeze an unsent payload.
     if (!sameRun) {
-        for (auto& byte:i.run) byte=static_cast<uint8_t>(i.random());
-        if(std::all_of(i.run.begin(),i.run.end(),[](uint8_t b){return b==0;}))i.run[0]=1;
+        i.run=persistentId?entry.runId:NewLeaderboardRunId();
         i.submissionSent=false;
     }
     i.haveSubmission=true;
@@ -218,6 +243,7 @@ void LeaderboardClient::Poll() {
             if (!valid) continue;
             i.entries=std::move(entries);i.Finish(status?SubmitError(status):"");
         } else if (packet[5]==103 && i.operation==2 && count==11 && packet[10]<=5) {
+            i.submitStatus=packet[10];
             i.accepted=packet[10]<=1;i.Finish(i.accepted?"":SubmitError(packet[10]));
         }
     }
@@ -226,6 +252,8 @@ bool LeaderboardClient::Busy() const { return impl_->operation!=0; }
 bool LeaderboardClient::Ready() const { return impl_->queryReady; }
 bool LeaderboardClient::SubmissionFinished() const { return impl_->submitReady; }
 bool LeaderboardClient::LastSubmitAccepted() const { return impl_->accepted; }
+bool LeaderboardClient::LastSubmitRetryable() const { return !impl_->accepted&&impl_->submitStatus!=2&&impl_->submitStatus!=4; }
+uint8_t LeaderboardClient::LastSubmitStatus() const { return impl_->submitStatus; }
 uint64_t LeaderboardClient::Revision() const { return impl_->revision; }
 int LeaderboardClient::Table() const { return impl_->table; }
 const std::vector<LeaderboardEntry>& LeaderboardClient::Entries() const { return impl_->entries; }

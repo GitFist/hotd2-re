@@ -56,7 +56,7 @@ function New-TestInstallation([string]$Name, [string]$Architecture = 'x64', [str
     [IO.File]::WriteAllText((Join-Path $root 'hotd2.exe'), 'old executable')
     [IO.File]::WriteAllText((Join-Path $root 'BUILD.txt'), 'old build')
     [IO.File]::WriteAllText((Join-Path $root 'scenes/st1_play.scene'), 'old scene')
-    foreach ($relative in @('hotd2re_settings.ini', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'game/PUT_YOUR_GAME_FILES_HERE.txt', 'visualpacks/mine/custom.bin', 'unknown.dll')) {
+    foreach ($relative in @('hotd2re_settings.ini', 'hotd2re_scores_pending.txt', 'hotd2re_scores_pending.txt.tmp', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'game/PUT_YOUR_GAME_FILES_HERE.txt', 'visualpacks/mine/custom.bin', 'unknown.dll')) {
         [IO.File]::WriteAllText((Join-Path $root $relative), "player:$relative")
     }
     $label = if ($Architecture -eq 'x64') { '2026 10 24 A' } else { '2026 10 24 NS32 A' }
@@ -99,7 +99,7 @@ function Expand-TestPackage([string]$Root, [string]$Architecture = 'x64', [strin
 }
 
 function Assert-PlayerFiles([string]$Root) {
-    foreach ($relative in @('hotd2re_settings.ini', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'game/PUT_YOUR_GAME_FILES_HERE.txt', 'visualpacks/mine/custom.bin', 'unknown.dll')) {
+    foreach ($relative in @('hotd2re_settings.ini', 'hotd2re_scores_pending.txt', 'hotd2re_scores_pending.txt.tmp', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'game/PUT_YOUR_GAME_FILES_HERE.txt', 'visualpacks/mine/custom.bin', 'unknown.dll')) {
         Assert ([IO.File]::ReadAllText((Join-Path $Root $relative)) -ceq "player:$relative") "Player file changed: $relative"
     }
 }

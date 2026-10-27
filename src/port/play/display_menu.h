@@ -154,6 +154,7 @@ class DisplayMenu {
         kAttractionVolume,
         kLightguns,
         kWiiRemotes,
+        kUsername,
         kRowCount
     };
 
@@ -162,6 +163,7 @@ class DisplayMenu {
         int audio[5] = {5, 5, 5, 5, 5};  // music, guns, effects, master, attraction
         int difficulty = 2, lives = 3, credits = 5, crosshair[2] = {};
         bool freePlayUnlocked = false, gameplayEditable = true;
+        std::string username;
         bool operator==(const OptionValues&) const = default;
     };
     enum class DeviceAction { None, Lightguns, WiiRemotes };
@@ -177,6 +179,11 @@ class DisplayMenu {
         const bool reset = gameplayReset_;
         gameplayReset_ = false;
         return reset;
+    }
+    bool TakeUsernameEdit() {
+        const bool edit = usernameEdit_;
+        usernameEdit_ = false;
+        return edit;
     }
     DeviceAction TakeDeviceAction() {
         const auto action = deviceAction_;
@@ -273,6 +280,7 @@ class DisplayMenu {
     bool uiHidden_ = false;
     bool resetConfirm_ = false, resetYes_ = false, graphicsReset_ = false;
     bool resetGameplayConfirm_ = false, gameplayReset_ = false, optionChanged_ = false;
+    bool usernameEdit_ = false;
     OptionValues optionValues_;
     DeviceAction deviceAction_ = DeviceAction::None;
     bool nightShiftActive_ = true;

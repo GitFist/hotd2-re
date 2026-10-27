@@ -82,13 +82,14 @@ LEADERBOARD
 Home > Leaderboard shows Arcade, Original, Horde and individual Boss Mode tables.
 Source: Local reads your own records. Source: Online is the shared service view.
 Shared records are unverified, self-reported scores rather than anti-cheat rankings.
-After an eligible run's results and local initials screens, the online name prompt opens
-automatically. Enter a name of 1-12 characters, then Publish or Skip. Failed submissions can
-be retried in the prompt; Publish New Run remains a fallback. Type or use the on-screen
-keyboard. Letters, numbers, spaces, periods, underscores and hyphens are supported.
-Local initials stay three characters.
-Opening the page never publishes your save automatically. The public service stores shared
-records persistently; older clients display abbreviated names. Local records work offline.
+Choose a public username on first launch (1-12 characters). Eligible finished runs
+submit automatically. Change your name in Options > Gameplay > Username; previous
+and queued runs keep their original name. Type or use the on-screen keyboard.
+Letters, numbers, spaces, periods, underscores and hyphens are supported. Names
+are display names, not unique accounts. Local initials stay three characters.
+Offline scores are saved and retried quietly, including after restarting, without
+duplicate submissions. Keep hotd2re_scores_pending.txt with your settings. Existing
+save records are not uploaded. Local records work offline.
 
 GRAPHICS AND DISPLAY
 Options shortcuts or Pause > Graphics Options provide Display, Image, Lighting,

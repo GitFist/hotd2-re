@@ -6,6 +6,7 @@
 
 #include "game/menu_audio.h"
 #include "game/menu_text.h"
+#include "play/username_prompt.h"
 
 namespace play {
 
@@ -57,6 +58,8 @@ bool Settings::Load(const std::string& path) {
             sfx = v;
         else if (key == "input")
             input = val;
+        else if (key == "username")
+            username = NormalizeUsername(val);
         else if (key == "fullscreen")
             display.fullscreen = v != 0;
         else if (key == "fullscreen_mode" && (val == "exclusive" || val == "borderless"))
@@ -181,6 +184,7 @@ bool Settings::Load(const std::string& path) {
 }
 
 bool Settings::Save(const std::string& path) const {
+    if (!username.empty() && !ValidUsername(username)) return false;
     std::ofstream f(path, std::ios::trunc);
     if (!f) return false;
     f << "master=" << master << "\nmusic=" << music << "\nguns=" << guns << "\nsfx=" << sfx << "\nattraction=" << attraction << "\n";
@@ -215,6 +219,8 @@ bool Settings::Save(const std::string& path) const {
       << "\nmenu_opacity=" << display.menuOpacity << "\ncrosshairs=" << display.showCrosshairs << "\n";
     if (!assets.empty()) f << "assets=" << assets << "\n";
     if (!lobby.empty()) f << "lobby=" << lobby << "\n";
+    if (!username.empty()) f << "username=" << username << "\n";
+    f.close();  // report write/flush errors before callers accept a newly saved username
     return static_cast<bool>(f);
 }
 

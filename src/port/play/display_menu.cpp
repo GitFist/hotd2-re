@@ -46,6 +46,7 @@ const char* GroupStart(DisplayMenu::Page page, int row) {
         if (row == D::kContrast) return "COLOR";
         if (row == D::kStatistics) return "DIAGNOSTICS";
     } else if (page == D::kGameplay) {
+        if (row == D::kUsername) return "LEADERBOARD";
         if (row == D::kDifficulty) return "NEW GAME RULES";
         if (row == D::kCrosshairP1) return "SIGHTS & APPEARANCE";
     } else if (page == D::kSound && row == D::kMasterVolume) return "VOLUME";
@@ -91,7 +92,7 @@ int VolumeIndex(int row) {
 }
 bool IsAction(int row) {
     return row == DisplayMenu::kResetGraphics || row == DisplayMenu::kResetGameplay || row == DisplayMenu::kLightguns ||
-           row == DisplayMenu::kWiiRemotes || row == DisplayMenu::kCalibration;
+           row == DisplayMenu::kWiiRemotes || row == DisplayMenu::kCalibration || row == DisplayMenu::kUsername;
 }
 const char* Help(int r) {
     switch (r) {
@@ -224,6 +225,8 @@ const char* Help(int r) {
             return "Local visual preference. Gameplay stays the same.";
         case DisplayMenu::kDifficulty:
             return "Enemy difficulty for your next local run. Current runs keep their existing rules.";
+        case DisplayMenu::kUsername:
+            return "Change the public name used for automatic score submissions. Previous and queued scores keep their original name.";
         case DisplayMenu::kLives:
             return "Starting lives for your next local run. This does not refill lives in a running game.";
         case DisplayMenu::kContinues:
@@ -260,7 +263,7 @@ const std::vector<int>& DisplayMenu::Rows(Page p) {
          kUpscaler, kFrameGeneration, kRenderInterpolation, kPreset, kMsaa, kPostAA, kTemporalAA, kAniso, kFiltering,
          kDownsample, kSharpen, kCoverage, kIndependentUi, kPerPixel, kSoftParticles, kAmbientOcclusion, kShadowMaps,
          kRayShadows, kBloom, kFog, kReflections, kCinematicFocus, kContrast, kSaturation, kColorGrade, kStatistics, kBack},
-        {kDifficulty, kLives, kContinues, kCrosshairP1, kCrosshairP2, kCrosshairs, kBlood, kResetGameplay, kBack},
+        {kUsername, kDifficulty, kLives, kContinues, kCrosshairP1, kCrosshairP2, kCrosshairs, kBlood, kResetGameplay, kBack},
         {kMasterVolume, kMusicVolume, kGunVolume, kEffectsVolume, kAttractionVolume, kBack},
         {kLightguns, kWiiRemotes, kBack},
         {kCrt, kCrtMask, kCrtCurvature, kCrtGlow, kBack},
@@ -275,6 +278,7 @@ void DisplayMenu::Open() {
     resetYes_ = false;
     optionChanged_ = false;
     gameplayReset_ = false;
+    usernameEdit_ = false;
     deviceAction_ = DeviceAction::None;
     page_ = kDisplay;
     cursor_ = Rows(page_).front();
@@ -437,7 +441,8 @@ const char* DisplayMenu::Label(int r) {
                                                  "Effects + Dialogue",
                                                  "Attraction Volume",
                                                  "Light Guns",
-                                                 "Wii Remotes"};
+                                                 "Wii Remotes",
+                                                 "Username"};
     return r >= 0 && r < kRowCount ? names[r] : "";
 }
 void DisplayMenu::ApplyPreset(DisplaySettings& d, int p, const port::GraphicsCapabilities* caps) {
@@ -881,6 +886,7 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
     if (const int volume = VolumeIndex(row); volume >= 0)
         return std::to_string(std::clamp(optionValues_.audio[volume], 0, 10)) + " / 10";
     switch (row) {
+        case kUsername: return optionValues_.username.empty() ? "Set username" : optionValues_.username;
         case kDifficulty: {
             const char* names[] = {"Very Easy", "Easy", "Normal", "Hard", "Very Hard"};
             return names[std::clamp(optionValues_.difficulty, 0, 4)];
@@ -1153,9 +1159,10 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
         return true;
     }
     int delta = ((in.pressed & 0x80) ? 1 : 0) - ((in.pressed & 0x40) ? 1 : 0);
-    if (cursor_ == kLightguns || cursor_ == kWiiRemotes || cursor_ == kCalibration) {
+    if (cursor_ == kLightguns || cursor_ == kWiiRemotes || cursor_ == kCalibration || cursor_ == kUsername) {
         if ((in.pressed & 0xC) || (in.trigger && over)) {
             if (cursor_ == kCalibration) calibration_ = 0;
+            else if (cursor_ == kUsername) usernameEdit_ = true;
             else deviceAction_ = cursor_ == kLightguns ? DeviceAction::Lightguns : DeviceAction::WiiRemotes;
             sounds.push_back(game::kOptionSelectSound);
         }

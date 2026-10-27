@@ -30,10 +30,12 @@ class ReleasePrivacyTest(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as z:
                 z.writestr("hotd2re/hotd2.exe", ("C:" + "\\Users\\ExamplePerson\\source.cpp").encode())
                 z.writestr("hotd2re/hotd2re_rejoin.bin", b"private runtime state")
+                for suffix in ("", ".tmp", ".lock"):
+                    z.writestr("hotd2re/hotd2re_scores_pending.txt" + suffix, b"private pending scores")
                 z.comment = b"ghp_" + b"x" * 36
             result = privacy.check_path(archive, [])
             self.assertFalse(result["passed"])
-            self.assertEqual(len(result["findings"]), 3)
+            self.assertEqual(len(result["findings"]), 6)
 
     def test_clean_package_keeps_public_attribution_and_game_data(self):
         with tempfile.TemporaryDirectory() as scratch:

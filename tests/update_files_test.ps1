@@ -68,7 +68,7 @@ function New-Fixture([string]$Name, [string]$Architecture = 'x64', [switch]$Unch
         if ($Unchanged) { [IO.File]::WriteAllBytes($installed, $files[$name]) }
         elseif ($name -ne 'BUILD.txt') { [IO.File]::WriteAllText($installed, "old:$name") }
     }
-    $protected = @('hotd2re_settings.ini', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'visualpacks/mine/custom.bin', 'unknown.dll')
+    $protected = @('hotd2re_settings.ini', 'hotd2re_scores_pending.txt', 'hotd2re_scores_pending.txt.tmp', 'hotd2re_save.dat', 'hotd2re_records.dat', 'hotd2re_ticket.bin', 'game/Hod2.exe', 'visualpacks/mine/custom.bin', 'unknown.dll')
     foreach ($name in $protected) {
         $path = Join-Path $root $name
         $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))

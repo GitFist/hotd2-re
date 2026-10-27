@@ -57,3 +57,8 @@ hotd2re_*.bin
 .claude/
 
 hotd2re_lightguns.ini
+
+# Private offline leaderboard queue and atomic-write scratch file
+hotd2re_scores_pending.txt
+hotd2re_scores_pending.txt.tmp
+hotd2re_scores_pending.txt.lock

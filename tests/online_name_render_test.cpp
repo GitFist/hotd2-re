@@ -14,7 +14,7 @@
 #include "game/world.h"
 #include "platform/platform.h"
 #include "play/night_shift_menu.h"
-#include "play/run_name_prompt.h"
+#include "play/username_prompt.h"
 #include "render/ui_font.h"
 
 namespace {
@@ -96,7 +96,7 @@ public:
                 const auto b = Measure(text); field = true;
                 Require(b.left >= 64 && b.top >= 128 && b.right <= 576 && b.bottom <= 168, "name or placeholder exceeds its input field");
             }
-            Require(field, "Publish page missing editable name field");
+            Require(field, "username dialog missing editable name field");
         }
         ++captures_;
     }
@@ -120,14 +120,8 @@ int main(int argc, char** argv) {
     world.Boot(config); world.ForceMode(4, 0x10000, 0, 0);
     for (int i = 0; i < 3; ++i) Tick(world);
     Click(world, 100, 260); Require(world.Hud().nightShiftPage == 3, "Home event opens leaderboard");
-    world.SetPortLeaderboardPublishable(true, "LOCAL TEST FIXTURE");
-    Click(world, 100, 350); Require(world.Hud().nightShiftPage == 4, "publish action opens name entry");
-    Require(world.Hud().portLeaderboardInitials.empty(), "new online name starts empty");
-    render.Save("publish-empty", world.Hud());
-    world.EditPortLeaderboardName("WWWWWWWWWWWW"); Tick(world);
-    Require(world.Hud().portLeaderboardInitials == "WWWWWWWWWWWW", "all twelve typed name characters are retained");
-    render.Save("publish-full-width-name", world.Hud());
-    Tick(world, 2); Tick(world); Require(world.Hud().nightShiftPage == 3, "Cancel returns without publishing");
+    world.SetPortLeaderboardPublishable(false, "SCORE SAVED / WILL SYNC WHEN ONLINE"); Tick(world);
+    render.Save("leaderboard-offline-status", world.Hud(), false, false);
     Require(world.Hud().portLeaderboardPublishRequests == 0, "capture fixture must never request publication");
     Click(world, 100, 145); Require(world.Hud().portLeaderboardShared, "source button selects shared view");
     for (int table : {0, 2, 3}) {
@@ -143,19 +137,16 @@ int main(int argc, char** argv) {
         Require(names == 10, "all ten full names remain visible without abbreviation");
         render.Save(table == 0 ? "shared-arcade-max" : table == 2 ? "shared-horde-max" : "shared-boss-max", world.Hud(), true);
     }
-    play::RunNamePrompt prompt;
-    game::WorldHud ready; ready.gameMode=3;
-    Require(prompt.Queue(1,2,2000000000,65535)&&prompt.MaybeOpen(ready),"completed run opens the local prompt");
-    game::WorldHud modal; prompt.ModernHud(modal);render.Save("run-complete-empty",modal);
-    prompt.Edit("NIGHTSHIFT12");
-    play::MenuInput aim;aim.pointer=true;aim.px=380;aim.py=386;prompt.Update(aim);
-    prompt.ModernHud(modal);render.Save("run-complete-name",modal);
-    aim.trigger=true;Require(prompt.Update(aim)==play::RunNamePrompt::Action::Publish,"explicit submit only");
-    prompt.ModernHud(modal);render.Save("run-complete-sending",modal);
-    prompt.FinishSubmission(false,"RANKING SERVICE UNAVAILABLE");
-    prompt.ModernHud(modal);render.Save("run-complete-retry",modal);
-    Require(prompt.Update(aim)==play::RunNamePrompt::Action::Publish,"retry remains accessible");
-    prompt.FinishSubmission(true);
-    prompt.ModernHud(modal);render.Save("run-complete-published",modal,false,false);
-    std::printf("PASS %d native captures: manual and automatic online name entry, sending/retry/success states, maximum leaderboard values and glyph bounds\n",render.Count());
+    play::UsernamePrompt prompt;
+    prompt.Open({},true);
+    game::WorldHud modal; prompt.ModernHud(modal);render.Save("username-first-launch-empty",modal);
+    prompt.Edit("WWWWWWWWWWWW");
+    prompt.ModernHud(modal);render.Save("username-first-launch-full",modal);
+    play::MenuInput save; save.pressed=8;
+    Require(prompt.Update(save)==play::UsernamePrompt::Action::Save,"filled name can be saved");
+    prompt.SetError("COULD NOT SAVE USERNAME. PLEASE RETRY.");
+    prompt.ModernHud(modal);render.Save("username-save-error",modal);
+    prompt.Open("NIGHTSHIFT12",false);
+    prompt.ModernHud(modal);render.Save("username-change",modal);
+    std::printf("PASS %d native captures: first-launch and rename dialogs, save errors, offline status, maximum leaderboard values and glyph bounds\n",render.Count());
 }

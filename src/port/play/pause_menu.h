@@ -35,10 +35,12 @@ struct Settings {
     std::string assets;
     // "lobby=<host:port>": the online lobby server (play.cpp kDefaultLobby when absent; HOTD2_LOBBY / --lobby win).
     std::string lobby;
+    // Public leaderboard display name. Empty means first-launch setup is required.
+    std::string username;
     bool Load(const std::string& path);   // a missing file or key keeps the default
     bool Save(const std::string& path) const;  // writes input= / assets= only when set
     bool operator==(const Settings& o) const {
-        return music == o.music && guns == o.guns && sfx == o.sfx && master == o.master && attraction == o.attraction && display == o.display;
+        return music == o.music && guns == o.guns && sfx == o.sfx && master == o.master && attraction == o.attraction && display == o.display && username == o.username;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 };

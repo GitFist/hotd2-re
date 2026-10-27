@@ -77,7 +77,8 @@
 #include "port/play/pack_preview.h"
 #include "port/play/pause_menu.h"
 #include "port/play/renderer_fallback.h"
-#include "port/play/run_name_prompt.h"
+#include "port/play/username_prompt.h"
+#include "port/play/score_submission_queue.h"
 #include "port/play/scroll_hint.h"
 #include "port/play/widescreen.h"
 #include "port/play/wii_menu.h"
@@ -188,20 +189,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.2";
+const char* const kReleaseVersion = "1.3";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026102302;
-const char* const kBuildName = "2026 10 26 A";
+const char* const kBuildName = "2026 10 26 B";
 #else
 constexpr uint32_t kBuildId = 2026102303;
-const char* const kBuildName = "2026 10 26 NS32 A";
+const char* const kBuildName = "2026 10 26 NS32 B";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 26 A";
+const char* const kUpdateBuildName = "2026 10 26 B";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -1100,6 +1101,7 @@ int main(int argc, char** argv) {
     net.SetDelayPolicy(netDelayGiven ? netDelay : 2, !netDelayGiven);  // measured from the round trip unless --net-delay pins it
     Lobby lobby;
     port::net::LeaderboardClient rankings;
+    port::net::LeaderboardClient scoreUploader;
     {
         // the lobby server: --lobby, HOTD2_LOBBY, the settings' lobby=, else the default (server/lobby/README.md)
         std::string lobbyAddr =
@@ -1113,6 +1115,7 @@ int main(int argc, char** argv) {
         if (!net.SetLobbyServer(lobbyAddr, lobbyPort, &err)) fprintf(stderr, "netplay: %s (the in-game lobby is off)\n", err.c_str());
         homeDirectory.SetLobbyServer(lobbyAddr, lobbyPort, nullptr);
         if (!rankings.Configure(lobbyAddr, lobbyPort, port::net::kLeaderboardCompatibilityId, &err)) fprintf(stderr, "rankings: %s\n", err.c_str());
+        if (!scoreUploader.Configure(lobbyAddr, lobbyPort, port::net::kLeaderboardCompatibilityId, &err)) fprintf(stderr, "score uploads: %s\n", err.c_str());
     }
     int netLocal = netHostMode ? 0 : 1, netRemote = netHostMode ? 1 : 0;
     // Player identity belongs to the game, not to the connection. A surviving joiner must keep P2.
@@ -1769,6 +1772,7 @@ int main(int argc, char** argv) {
         values.crosshair[1] = saved.crosshair[1];
         values.freePlayUnlocked = saved.freePlayUnlocked;
         values.gameplayEditable = saved.editable;
+        values.username = volumes.username;
         page.SetOptionValues(values);
     };
     auto applyOptionValues = [&](play::DisplayMenu& page) {
@@ -1821,16 +1825,20 @@ int main(int argc, char** argv) {
     const std::string hordeRecordsPath = "hotd2re_horde_records.txt";
     if (!headless) hordeRecords.Load(hordeRecordsPath);
     world.SetPortHordeLeaderboard(hordeRecords.Entries());
-    int leaderboardRequestsSeen = 0, publishRequestsSeen = 0, lobbyRequestsSeen = 0, lobbyShortcut = 0;
-    uint64_t rankingsRevision = 0, completedRunSequence = 0;
-    port::net::LeaderboardSubmission pendingRecord;
-    bool pendingRecordValid = false, publishingRecord = false;
-    play::RunNamePrompt runNamePrompt;
+    int leaderboardRequestsSeen = 0, lobbyRequestsSeen = 0, lobbyShortcut = 0;
+    uint64_t rankingsRevision = 0, completedRunSequence = 0, submissionRevision = 0;
+    const bool interactiveScores = !headless && script.empty() && keyScript.empty();
+    play::ScoreSubmissionQueue scoreQueue;
+    if (interactiveScores) {
+        const auto queuePath = std::filesystem::path(settingsPath).parent_path() / "hotd2re_scores_pending.txt";
+        scoreQueue.Load(queuePath.string());
+    }
+    play::UsernamePrompt usernamePrompt;
+    if (interactiveScores && !play::ValidUsername(volumes.username)) usernamePrompt.Open({}, true);
     uint32_t promptPrevKeys = 0;
     bool promptInputConsumed = false;
-    uint64_t pendingCompletionToken = 0, publishingCompletionToken = 0;
-    int previousRunMode = world.GameMode();
-    bool previousBossSelector = false;
+    std::string scoreSubmissionNotice;
+    double scoreSubmissionNoticeUntil = 0;
     bool active = true;  // focus gates local input and the system cursor, never the game clock or audio
     int optionsScroll = 0, optionsTabDelta = 0;
     // One frame of menu input from the keyboard edges and the pointing device (the given player's device first).
@@ -1859,17 +1867,35 @@ int main(int argc, char** argv) {
         return mi;
     };
 
-    auto updateRunNamePrompt = [&](const play::MenuInput& mi) {
-        if (runNamePrompt.Update(mi) != play::RunNamePrompt::Action::Publish) return;
-        if (pendingRecordValid && pendingRecord.completionToken == runNamePrompt.Token() && !publishingRecord) {
-            pendingRecord.name = runNamePrompt.Name();
-            std::string submitError;
-            if (rankings.Submit(pendingRecord, &submitError)) {
-                publishingRecord = true;
-                publishingCompletionToken = pendingRecord.completionToken;
-                runNamePrompt.BeginSubmitting();
-            } else runNamePrompt.FinishSubmission(false, submitError);
-        } else runNamePrompt.FinishSubmission(false, publishingRecord ? "A RESULT IS STILL BEING SENT" : "THIS RUN IS NO LONGER AVAILABLE");
+    auto updateUsernamePrompt = [&](const play::MenuInput& mi) {
+        if (usernamePrompt.Update(mi) != play::UsernamePrompt::Action::Save) return;
+        auto saved = volumes;
+        saved.username = usernamePrompt.Name();
+        if (!saved.Save(settingsPath)) {
+            usernamePrompt.SetError("COULD NOT SAVE USERNAME. CHECK FOLDER ACCESS.");
+            return;
+        }
+        volumes = std::move(saved);
+        usernamePrompt.Close();
+        bindOptionValues(optionsPage);
+        bindOptionValues(menu.Display());
+        optionsPage.SetStatus("Username saved. Future runs use " + volumes.username + ".");
+        menu.Display().SetStatus("Username saved. Future runs use " + volumes.username + ".");
+    };
+    auto openUsernameEditor = [&](play::DisplayMenu& page) {
+        if (!page.TakeUsernameEdit()) return false;
+        usernamePrompt.Open(volumes.username, !play::ValidUsername(volumes.username));
+        promptPrevKeys = g_keys;
+        promptInputConsumed = true;
+        return true;
+    };
+    auto queueScore = [&](port::net::LeaderboardSubmission record) {
+        if (!interactiveScores || !play::ValidUsername(volumes.username) || !record.score) return;
+        record.name = volumes.username;  // Retried runs keep the name used when they finished.
+        scoreQueue.Enqueue(record);
+        world.SetPortLeaderboardPublishable(false, scoreQueue.Status());
+        scoreSubmissionNotice = scoreQueue.Status();
+        scoreSubmissionNoticeUntil = plat.Seconds() + 6;
     };
     const float clear[4] = {0, 0, 0, 1};
     if (netplay) {
@@ -2006,7 +2032,7 @@ int main(int argc, char** argv) {
         world.SetPortHomeRooms({}, "CHECKING WAITING ROOMS...");
     };
     auto updateSystemCursor = [&] {
-        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || runNamePrompt.IsOpen(),
+        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
         plat.SetCursorVisible(play::SystemCursorVisible(world.Hud(), context));
     };
@@ -2057,18 +2083,16 @@ int main(int argc, char** argv) {
                                                rankings.Error().empty() ? "COMMUNITY RUNS / UNVERIFIED" : rankings.Error());
             }
         }
-        if (publishingRecord && rankings.SubmissionFinished()) {
-            publishingRecord = false;
-            if (runNamePrompt.Token() == publishingCompletionToken)
-                runNamePrompt.FinishSubmission(rankings.LastSubmitAccepted(), rankings.Error());
-            if (pendingRecord.completionToken != publishingCompletionToken)
-                world.SetPortLeaderboardPublishable(pendingRecordValid, "NEW RUN READY / PUBLISH WHEN YOU CHOOSE");
-            else if (rankings.LastSubmitAccepted()) {
-                pendingRecordValid = false;
-                world.SetPortLeaderboardPublishable(false, "RUN PUBLISHED / COMMUNITY RECORD");
-            } else
-                world.SetPortLeaderboardPublishable(pendingRecordValid, rankings.Error());
-            if (world.Hud().portLeaderboardShared) rankings.Query(world.Hud().portLeaderboardTable);
+        if (interactiveScores) {
+            scoreQueue.Tick(scoreUploader);
+            if (scoreQueue.Revision() != submissionRevision) {
+                submissionRevision = scoreQueue.Revision();
+                world.SetPortLeaderboardPublishable(false, scoreQueue.Status());
+                scoreSubmissionNotice = scoreQueue.Status();
+                scoreSubmissionNoticeUntil = plat.Seconds() + 6;
+                if (world.Hud().portLeaderboardShared && world.Hud().nightShiftPage == 3 && !rankings.Busy())
+                    rankings.Query(world.Hud().portLeaderboardTable);
+            }
         }
         if (netplay) {
             net.Poll();
@@ -2080,9 +2104,6 @@ int main(int argc, char** argv) {
             if (net.ReplayPending()) {
                 world.SetPortLeaderboardRecording(false);
                 hordeRecords.DiscardPending();
-                pendingRecordValid = false;
-                world.SetPortLeaderboardPublishable(false);
-                runNamePrompt.Reset();
                 if (sndDriver) sndDriver->StopAll();
                 if (!startNetworkGame()) {
                     fprintf(stderr, "rejoin: %s\n", err.c_str());
@@ -2133,10 +2154,10 @@ int main(int argc, char** argv) {
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
                 if (ev.type == T::Quit) quit = true;
-                if (active && runNamePrompt.IsOpen() && ev.type == T::KeyDown &&
+                if (active && usernamePrompt.IsOpen() && ev.type == T::KeyDown &&
                     (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127))) {
                     const char ch = ev.shift && ev.ch == '-' ? '_' : ev.ch;
-                    runNamePrompt.Edit(ev.key == platform::Key::Backspace ? "" : std::string(1, ch),
+                    usernamePrompt.Edit(ev.key == platform::Key::Backspace ? "" : std::string(1, ch),
                                        ev.key == platform::Key::Backspace);
                     g_keys &= ~KeyBit(ev.key);
                     continue;
@@ -2150,11 +2171,11 @@ int main(int argc, char** argv) {
                     port::CrtWarpUV(&x, &y, volumes.display.graphics.crtCurvature);
                     modelGallery.HandleEvent(ev, play::MenuPointerX(x, viewportAspect) * 640, y * 480);
                 }
-                const bool optionsInput = (optionsPage.IsOpen() || (menu.IsOpen() && menu.DisplayOpen())) &&
+                const bool optionsInput = !usernamePrompt.IsOpen() && (optionsPage.IsOpen() || (menu.IsOpen() && menu.DisplayOpen())) &&
                                           !wiiPage.IsOpen() && !lightgunPage.IsOpen();
                 if (active && optionsInput && ev.type == T::MouseWheel && ev.wheel != 0) {
                     optionsScroll = std::clamp(optionsScroll + (ev.wheel > 0 ? 1 : -1), -8, 8);
-                } else if (active && !netplay && !optionsInput && !modelGallery.IsOpen() && ev.type == T::MouseWheel && ev.wheel != 0 &&
+                } else if (active && !netplay && !optionsInput && !usernamePrompt.IsOpen() && !modelGallery.IsOpen() && ev.type == T::MouseWheel && ev.wheel != 0 &&
                            world.Hud().nightShiftPage == 9) {
                     // Wheel scrolling only changes library focus; it never emits an audio command.
                     world.ScrollPortExtras(ev.wheel > 0 ? -3 : 3);
@@ -2227,14 +2248,14 @@ int main(int argc, char** argv) {
                 applyDisplay();
             wii.Update();
             focusedGuns.UpdateFocus(active);  // drain background edges after polling; held buttons wait for release
-            if (netplay && runNamePrompt.IsOpen()) {
-                // Name entry is local UI, so it must remain usable while the peer's game clock waits.
-                auto mi = menuInput(g_keys & ~promptPrevKeys, netLocal);
+            if (usernamePrompt.IsOpen()) {
+                // Local UI uses menu coordinates and stays responsive independently of the game clock.
+                auto mi = menuInput(g_keys & ~promptPrevKeys, keyboardPlayer());
                 mi.start = active && ((g_keys & ~promptPrevKeys) & play::kEscapeKey) != 0;
-                const int dev = deviceForPlayer(netLocal);
+                const int dev = deviceForPlayer(keyboardPlayer());
                 if (active && guns && dev >= 0 && (guns->Player(dev).pressed & input::kStart)) mi.pressed |= 8;
                 if (mi.trigger && !mi.pointer) { mi.trigger = false; mi.reload = true; }
-                updateRunNamePrompt(mi);
+                updateUsernamePrompt(mi);
                 promptInputConsumed = true;
                 if (guns) guns->BeginFrame();
             }
@@ -2243,7 +2264,7 @@ int main(int argc, char** argv) {
             if (availableUpdate.empty()) availableUpdate = updates.TakeAvailable();
             if (active && !availableUpdate.empty() && !netplay && lobby.page == Lobby::kOff &&
                 (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !wiiPage.IsOpen() &&
-                !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !runNamePrompt.IsOpen()) {
+                !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !usernamePrompt.IsOpen()) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
                 if (attractionDriver) attractionAudio.Update(*attractionDriver, sndTable, attract, false);
@@ -2339,7 +2360,7 @@ int main(int argc, char** argv) {
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
             bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false, lightgunOpenedThisFrame = false;
-            const bool namePromptWasOpen = runNamePrompt.IsOpen() || promptInputConsumed;
+            bool namePromptWasOpen = usernamePrompt.IsOpen() || promptInputConsumed;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
@@ -2383,6 +2404,7 @@ int main(int argc, char** argv) {
                     bindOptionValues(menu.Display());
                     const play::PauseMenu::Action act = menu.Update(mi, volumes, menuSounds);
                     applyOptionValues(menu.Display());
+                    if (openUsernameEditor(menu.Display())) namePromptWasOpen = true;
                     optionsScroll = optionsTabDelta = 0;
                     const bool graphicsReset = menu.Display().TakeGraphicsReset();
                     if (volumes.display != before.display) {
@@ -2508,7 +2530,7 @@ int main(int argc, char** argv) {
                     lightgunPage.Notice("Could not save gun settings - check folder access");
                 wiiMouse = {};
             }
-            if (menuEnabled && optionsPage.IsOpen() && !pageWasOpen && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+            if (menuEnabled && !namePromptWasOpen && optionsPage.IsOpen() && !pageWasOpen && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
@@ -2516,6 +2538,7 @@ int main(int argc, char** argv) {
                 bindOptionValues(optionsPage);
                 const bool closed = optionsPage.Update(mi, volumes.display, pageSounds);
                 applyOptionValues(optionsPage);
+                if (openUsernameEditor(optionsPage)) namePromptWasOpen = true;
                 optionsScroll = optionsTabDelta = 0;
                 const bool graphicsReset = optionsPage.TakeGraphicsReset();
                 if (volumes.display != before.display) {
@@ -2621,19 +2644,6 @@ int main(int argc, char** argv) {
                 }
             }
             if (namePromptWasOpen) {
-                play::MenuInput mi;
-                mi.start = active && (scriptedKeyEdges & play::kEscapeKey) != 0;
-                int pointer = -1;
-                for (int p = 0; p < 2; ++p) {
-                    if (netplay && p != netLocal) continue;
-                    mi.pressed |= in[p].pressed & ~0xCu;
-                    if (!in[p].fired) mi.pressed |= in[p].pressed & 0xC;
-                    mi.trigger |= in[p].fired && !in[p].offscreen;
-                    mi.reload |= in[p].offscreen || (in[p].pressed & 2) != 0;
-                    if (in[p].kind == 1 && in[p].x < 640 && in[p].y < 480 && (pointer < 0 || in[p].fired)) pointer = p;
-                }
-                if (pointer >= 0) { mi.pointer = true; mi.px = in[pointer].x; mi.py = in[pointer].y; }
-                if (!netplay) updateRunNamePrompt(mi);
                 // Only newly captured local input is consumed; recorded peer inputs stay untouched.
                 for (int p = 0; p < 2; ++p) {
                     if (netplay && p != netLocal) continue;
@@ -2644,7 +2654,7 @@ int main(int argc, char** argv) {
                 }
                 typed.clear(); typedBackspace = false;
                 // Clear only after the normal key/button history has consumed the closing input.
-                // During a peer stall this latch survives even if Skip has already closed the prompt.
+                // During a peer stall this latch survives even if saving has already closed the prompt.
                 promptInputConsumed = false;
             }
             if (modelGallery.IsOpen()) {
@@ -3101,7 +3111,7 @@ int main(int argc, char** argv) {
                 }
             }
             // --- one game frame ---
-            // A local end-of-run modal holds the finished screen. Connected rooms
+            // Local username entry holds the current screen. Connected rooms
             // must keep advancing and sending neutral input while each player types.
             if (namePromptWasOpen && !netplay) continue;
             world.SetPortLeaderboardRecording(!headless && script.empty() && keyScript.empty() && !net.CatchingUp() &&
@@ -3198,15 +3208,6 @@ int main(int argc, char** argv) {
                         fprintf(tlog, "%d %X %X\n", world.Frame(), d.id, f);
             }
             ++modeAge;
-            const bool bossSelector = world.GameMode() == 6 && world.Hud().gameType == 3 &&
-                                      world.Hud().subState == 2 && (world.Hud().flags5900 & 0x18) == 0x18;
-            if (world.GameMode() == 6 && (previousRunMode != 6 || (previousBossSelector && !bossSelector))) {
-                pendingRecordValid = false;
-                world.SetPortLeaderboardPublishable(false);
-                runNamePrompt.Reset();
-            }
-            previousRunMode = world.GameMode();
-            previousBossSelector = bossSelector;
             const auto& leaderboardHud = world.Hud();
             if (leaderboardHud.portLeaderboardRequests != leaderboardRequestsSeen) {
                 leaderboardRequestsSeen = leaderboardHud.portLeaderboardRequests;
@@ -3215,58 +3216,33 @@ int main(int argc, char** argv) {
                     rankings.Query(leaderboardHud.portLeaderboardTable);
                 }
             }
-            if (leaderboardHud.portLeaderboardPublishRequests != publishRequestsSeen) {
-                publishRequestsSeen = leaderboardHud.portLeaderboardPublishRequests;
-                if (pendingRecordValid && !publishingRecord) {
-                    pendingRecord.name = leaderboardHud.portLeaderboardInitials;
-                    std::string submitError;
-                    if (rankings.Submit(pendingRecord, &submitError)) {
-                        publishingRecord = true;
-                        publishingCompletionToken = pendingRecord.completionToken;
-                    } else
-                        world.SetPortLeaderboardPublishable(true, submitError);
-                }
-            }
             const auto complete = world.PortLeaderboardRun();
             if (complete.sequence != completedRunSequence) {
                 completedRunSequence = complete.sequence;
-                if (complete.eligible && !headless && script.empty() && keyScript.empty() && !net.CatchingUp()) {
-                    pendingRecord = {};
-                    pendingRecord.completionToken = ++pendingCompletionToken;
-                    pendingRecord.table = complete.table;
-                    pendingRecord.score = complete.table < 2 && netPlayerAssigned ? complete.playerScores[netLocal] : complete.score;
-                    pendingRecord.rounds = complete.rounds;
-                    pendingRecord.difficulty = complete.difficulty;
-                    pendingRecord.players = complete.players;
-                    pendingRecordValid = pendingRecord.score > 0;
-                    world.SetPortLeaderboardPublishable(pendingRecordValid, "NEW RUN READY / ONLINE NAME AFTER RESULTS");
-                    if (pendingRecordValid)
-                        runNamePrompt.Queue(pendingRecord.completionToken, pendingRecord.table, pendingRecord.score,
-                                            pendingRecord.rounds, world.Hud().portLeaderboardInitials);
+                if (complete.eligible && interactiveScores && !net.CatchingUp() && !net.ReplayPending()) {
+                    port::net::LeaderboardSubmission record;
+                    record.table = complete.table;
+                    record.score = complete.table < 2 && netPlayerAssigned ? complete.playerScores[netLocal] : complete.score;
+                    record.rounds = complete.rounds;
+                    record.difficulty = complete.difficulty;
+                    record.players = complete.players;
+                    queueScore(record);
                 }
             }
-            if (!headless && script.empty() && keyScript.empty() && !net.CatchingUp() && hordeRecords.Observe(world.PortHordeRun())) {
+            if (interactiveScores && !net.CatchingUp() && !net.ReplayPending() && hordeRecords.Observe(world.PortHordeRun())) {
                 hordeRecords.Save(hordeRecordsPath);
                 world.SetPortHordeLeaderboard(hordeRecords.Entries());
-                if (!hordeRecords.Entries().empty()) {
-                    const auto& entry = hordeRecords.LastCompleted();
-                    pendingRecord = {};
-                    pendingRecord.completionToken = ++pendingCompletionToken;
-                    pendingRecord.table = 2;
-                    pendingRecord.score = entry.score;
-                    pendingRecord.rounds = entry.rounds;
-                    pendingRecord.difficulty = entry.difficulty;
-                    pendingRecord.players = entry.players;
-                    pendingRecordValid = entry.rounds > 0 && entry.rounds <= 65535 && entry.score > 0;
-                    world.SetPortLeaderboardPublishable(pendingRecordValid, "HORDE RUN READY / ONLINE NAME AFTER RESULTS");
-                    if (pendingRecordValid)
-                        runNamePrompt.Queue(pendingRecord.completionToken, pendingRecord.table, pendingRecord.score,
-                                            pendingRecord.rounds, world.Hud().portLeaderboardInitials);
+                const auto& entry = hordeRecords.LastCompleted();
+                if (entry.rounds > 0 && entry.rounds <= 65535 && entry.score > 0) {
+                    port::net::LeaderboardSubmission record;
+                    record.table = 2;
+                    record.score = entry.score;
+                    record.rounds = static_cast<uint16_t>(entry.rounds);
+                    record.difficulty = entry.difficulty;
+                    record.players = entry.players;
+                    queueScore(record);
                 }
             }
-            if (runNamePrompt.MaybeOpen(world.Hud(), headless || !script.empty() || !keyScript.empty() || net.CatchingUp() ||
-                                    net.ReplayPending() || menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() ||
-                                    lightgunPage.IsOpen() || modelGallery.IsOpen() || publishingRecord)) promptPrevKeys = g_keys;
             attract.Step(dir, activeNightShift && (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && !netplay && !modelGallery.IsOpen());
             if (attractionDriver)
                 attractionAudio.Update(*attractionDriver, sndTable, attract, attract.Get() && world.Hud().nightShiftPage != 9);
@@ -3514,11 +3490,11 @@ int main(int argc, char** argv) {
         const int pattern = optionsPage.IsOpen() ? optionsPage.CalibrationPattern()
                             : menu.DisplayOpen() ? menu.Display().CalibrationPattern()
                                                  : -1;
-        if (runNamePrompt.IsOpen()) {
+        if (usernamePrompt.IsOpen()) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             game::WorldHud nameHud;
-            runNamePrompt.ModernHud(nameHud);
+            usernamePrompt.ModernHud(nameHud);
             play::AppendNightShiftPanels(nameHud, sprites, viewportAspect);
             if (uiFont.Available()) uiFont.Append(nameHud.menuText, sprites, port::ViewportXScale(viewportAspect));
             else {
@@ -3757,6 +3733,15 @@ int main(int argc, char** argv) {
             const auto overlay = scene.MakeSpriteDraws(status, 0.0001f, nullptr);
             sprites.insert(sprites.end(), overlay.begin(), overlay.end());
         }
+        if (!noHud && !usernamePrompt.IsOpen() && !modelGallery.IsOpen() && !previewHidden &&
+            !scoreSubmissionNotice.empty() && plat.Seconds() < scoreSubmissionNoticeUntil &&
+            (world.GameMode() != 6 || world.Hud().stageResults.active)) {
+            std::vector<game::SpriteDef> status;
+            game::MenuTextScaled(assets.Exe(), 16, 428, scoreSubmissionNotice.substr(0, 68), 3, .5f, status);
+            for (auto& sprite : status) sprite.flags |= 0x700;
+            const auto overlay = scene.MakeSpriteDraws(status, .0001f, nullptr);
+            sprites.insert(sprites.end(), overlay.begin(), overlay.end());
+        }
         if (!modelGallery.IsOpen() && !previewHidden && ((!networkNotice.empty() && plat.Seconds() < networkNoticeUntil) ||
                                (netplay && (net.PlayingAlone() || net.CatchingUp() || net.SecondsSinceRemote() > 1)))) {
             std::vector<game::SpriteDef> status;
@@ -3802,7 +3787,7 @@ int main(int argc, char** argv) {
 #endif
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         const bool outputResolutionMenu = !previewHidden &&
-            (menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || runNamePrompt.IsOpen() ||
+            (menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() ||
              world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
              world.NetworkLobby() || lobby.page != Lobby::kOff);
         // Menu readability is independent of scene resolution and the saved
@@ -3829,7 +3814,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         temporalEnabled |= dlss.active || generatedFrames.active;
         if (generatedFrames.active)
-            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen() || runNamePrompt.IsOpen());
+            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen() || usernamePrompt.IsOpen());
 #endif
         if (temporalEnabled) {
             temporal.enabled = true;

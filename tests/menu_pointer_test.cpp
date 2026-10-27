@@ -85,13 +85,14 @@ int main(int argc,char** argv) {
  Click(w,80,150);Require(w.Hud().portLeaderboardShared&&w.Hud().portLeaderboardRequests==1,"online source requests shared records");
  Click(w,80,320);Require(w.Hud().portLeaderboardTable==3,"per-boss leaderboard");
  Click(w,589,100);Require(w.Hud().portLeaderboardTable==4,"next boss changes requested table");
- Click(w,80,350);Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==0,"cannot publish without a new qualifying run");
- w.SetPortLeaderboardPublishable(true,"NEW RUN AVAILABLE");
- Click(w,80,350);Require(w.Hud().nightShiftPage==4&&w.Hud().portLeaderboardPublishRequests==0,"publish opens explicit online name confirmation");
- Click(w,500,386);Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==0,"cancel never publishes");
- Click(w,80,350);w.EditPortLeaderboardName("NIGHTSHIFT12");Click(w,380,386);
- Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==1&&w.Hud().portLeaderboardInitials=="NIGHTSHIFT12","only final Publish submits online name and fresh-run request");
- Step(w,630,465,2);Step(w);Require(w.Hud().nightShiftPage==0,"Back returns Home");
+ Require(!Text(w,"PUBLISH NEW RUN")&&Text(w,"ELIGIBLE RUNS SUBMIT AUTOMATICALLY"),"leaderboard has no manual publish action");
+ w.SetPortLeaderboardPublishable(true,"SCORE SAVED / WILL SYNC WHEN ONLINE");Step(w);
+ Require(Text(w,"SCORE SAVED / WILL SYNC WHEN ONLINE"),"automatic submission status is visible without selecting a row");
+ Click(w,80,390);Require(w.Hud().nightShiftPage==3&&w.Hud().portLeaderboardPublishRequests==0,"retired bottom row is inert");
+ Click(w,80,350);Require(w.Hud().nightShiftPage==0&&w.Hud().portLeaderboardPublishRequests==0,"Back replaces Publish and returns Home without submission");
+ Click(w,100,248);Step(w,630,465,0x10);Step(w);
+ Require(w.Hud().nightShiftRow==5,"keyboard wraps to the new last row Back");
+ Step(w,630,465,8);Step(w);Require(w.Hud().nightShiftPage==0,"keyboard Back returns Home");
  for(int action=1;action<=3;++action) {
   Menu(w);Click(w,450,298+(action-1)*40);Step(w);
   Require(w.GameMode()==15&&w.Hud().portLobbyAction==action,"Home rail routes existing Host/Browse/Peer page");
