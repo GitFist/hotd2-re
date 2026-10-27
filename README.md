@@ -64,17 +64,9 @@ Use **Host Online** or **Browse Lobby** to play two-player co-op with someone on
 
 ## Graphics and display
 
-Open a graphics shortcut under **Options**, or **Pause > Graphics Options**. Both menu themes provide the same nine categories: **Display, Image, Lighting, Performance, Packs, Color, Resolution, CRT and Advanced**. Availability depends on the active renderer, GPU and installed pack.
-
-**Display** contains windowed/borderless/exclusive fullscreen, aspect ratio, Fit/Stretch, monitor, menu style, opacity and **Reset All Graphics**. Reset asks for confirmation and preserves your pack, menu theme, game rules, audio and controls. Menu Style applies after restart. Menu Opacity controls Night Shift panels; Classic labels it “Night Shift only.”
-
-**Image** contains presets, MSAA/post AA/TAA, texture filtering, Sharp HUD, sharpening and crosshairs. Original/Clean/Enhanced presets change image choices and downsampling; they do not reset every graphics setting. **Resolution** contains internal render scale, output matching/SSAA, dynamic resolution, downsampling and FSR 1 spatial upscaling. **Color** provides color controls, blood color, HDR and black/white/gamma/geometry test patterns. **CRT** contains scanlines, phosphor masks, curvature and glow.
-
-**Lighting** adds optional pixel lighting, smoke blending, contact shading, raster/ray shadows, bloom, fog, reflections and cutscene blur. Direct3D 11 and SDL GPU provide the broad raster-effects paths. Native Direct3D 12 on Windows x64 supports compatible vendor reconstruction/frame generation and experimental directional DXR shadows; it does not support every D3D11/SDL effect. HDR requires Windows HDR and retains the original art's SDR range. Material detail and model smoothing under **Packs** need a compatible authored pack.
-
-**Performance** contains frame limits, VSync, supported tearing/latency controls and statistics. **Advanced** contains renderer, vendor upscaling, quality, frame generation and pose interpolation. Renderer/vendor choices require restart. Pose interpolation above 60 FPS adds up to one tick of visual delay; game logic stays at 60 Hz. Advanced effects, HDR, ray shadows and frame generation are optional and Off by default.
-
-While changing graphics during a paused game, **Hide UI / H** reveals the actual scene without resuming. H, Show UI, Back/Reload, Enter or Start restores the menu.
+- Increase **Render Scale** for a sharper picture, or lower it to improve performance; select **Fixed Scale** under **Resolution Mode** if the setting is unavailable.
+- While adjusting graphics in a paused game, press **H** to hide the menu and preview the scene, then **H** again to restore it.
+- Use **Reset All Graphics** to restore graphics defaults while keeping your controls and gameplay settings.
 
 ## Wii Remotes
 
