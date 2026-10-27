@@ -44,23 +44,6 @@ The download includes the required game data. Keep the `game` and `scenes` folde
 
 **Version 1.3** adds the score display code: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
-## Updates
-
-The current release is **1.3**. Later releases advance by **0.1**: 1.4, 1.5,
-and so on, with 2.0 after 1.9.
-
-The game checks the official GitHub release page once in the background on normal launches. If a newer build is available, a prompt appears at the local title/main menu. **Update now** opens a visible progress window, closes the game, downloads and verifies the matching Windows client, installs it, and restarts with your launch options. Saves, settings, controller calibration, original game data and installed packs are preserved. Failed installations restore the previous program files; interrupted installations recover on the next launch. Keep `.hotd2-update` if recovery needs another attempt. Automatic installation requires a writable local folder and Windows PowerShell.
-
-Unchanged program files are verified and reused, while changed or missing files download individually. A changed file is downloaded in full, compressed. The updater falls back to a verified full client download if selective assets are unavailable or invalid. Both download paths use the companion update feed. Staging and recovery still need space for a full program copy and backups.
-
-**One-time migration:** older date-labeled builds and 32-bit installations need a manual installation of the latest complete x64 package. Version 1.0 x64 can update through its selective-download path; if that fails, use the manual installation below. Compatibility ZIPs/checksums have been retired from the main release page, and new releases are x64 only. After installing 1.1, future updates work from inside the game; supporting files are downloaded automatically.
-
-**Later** keeps you playing, and **Download** opens the manual download page. Failed checks stay silent. Launch with `--no-update-check` to disable the check.
-
-For a manual update, close the game and extract the **entire new ZIP into a fresh writable folder**. Keep the new executable, accompanying DLLs, licenses and `scenes` together. Replacing only the executable can leave incompatible older runtimes installed.
-
-Before launching, copy your existing `hotd2re_settings.ini`, `hotd2re_save.bin`, and any `hotd2re_horde_records.txt`, `hotd2re_lightguns.ini` and `hotd2re_wii.ini` into the new `hotd2re` folder, replacing its supplied default settings. Copy installed visual-pack folders if your settings select them. Keep the old folder as a backup until you have checked the new version. Both online players should update together and create a new room.
-
 ## Online play
 
 Both players need the same game version.
