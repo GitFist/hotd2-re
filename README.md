@@ -46,18 +46,7 @@ The download includes the required game data. Keep the `game` and `scenes` folde
 
 ## Online play
 
-Both players need the same game version.
-
-1. Use **Host Online** on Home to host, or **Online** to open network choices. Classic menus use **Network**.
-2. Choose room rules to host, or **Browse Lobby** to join a room.
-3. For a private room, enter its code when prompted. **Peer to Peer** also supports joining an unlisted room by code.
-4. Once both players are connected, the host selects a mode and starts the game.
-
-Use **Pause → Return to Lobby** to choose another mode together. After a disconnect, select **Network → Rejoin Game** to return to an active match while the other player continues playing.
-
-Connections use a direct route when available, with an automatic server relay fallback.
-
-Home's **Leaderboard** page offers local Arcade, Original, Horde and individual Boss Mode records. On your first launch, choose a public username of 1-12 characters using typing or the on-screen keyboard. Eligible finished runs submit automatically under that name. Change it in **Options > Gameplay > Username**; previous and queued runs keep their original name. Offline scores are saved in your game folder and retried quietly, including after restarting, without duplicate submissions. Keep `hotd2re_scores_pending.txt` alongside your settings. Existing save records are not uploaded. Names allow letters, numbers, spaces, periods, underscores and hyphens; they are display names, not unique accounts. Shared records are unverified. Local initials remain three characters and local records work offline.
+Use **Host Online** or **Browse Lobby** to play two-player co-op with someone on the same game version. Choose a username on first launch; eligible scores submit automatically to the online leaderboards, with offline scores queued until you reconnect.
 
 ## Controls
 
