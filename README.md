@@ -62,28 +62,6 @@ Use **Host Online** or **Browse Lobby** to play two-player co-op with someone on
 | Back | Esc or Backspace |
 | Quit | Main menu **Exit** or close the window |
 
-**Score display code:** at the title screen or main menu (Night Shift Home or Classic), press **Left, Left, Right, Right, Right, Left, Right, Enter**. A message confirms the toggle; repeat the code to turn it off. Scores appear in each active player's upper corner during gameplay. This preference lasts until you close the game and does not change scoring or leaderboard eligibility.
-
-Open **Options > Game Options > Light Guns** or **Pause > Light Guns** to switch between mouse/touchpad input and light guns, assign Player 1 and Player 2, remap buttons, calibrate aim, and test both guns. Classic menus retain **Options > Light Guns**. See the [light-gun setup guide](docs/LIGHT-GUNS.md).
-
-Open **Extras** below **Online** on Home to preview the audio library (Classic also has an Extras entry). All **38 music tracks** retain their original preview numbers and have descriptive names. **Standard** and **Alternate** distinguish the two recordings of a theme; for example, 01 and 17 are the two Chapter 1 versions. Click or shoot a recording, or select it with the arrows and press Enter, to play it once. Wheel scrolling and the Prev/Next buttons browse each list without stopping playback. Each song has **Play** to start/resume, **Pause**, and **Reset** to rewind and stop; selecting its name restarts it. Left/right moves between music controls and the effects list. Effect names come from the game's audio files. Escape, reload or **Back** stops previews and returns to the main menu. Audio volumes remain in Game Options.
-
-**Master Volume** controls all game, menu, Extras and attraction audio. Its logarithmic scale starts at -45 dB for 1 and rises in even 5 dB steps to full volume at 10; 0 is an exact mute. **Attraction Volume** controls the Modern menu's background demo music, voices and effects independently of the gameplay category sliders. All five volume controls default to **5 / 10**. Existing saved choices are retained. Both controls are in **Game Options** and **Pause**, update immediately, and persist in the settings file. The attraction loop falls silent in Extras and when you start playing.
-
-**Extras > Model Viewer** contains Agents, Civilians, 35 enemy and creature appearances, and Bosses, including Goldman. Creatures include both Murrer appearances, the Kageo J half-body crawler, bats, owls, fish and the ambient moth. Drag the model list's scrollbar to browse; clicking the scrollbar track moves a page. Select a character to view it against black. Click the animation name to open a clip list with its own draggable scrollbar; the wheel scrolls that list while the current clip keeps playing. Left-drag rotates/tilts; middle-drag raises/lowers the camera. A/D or Left/Right rotate, W/S or Up/Down adjust height, and the wheel outside the clip list or Q/E zoom. R restores the camera. Page Up/Down selects an animation; Enter/Space toggles playback, with Play/Pause/Reset buttons also available. Animations loop with their authored motion sound cues. Escape, reload or Back closes the clip list, returns to the model list, then Extras.
-
-Every Model Viewer clip starts centered above the controls and remains centered as its pose changes. Selecting a clip or pressing Reset clears vertical panning while retaining your rotation and zoom. The **Mute / Unmute** button or **M** silences viewer sounds immediately without pausing animation or changing game volume settings; the choice stays active while browsing models. Native attack, reaction, civilian, weapon and boss cues use their original timing. Held one-frame poses play their cue once, and sustained effects stop on pause, mute, clip changes and exit.
-
-Zombie previews randomly select their original attack and impact variants for each occurrence, using the correct voice group. Choices are independent, as in gameplay, so an occasional repeat is possible. The approach groan is the original shared recording.
-
-Scrollable lists in Options, the audio previews, the model browser and the Original-mode inventory show a soft edge fade and arrow wherever more items remain. Each cue disappears at that end of the list; short lists show neither cue. Existing scroll buttons, wheel and keyboard navigation remain available.
-
-Choose **Blood Color: Green / Red** on the graphics menu's **Color** page. The change applies immediately and is saved locally; online players can choose independently.
-
-**Image > Gameplay Crosshairs > Off** hides both players' gameplay sights on this computer. Menu/shop/calibration pointers stay visible and aiming/shooting are unchanged. The system '+' pointer hides automatically during gameplay and returns for UI and desktop use.
-
-Switching to another window keeps the game and audio running. Use **Esc** to pause manually when needed; online manual pause stops the shared game. Background desktop input does not shoot or operate the game's menus.
-
 ## Graphics and display
 
 Open a graphics shortcut under **Options**, or **Pause > Graphics Options**. Both menu themes provide the same nine categories: **Display, Image, Lighting, Performance, Packs, Color, Resolution, CRT and Advanced**. Availability depends on the active renderer, GPU and installed pack.
