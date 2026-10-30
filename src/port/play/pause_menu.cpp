@@ -74,8 +74,8 @@ bool Settings::Load(const std::string& path) {
             display.crt = std::clamp(v, 0, 3);
         else if (key == "render")
             display.renderScale = std::clamp(v, 1, 4);
-        else if (key == "blood" && (val == "red" || val == "green"))
-            display.redBlood = val == "red";
+        else if (key == "blood")
+            port::ParseBloodColor(val, display.bloodColor);
         else if (key == "msaa" && integer && (numeric == 1 || numeric == 2 || numeric == 4))
             graphics.msaa = numeric;
         else if (key == "anisotropy" && integer && (numeric == 1 || numeric == 2 || numeric == 4 || numeric == 8 || numeric == 16))
@@ -196,7 +196,7 @@ bool Settings::Save(const std::string& path) const {
     else
         f << "scale=" << display.windowScale << "\n";
     f << "aspect=" << (display.stretch ? "stretch" : "4:3") << "\ncrt=" << display.crt << "\nrender=" << display.renderScale << "\n";
-    f << "blood=" << (display.redBlood ? "red" : "green") << "\n";
+    f << "blood=" << port::BloodColorName(display.bloodColor) << "\n";
     f << "viewport=" << display.viewport << "\n";
     const auto& g = display.graphics;
     f << "msaa=" << g.msaa << "\nanisotropy=" << g.anisotropy << "\ntexture_filter=" << g.textureFilter << "\npost_aa=" << g.postAA

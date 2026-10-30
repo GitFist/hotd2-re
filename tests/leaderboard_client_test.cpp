@@ -20,7 +20,7 @@ int main(int argc,char** argv) {
         const auto build=static_cast<uint32_t>(std::strtoul(argv[4],nullptr,10));
         port::net::LeaderboardClient client;std::string error;
         Require(client.Configure(argv[2],static_cast<uint16_t>(port),build,&error),error.c_str());
-        for(int board=0;board<13;++board) {
+        for(int board=0;board<=port::net::kTypingLeaderboardTable;++board) {
             client.Query(board);Complete(client);
             Require(client.Ready()&&client.Error().empty(),client.Error().c_str());
             std::printf("PASS read-only board %d: %zu records\n",board,client.Entries().size());
@@ -91,6 +91,13 @@ int main(int argc,char** argv) {
         Require(client.Entries()[row].name=="LONG_NAME-0"+std::to_string(row),"maximum-size response truncated or shifted a twelve-character name");
     client.Query(8);Complete(client);Require(client.Error().empty() && client.Entries().empty(),"query crossed boss board boundaries");
     entry.players=2;Require(!client.Submit(entry,&error),"two-player boss time was accepted");
+    entry.table=port::net::kTypingLeaderboardTable;entry.score=1500000;entry.difficulty=5;entry.completionToken=6;
+    Require(client.Submit(entry,&error),"two-player Typing Original score was rejected");Complete(client);
+    Require(client.LastSubmitAccepted(),"Typing Original score was not stored");
+    client.Query(port::net::kTypingLeaderboardTable);Complete(client);
+    Require(client.Error().empty()&&client.Entries().size()==1&&client.Entries()[0].score==1500000&&
+            client.Entries()[0].players==2&&client.Entries()[0].difficulty==5,"typing score/stage/player metadata did not round-trip");
+    client.Query(1);Complete(client);Require(client.Error().empty()&&client.Entries().empty(),"typing score leaked onto shooting Original board");
     client.Query(99);Require(client.Ready() && !client.Error().empty(),"invalid table was not rejected immediately");
     std::puts("PASS local UDP v2: 1/3/12-character names, frozen retry payloads, no duplicate runs, invalid-name rejection, maximum response and malformed packet validation");
 }

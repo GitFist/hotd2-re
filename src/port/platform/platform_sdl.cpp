@@ -90,6 +90,7 @@ Key MapKey(SDL_Keycode k) {
     case SDLK_A: return Key::A;
     case SDLK_P: return Key::P;
     case SDLK_F8: return Key::F8;
+    case SDLK_F10: case SDLK_PAUSE: return Key::F10;
     case SDLK_G: return Key::G;
     case SDLK_H: return Key::H;
     default: return Key::Unknown;
@@ -227,6 +228,10 @@ bool Platform::Init(const Options& o, std::string* error) {
 #endif
     // Touch on a desktop: let the mouse produce finger events for testing (left button = one finger).
     if (o.guns && m.input == Input::Touch) SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+#ifdef _WIN32
+    // SDL's raw keyboard path supplies distinct device IDs for local two-keyboard play.
+    if (o.guns) SDL_SetHint(SDL_HINT_WINDOWS_RAW_KEYBOARD, "1");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         if (error) *error = std::string("SDL_Init: ") + SDL_GetError();
         return false;
@@ -337,11 +342,19 @@ bool Platform::PollEvent(Event* e) {
             const bool down = ev.type == SDL_EVENT_KEY_DOWN;
             e->type = down ? Event::Type::KeyDown : Event::Type::KeyUp;
             e->key = MapKey(ev.key.key);
+            if (ev.key.key == SDLK_F2) e->key = Key::F2;
+            e->scanCode = static_cast<uint16_t>(ev.key.scancode);
+            e->keyboardId = ev.key.which;
             e->ch = ev.key.key >= 32 && ev.key.key < 127 ? static_cast<char>(ev.key.key) : 0;  // SDL keycodes are ASCII there
             e->shift = (ev.key.mod & SDL_KMOD_SHIFT) != 0;
+            e->alt = (ev.key.mod & SDL_KMOD_ALT) != 0;
             e->repeat = ev.key.repeat;
             return true;
         }
+        case SDL_EVENT_TEXT_INPUT:
+            e->type = Event::Type::Text;
+            e->text = ev.text.text ? ev.text.text : "";
+            return true;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP: {
             const bool down = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -394,6 +407,12 @@ double Platform::Seconds() const {
 }
 
 void Platform::Delay(int ms) { SDL_Delay(static_cast<Uint32>(ms)); }
+void Platform::SetTextInput(bool enabled) {
+    if (!impl_->window) return;
+    const bool active = SDL_TextInputActive(impl_->window);
+    if (enabled && !active) SDL_StartTextInput(impl_->window);
+    else if (!enabled && active) SDL_StopTextInput(impl_->window);
+}
 
 input::GunSource* Platform::Guns() {
     Impl& m = *impl_;

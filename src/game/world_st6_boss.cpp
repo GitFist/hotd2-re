@@ -9,6 +9,7 @@
 
 #include "game/shoot_camera.h"
 #include "game/shooting.h"
+#include "game/typing_boss_rules.h"
 #include "game/world_st6.h"
 
 namespace game {
@@ -39,6 +40,16 @@ struct FinalBossTask : Actor2DTask {
     int step = 0;         // +0x1368
     float tgt[3] = {};    // +0x13C0
     Mat4 mv1 = Mat4::Identity(), mv5 = Mat4::Identity();  // +0x2C4 / +0x504: node 1 / 5 model-view of the last draw
+    std::array<TypingWordRecord, 3> typingAnswers{};
+    uint32_t typingDialogueToken = 0;
+    unsigned typingRevealFrames = 0;
+    bool typingDialogueActive = false, typingAnswerActors = false, typingAnswerHit = false;
+};
+
+struct EmperorAnswerTask : ActorTask {
+    FinalBossTask* boss = nullptr;
+    uint32_t bossSerial = 0;
+    unsigned choice = 0;
 };
 
 // Orb object (0x00429D00, block 0x13F4)
@@ -143,6 +154,19 @@ bool WeakPoint(World::Impl& w, FinalBossTask& b, int p) {
     return ShotRayDistance(w.player[p].ray, v[0], v[1], v[2]) <= b.f1374;
 }
 
+// Preserve each of Emperor's scripted health thresholds when a phrase lands.
+float EmperorDamage(World::Impl& w, FinalBossTask& boss, ActorTask& source) {
+    const float base = static_cast<float>(w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+    if (!source.typingStrike) return base;
+    if (w.cfg.portTyping) {
+        source.typingStrike = false;
+        return float(TypingEmperorWordDamage(w.players == 2));
+    }
+    const int floor = boss.behaviour == 3 ? boss.record.ParamS16(0xC) :
+                      boss.behaviour == 4 ? boss.record.ParamS16(0xE) : 0;
+    return std::min(TypingDamage(source, base), static_cast<float>(std::max(0, static_cast<int>(boss.hp) - floor)));
+}
+
 // Hit flash task 0x00429760 (0x00429730): model 0x276 + frame at the node's view-space hit point, 25 frames
 struct FlashTask : WTask {
     FinalBossTask* boss = nullptr;
@@ -186,14 +210,26 @@ void SpawnFlash(World::Impl& w, FinalBossTask& b) {  // 0x00429730
 
 // 0x00428DA0: shots on node 1 (the weak point) while the sub-state is 1..5; true when damaged
 bool BossHits(World::Impl& w, FinalBossTask& b) {
+    if (w.cfg.portTyping && b.typingAnswerHit) {
+        b.typingAnswerHit = false;
+        b.hp = static_cast<int16_t>(b.hp - TypingEmperorWordDamage(w.players == 2));
+        b.hitBy = 0;
+        RankAdd(b, 1);
+        b.light[0] = 1.0f;
+        b.light[1] = 0.25f;
+        b.light[2] = 0.5f;
+        SpawnFlash(w, b);
+        w.Sound(0x1625A9);
+        return true;
+    }
     int who = -1;
     bool dmg = false;
     if (0 < b.sub && b.sub < 6 && (b.flags34 & 8) && !(b.flags34 & 0x40000000)) {
         for (int p = 0; p < 2; ++p) {
             const int node = b.hitNode[p];
-            if (node == 1 && !(b.flags34 & 0x100) && WeakPoint(w, b, p)) {
+            if (node == 1 && !(b.flags34 & 0x100) && (b.typingStrike || WeakPoint(w, b, p))) {
                 who = who + 1 + p;
-                b.hp = static_cast<int16_t>(b.hp - w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+                b.hp = static_cast<int16_t>(b.hp - EmperorDamage(w, b, b));
                 RankAdd(b, 1);
                 b.light[0] = 1.0f;
                 b.light[1] = 0.25f;
@@ -219,11 +255,12 @@ bool BossHits(World::Impl& w, FinalBossTask& b) {
 void PathTarget(World::Impl& w, FinalBossTask& b, int path, float tm) {
     float p[3] = {};
     int ang[3];
-    st5::EvalPath(w, path, tm, p, ang);
+    // Source4162E0 receives 1AA..1B1 rather than the gun game's188..18F.
+    st5::EvalPath(w, w.typingReferenceActive ? path+0x4022 : path, tm, p, ang);
     p[1] = p[1] - RF(w, 0x0055D19C);
     float c[3] = {}, tg[3] = {};
     int roll = 0;
-    w.cameraBank.Evaluate(0xDF, Bits(0x44E24000), c, tg, &roll, false);
+    w.cameraBank.Evaluate(w.typingReferenceActive ? 0x40F2 : 0xDF, Bits(0x44E24000), c, tg, &roll, false);
     c[1] = c[1] - RF(w, 0x004C4398);
     Mat4 m = Mat4::Identity();
     mx::Translate(m, c[0], c[1], c[2]);
@@ -252,7 +289,8 @@ void NewPattern(World::Impl& w, FinalBossTask& b, uint32_t site) {  // LAB_00427
     b.sub = 0;
     b.step = 0;
     const int r = w.Rand(site);
-    b.pattern = static_cast<int>(w.exe.U32(0x0055CD1C + static_cast<uint32_t>((r >> 4) % 10 + b.rank * 10) * 4)) + 1;
+    b.pattern = w.typingReferenceActive ? int(TypingEmperorFirstPhasePattern(unsigned(r))) :
+        static_cast<int>(w.exe.U32(0x0055CD1C + static_cast<uint32_t>((r >> 4) % 10 + b.rank * 10) * 4)) + 1;
     w.Sound(0x1425A9);
 }
 
@@ -290,13 +328,13 @@ void SortOrbs(St6State& s) {  // 0x00429680
 // 0: 0x00426C50 the boss on the floor bridge (camera 0xDF): path 0x184 (1311 before tick 0x51E, then the tick), the
 // shock 0x00429830 at tick 0x667, rises on event flag 0x31
 void State0(World::Impl& w, FinalBossTask& b) {
-    if (w.runner->camera.camId == 0xDF) {
+    if (w.runner->camera.camId == (w.typingReferenceActive ? 0x40F2 : 0xDF)) {
         const int tick = w.runner->camera.tick;
         float p[3];
         int ang[3];
         bool set = true;
         if (tick < 0x51E) {
-            st5::EvalPath(w, 0x184, Bits(0x44A3C000), p, ang);
+            st5::EvalPath(w, w.typingReferenceActive ? 0x41A6 : 0x184, Bits(0x44A3C000), p, ang);
             p[1] = static_cast<float>(p[1] + F64(w.exe, 0x0055D170));
         } else if (0x628 < tick) {
             set = false;
@@ -327,7 +365,7 @@ void State0(World::Impl& w, FinalBossTask& b) {
         } else {
             int e = static_cast<int>(w.exe.U32(0x00577348));
             if (tick <= e) e = tick;
-            st5::EvalPath(w, 0x184, static_cast<float>(e), p, ang);
+            st5::EvalPath(w, w.typingReferenceActive ? 0x41A6 : 0x184, static_cast<float>(e), p, ang);
             p[1] = static_cast<float>(p[1] + F64(w.exe, 0x0055D160));
         }
         if (set) {
@@ -344,7 +382,7 @@ void State0(World::Impl& w, FinalBossTask& b) {
 
 // 1: 0x00426D70 rising on path 0x185 (camera 0xDF) until tick 1810: event flag 0x32, orbs out (+0x136C = 1)
 void State1(World::Impl& w, FinalBossTask& b) {
-    if (w.runner->camera.camId == 0xDF) {
+    if (w.runner->camera.camId == (w.typingReferenceActive ? 0x40F2 : 0xDF)) {
         if (b.anim.motion[0] == 0xA1 && b.anim.tick[0] == Len(w, 0xA1) - 1) w.AnimBlendTo(b, 0xA3, 0, 0x14);
         const int tick = w.runner->camera.tick;
         if (tick == static_cast<int>(w.exe.U32(0x005770B4))) {
@@ -357,7 +395,7 @@ void State1(World::Impl& w, FinalBossTask& b) {
         if (tick <= e) e = tick;
         float p[3];
         int ang[3];
-        if (st5::EvalPath(w, 0x185, static_cast<float>(e), p, ang)) {
+        if (st5::EvalPath(w, w.typingReferenceActive ? 0x41A7 : 0x185, static_cast<float>(e), p, ang)) {
             memcpy(b.pos, p, 12);
             for (int k = 0; k < 3; ++k) b.rot[k] = ang[k];
         }
@@ -434,6 +472,7 @@ void State3(World::Impl& w, FinalBossTask& b) {
             if (tick == 0x37) {
                 b.c136C = 2;
                 w.Sound(0x125A9);
+                if (w.typingReferenceActive) w.TypingWords(0,350); // Source413B36.
             }
             if (tick != Len(w, 0xA5) - 1) break;
             SortOrbs(s);
@@ -486,6 +525,10 @@ void State3(World::Impl& w, FinalBossTask& b) {
                     b.flags34 &= ~0x100u;
                     w.Sound(0x125A9);
                     w.Sound(0x1225A9);
+                    if (w.typingReferenceActive) {
+                        w.TypingWords(0,150); // Source413F0D: the orb-word window.
+                        b.flags34 |= 0x100u;
+                    }
                 }
                 if (tick == Len(w, 0xA7) - 1) {
                     b.c136C = 3;
@@ -533,9 +576,13 @@ void State3(World::Impl& w, FinalBossTask& b) {
             b.freeze = 0;
             b.step = 5;
         };
-        const int limit = w.exe.S16(0x0055CF9A + static_cast<uint32_t>(w.players) * 2);
+        const int limit = w.typingReferenceActive ? int(TypingEmperorChargeHitQuota(unsigned(w.players))) :
+            w.exe.S16(0x0055CF9A + static_cast<uint32_t>(w.players) * 2);
         switch (b.step) {
         case 0:
+            // Source414042/4140D4/41411C reposts this selection throughout
+            // the preparation pose, then leaves it stable during the lunge.
+            if (w.typingReferenceActive) w.TypingWords(0,850);
             if (motion == 0xA4) {
                 if (tick == Len(w, 0xA4) - 1) {
                     SetRadii(w, b, false);
@@ -566,7 +613,8 @@ void State3(World::Impl& w, FinalBossTask& b) {
             if (tick != Len(w, 0xAA) - 1) break;
             memcpy(b.tgt, w.playerPos, 12);
             b.t = 0;
-            b.f1334 = w.exe.S16(0x0055CFA0 + static_cast<uint32_t>(b.rank) * 2);
+            b.f1334 = w.typingReferenceActive ? int(TypingEmperorChargeFrames(b.rank)) :
+                w.exe.S16(0x0055CFA0 + static_cast<uint32_t>(b.rank) * 2);
             b.hits = 0;
             w.AnimBlendTo(b, 0x9B, 0, 10);
             w.Sound(0x1B25A9);
@@ -582,6 +630,7 @@ void State3(World::Impl& w, FinalBossTask& b) {
                     b.freeze = 0;
                     ++b.step;
                 }
+                if (w.typingReferenceActive) b.typingFlags |= 0x200u; // source41425A: charging word window
                 break;
             }
             toHold();
@@ -648,6 +697,10 @@ void State3(World::Impl& w, FinalBossTask& b) {
     }
     if (go == kNextState) NextState(w, b, 0x0042742F, 0x00427C01);
     else if (go == kNewPattern) NewPattern(w, b, 0x00427481);
+    // Source413E97 exposes the second orb pattern only while its chest is
+    // vulnerable; the default400 bit keeps the other owner windows hidden.
+    if (w.typingReferenceActive && b.sub == 2 && b.step == 1 && !(b.flags34 & 0x100u))
+        b.typingFlags |= 0x200u;
     BossTail(w, b, false);
     if (b.freeze == 0) ++b.anim.counter[0];
     b.flags34 &= ~0xEu;
@@ -688,6 +741,7 @@ void State4(World::Impl& w, FinalBossTask& b) {
                 static void (*const kFn[5])(Task&) = { CreatureFirst0, CreatureFirst, CreatureFirst2, Creature3First, Creature3First };
                 CreatureTask* c = w.NewTask<CreatureTask>(kFn[b.pattern], kFirst[b.pattern]);
                 c->flags34 |= 1;
+                if (w.typingReferenceActive) c->typingFlags = 0x30000008u; // source414D69: its own word post
                 memcpy(c->pos, at, 12);
                 c->boss = &b;
                 c->rot[0] = -pitch;
@@ -781,6 +835,13 @@ void BossDeath(World::Impl& w, FinalBossTask& b) {  // state 5, hp < 1
     int p = b.hitBy;
     if (p == 2) p = w.Rand(0x0042844F) & 1;
     w.AddScore(p, 0x9C4);
+    if (w.cfg.portTyping) {
+        w.TypingController(std::clamp(p,0,1)).addBasePoints(1500);
+        w.typingQuestion.clear();
+        w.typingQuestionSeconds = 0;
+        b.typingDialogueActive = false;
+        ++b.typingDialogueToken;
+    }
     if (w.runner->cfg.gameType == 1) ItemsFinalBoss(w);  // the item reward (world_modes_items.cpp)
     BossRecords(w);  // 0x00425F40 (game type 3 only)
     b.flags34 |= 0x100;
@@ -859,11 +920,13 @@ void State5(World::Impl& w, FinalBossTask& b) {
         if (hit) ++b.hits;
         PathTarget(w, b, b.place + 0x188, b.f1340);
         memcpy(b.pos, b.tgt, 12);
-        const float f = RF(w, row) + b.f1340;
+        const float f = (w.typingReferenceActive ? TypingEmperorFinalPathStep(b.place) : RF(w,row)) + b.f1340;
         b.f1340 = f;
         if (RF(w, row + 0xC) - RF(w, 0x0055D178) <= f) b.f1358 = 1;
         if (b.freeze != 0 || b.f1340 < RF(w, row + 0xC)) break;
-        if (b.hits < w.exe.S16(0x0055D070 + static_cast<uint32_t>(w.players + b.place * 0xC) * 2)) {
+        const int quota=w.typingReferenceActive ? int(TypingEmperorFinalHitQuota()) :
+            w.exe.S16(0x0055D070 + static_cast<uint32_t>(w.players + b.place * 0xC) * 2);
+        if (b.hits < quota) {
             b.freeze = 0;
             ++b.step;
         } else {
@@ -880,12 +943,14 @@ void State5(World::Impl& w, FinalBossTask& b) {
     case 4: {
         PathTarget(w, b, b.place + 0x188, b.f1340);
         memcpy(b.pos, b.tgt, 12);
-        const float f = RF(w, row) + b.f1340;
+        const float f = (w.typingReferenceActive ? TypingEmperorFinalPathStep(b.place) : RF(w,row)) + b.f1340;
         b.f1340 = f;
         if (b.freeze == 0 && RF(w, row + 8) <= f) {
             b.freeze = 1;
             HitPlayers(w, 7);
             RankAdd(b, -3);
+            // Source415373 replaces the unanswered dialogue on a missed orbit.
+            if (w.typingReferenceActive) b.typingDialogueActive=false;
             b.f1358 = 0;
             b.f135C = 1;
             w.Sound(0x2725A9);
@@ -942,7 +1007,7 @@ void State6(World::Impl& w, FinalBossTask& b) {
         b.pattern = 0;
         [[fallthrough]];
     case 1:
-        if (w.runner->camera.camId != 0xE2) break;
+        if (w.runner->camera.camId != (w.typingReferenceActive ? 0x40F5 : 0xE2)) break;
         ++b.sub;
         [[fallthrough]];
     case 2: {
@@ -952,7 +1017,7 @@ void State6(World::Impl& w, FinalBossTask& b) {
         if (tick < 0xC9) {
             float p[3];
             int ang[3];
-            if (st5::EvalPath(w, 0x186, static_cast<float>(tick), p, ang)) {
+            if (st5::EvalPath(w, w.typingReferenceActive ? 0x41A8 : 0x186, static_cast<float>(tick), p, ang)) {
                 memcpy(b.pos, p, 12);
                 for (int k = 0; k < 3; ++k) b.rot[k] = ang[k];
             }
@@ -1019,8 +1084,8 @@ void TaskBlast(Task& t) {
     if (0x50 <= k.c1320) alpha = 1.0f - (k.f1340 - RF(w, 0x004E1FC4)) * RF(w, 0x0055D1A8);
     float p191[3] = {}, t191[3] = {}, p190[3] = {}, t190[3] = {};
     int roll = 0;
-    w.cameraBank.Evaluate(0x191, k.f1340, p191, t191, &roll, false);
-    w.cameraBank.Evaluate(0x190, k.f1340, p190, t190, &roll, false);
+    w.cameraBank.Evaluate(w.typingReferenceActive ? 0x41B3 : 0x191, k.f1340, p191, t191, &roll, false);
+    w.cameraBank.Evaluate(w.typingReferenceActive ? 0x41B2 : 0x190, k.f1340, p190, t190, &roll, false);
     if (k.s1324 == 0 && k.c1320 == 0x1A) {
         k.s1324 = 1;
         w.Sound(0xD25A9);
@@ -1074,9 +1139,59 @@ void TaskBlast(Task& t) {
     if (0x60 < k.c1320) w.ts.KillCurrent();
 }
 
+void TaskEmperorAnswer(Task& t) {
+    World::Impl& w = *CurrentWorld();
+    auto& answer = t.As<EmperorAnswerTask>();
+    if (!Alive(w, answer.boss, answer.bossSerial) || answer.boss->behaviour > 5 || answer.boss->hp < 1) {
+        w.ts.KillCurrent();
+        return;
+    }
+    memcpy(answer.viewPos, answer.boss->viewPos, 12);
+}
+
+void BeginEmperorDialogue(World::Impl& w, FinalBossTask& b, uint32_t serial) {
+    int bankCount = 0;
+    for (const auto& bank : TypingWordBanks()) if (bank.group == 8) ++bankCount;
+    if (!bankCount) return;
+    const auto* bank = FindTypingWordBank(8, 1 + w.Rand(0x00415604) % bankCount);
+    if (!bank) return;
+    const auto words = TypingWords(*bank);
+    if (words.size() < 4) return;
+    std::copy_n(words.begin() + 1, b.typingAnswers.size(), b.typingAnswers.begin());
+    ++b.typingDialogueToken;
+    b.typingRevealFrames = 120;
+    b.typingDialogueActive = true;
+    w.typingQuestion = words.front().text;
+    w.typingQuestionSeconds = 0; // Dialogue has no independent quiz deadline.
+    w.typingHud.questionSlide = -960;
+    w.typingHud.questionVisible = false;
+    if (!b.typingAnswerActors) {
+        b.typingAnswerActors = true;
+        for (unsigned choice = 0; choice < b.typingAnswers.size(); ++choice) {
+            auto* answer = w.NewTask<EmperorAnswerTask>(TaskEmperorAnswer, 0x00415730);
+            answer->boss = &b;
+            answer->bossSerial = serial;
+            answer->choice = choice;
+            answer->typingFlags = 0x34100008u;
+        }
+    }
+}
+
+void TickEmperorDialogue(World::Impl& w, FinalBossTask& b, uint32_t serial) {
+    if (b.behaviour != 5 || b.step < 3 || b.hp < 1 || w.paused ||
+        w.runner->camera.modeCur != 2 || (w.player[0].state != 5 && w.player[1].state != 5)) return;
+    if (!b.typingDialogueActive) BeginEmperorDialogue(w, b, serial);
+    else if (b.typingRevealFrames) {
+        --b.typingRevealFrames;
+        w.typingHud.questionSlide = -8 * int(b.typingRevealFrames);
+        w.typingHud.questionVisible = true;
+    }
+}
+
 void TaskBoss(Task& t) {  // 0x00426C30
     World::Impl& w = *CurrentWorld();
     FinalBossTask& b = t.As<FinalBossTask>();
+    if (w.typingReferenceActive) b.typingFlags &= ~0x200u; // source41347D resets the per-frame bypass
     if (b.lock) b.slot120 = static_cast<int8_t>(b.lock->slot);
     switch (b.behaviour) {
     case 0: State0(w, b); break;
@@ -1088,6 +1203,7 @@ void TaskBoss(Task& t) {  // 0x00426C30
     case 6: State6(w, b); break;
     default: break;
     }
+    if (w.cfg.portTyping) TickEmperorDialogue(w, b, t.serial);
 }
 
 // ---- orbs (0x00589908) ----------------------------------------------------------------------------------------------
@@ -1786,9 +1902,9 @@ bool CreatureHits(World::Impl& w, CreatureTask& c, FinalBossTask* b) {
                 mx::Translate(m, 0.0f, 4.0f, 1.0f);
                 float v[3];
                 mx::GetTranslation(m, v);
-                if (ShotRayDistance(w.player[p].ray, v[0], v[1], v[2]) <= 3.5f) {
+                if (c.typingStrike || ShotRayDistance(w.player[p].ray, v[0], v[1], v[2]) <= 3.5f) {
                     if (b) {
-                        b->hp = static_cast<int16_t>(b->hp - w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+                        b->hp = static_cast<int16_t>(b->hp - EmperorDamage(w, *b, c));
                         RankAdd(*b, 1);
                     }
                     w.Sound(0x1117A9);
@@ -1919,7 +2035,7 @@ bool Creature3Hits(World::Impl& w, CreatureTask& c, FinalBossTask* b) {
         const int node = c.hitNode[p];
         if (node == 2) {
             if (b) {
-                b->hp = static_cast<int16_t>(b->hp - w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+                b->hp = static_cast<int16_t>(b->hp - EmperorDamage(w, *b, c));
                 RankAdd(*b, 1);
             }
             w.Sound(0x316A9);
@@ -2098,7 +2214,7 @@ bool CreatureHits2(World::Impl& w, CreatureTask& c, FinalBossTask* b) {
             const int node = c.hitNode[p];
             if (node == 0x18 && 0x11 < c.anim.tick[0]) {
                 if (b) {
-                    b->hp = static_cast<int16_t>(b->hp - w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+                    b->hp = static_cast<int16_t>(b->hp - EmperorDamage(w, *b, c));
                     RankAdd(*b, 1);  // 0x00428D60
                 }
                 w.Sound(0x3E25A9);
@@ -2207,7 +2323,7 @@ void TaskCreature0(Task& t) {
         } else if (0xF < c.f1334 && (c.flags34 & 8)) {
             w.Sound(0x3425A9);
             if (b) {
-                b->hp = static_cast<int16_t>(b->hp - w.exe.S16(0x0055CCD6 + static_cast<uint32_t>(w.players) * 2));
+                b->hp = static_cast<int16_t>(b->hp - EmperorDamage(w, *b, c));
                 RankAdd(*b, 1);
             }
             inc = true;
@@ -2386,6 +2502,7 @@ bool World::Impl::SpawnFinalBoss(Task& t, const SpawnRecord& r) {
             TaskOrb(tt);
         }, 0x00429D00);
         o->idx = i;
+        if (cfg.portTyping) o->typingFlags = 0x38000008u;
         o->boss = bp;
         o->bossSerial = serial;
         o->actorSlot = -1;
@@ -2397,7 +2514,7 @@ bool World::Impl::SpawnFinalBoss(Task& t, const SpawnRecord& r) {
     if (runner->cfg.gameType == 3) {  // boss mode: placed on camera path 0x185 at 1810, motion 0xA3, state 2
         float p[3] = {}, tg[3] = {};
         int roll = 0;
-        if (cameraBank.Evaluate(0x185, Bits(0x44E24000), p, tg, &roll, false)) {  // 0x004042D0
+        if (cameraBank.Evaluate(typingReferenceActive ? 0x41A7 : 0x185, Bits(0x44E24000), p, tg, &roll, false)) {  // 0x004042D0
             memcpy(b.pos, p, 12);
             for (int k = 0; k < 3; ++k) b.rot[k] = static_cast<int>(tg[k]);
         }
@@ -2414,6 +2531,117 @@ bool World::Impl::SpawnFinalBoss(Task& t, const SpawnRecord& r) {
     t.fn = TaskBoss;
     TaskBoss(t);
     return true;
+}
+
+bool TypingBoss6(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    if (auto* answer = dynamic_cast<EmperorAnswerTask*>(&actor)) {
+        out.boss = true;
+        auto* b = answer->boss;
+        if (!b || !Alive(w, b, answer->bossSerial) || b->hp < 1 || b->behaviour != 5 ||
+            !b->typingDialogueActive || b->typingRevealFrames) return true;
+        out.retain = true;
+        out.token = 0x650000u + b->typingDialogueToken * 4u + answer->choice;
+        out.word = &b->typingAnswers[answer->choice];
+        out.node = 1;
+        out.view[0] = 0;
+        out.view[2] = -100.0f;
+        out.view[1] = (float(answer->choice) * 80.0f - 80.0f) * out.view[2] / w.focal;
+        if (complete) {
+            w.typingEmperorAnswerWeight += TypingEmperorAnswerWeight(*out.word);
+            b->hp = static_cast<int16_t>(b->hp - TypingEmperorAnswerDamage(w.players == 2));
+            b->typingAnswerHit = true;
+            b->typingDialogueActive = false;
+            ++b->typingDialogueToken;
+            w.typingQuestion.clear();
+            w.typingQuestionSeconds = 0;
+        }
+        return true;
+    }
+    if (auto* b = dynamic_cast<FinalBossTask*>(&actor)) {
+        out.boss = true;
+        if (w.cfg.portTyping && b->behaviour == 5) return true;
+        if (b->hp < 1 || b->behaviour < 3 || b->behaviour > 5 || (b->flags34 & 0x4000000u)) return true;
+        out.retain = true;
+        out.token = 0x600000u | (static_cast<uint32_t>(b->behaviour) << 12);
+        Mat4 m = b->mv1;
+        mx::Translate(m, Bits(0x4013F972), Bits(0x3DE0AA65), 0.0f);
+        mx::GetTranslation(m, out.view);
+        const bool threshold = (b->behaviour == 3 && b->hp <= b->record.ParamS16(0xC)) ||
+                               (b->behaviour == 4 && b->hp <= b->record.ParamS16(0xE));
+        if (threshold) return true;
+        if (b->sub >= 1 && b->sub <= 5 && !(b->flags34 & 0x40008100u) &&
+            out.view[2] < -0.1f && w.OnScreen(out.view)) {
+            out.node = 1;
+            if (complete) TypingDeliver(*b, out.node);
+            return true;
+        }
+        // Emperor owns the persistent phrase while its temporary creatures come
+        // and go. A ready phrase may hit the current creature's actual weak point.
+        for (Task* t : w.ts.Live()) {
+            if (!t->alive || !t->data) continue;
+            auto* c = dynamic_cast<CreatureTask*>(t->data.get());
+            if (!c || c->boss != b) continue;
+            TypingTargetSpec creature;
+            TypingBoss6(w, *c, creature, false);
+            if (creature.node < 0 || creature.view[2] >= -0.1f || !w.OnScreen(creature.view)) continue;
+            out.node = creature.node;
+            memcpy(out.view, creature.view, 12);
+            if (complete) {
+                TypingBoss6(w, *c, creature, true);
+                ++b->typingRevision;
+            }
+            return true;
+        }
+        return true;
+    }
+    if (auto* c = dynamic_cast<CreatureTask*>(&actor)) {
+        // The PC reference posts a separate word for each summoned creature.
+        // The fallback's private descriptor is consumed by Emperor's word.
+        out.boss = true;
+        if (!c->boss || c->boss->hp < 1 || (c->flags34 & 0x44008100u)) return true;
+        if (c->boss->behaviour == 4 && c->boss->hp <= c->boss->record.ParamS16(0xE)) return true;
+        if (w.typingReferenceActive) {
+            if (c->typingRevision != 0) return true;
+            out.retain = true;
+            out.token = 0x610000u | (c->fn & 0xFFFFu);
+            memcpy(out.view, c->viewPos, 12);
+        }
+        if (c->fn == 0x0042C8D0 && ((c->sub == 2 && c->f1334 >= 0x32) || c->sub == 3 || c->sub == 4)) {
+            out.node = 1;
+            Mat4 m = c->mv1;
+            mx::Translate(m, 0.0f, 4.0f, 1.0f);
+            mx::GetTranslation(m, out.view);
+        } else if (c->fn == 0x0042C1A0 && c->sub == 2 && c->f1334 > 0xF) {
+            out.node = 1;
+            memcpy(out.view, c->anim.nodes[1].hit, 12);
+        } else if (c->fn == 0x0042D530 && (c->sub == 2 || (c->sub == 3 && c->anim.tick[0] < 0x2C))) {
+            out.node = 2;
+            memcpy(out.view, c->anim.nodes[2].hit, 12);
+        } else if (c->fn == 0x0042CDD0 && (c->sub == 2 || (c->sub == 3 && c->anim.tick[0] < 0x32)) && c->anim.tick[0] > 0x11) {
+            out.node = 0x18;
+            memcpy(out.view, c->anim.nodes[0x18].hit, 12);
+        } else {
+            return true;
+        }
+        if (complete) TypingDeliver(*c, out.node);
+        return true;
+    }
+    if (auto* o = dynamic_cast<OrbTask*>(&actor)) {
+        out.danger = true;
+        out.projectile = false; // Original orb flags 0x38000008 lack the unranked 0x10 bit.
+        const bool flying = (o->behaviour == 3 && o->sub == 2) ||
+                            (o->behaviour == 4 && o->sub == 4 && (o->idx & 1) == 0);
+        if (!flying || !Alive(w, o->boss, o->bossSerial)) return true;
+        out.node = 1;
+        out.token = 0x620000u | (static_cast<uint32_t>(o->behaviour) << 4) | static_cast<uint32_t>(o->sub);
+        memcpy(out.view, o->viewPos, 12);
+        if (complete) {
+            TypingDeliver(*o, out.node);
+            o->typingStrike = false;
+        }
+        return true;
+    }
+    return false;
 }
 
 }  // namespace game

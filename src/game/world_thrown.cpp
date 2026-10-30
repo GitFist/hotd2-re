@@ -317,6 +317,13 @@ void World::Impl::SpawnThrownWeapon(EnemyTask& e, int hand) {
     if (hand >= 0 && hand < static_cast<int>(e.anim.nodes.size()))  // the hand's view-space point, to world
         mx::Transform(cam.inverse, e.anim.nodes[static_cast<size_t>(hand)].hit, k->pos);
     k->flags34 = 0x80000001u;
+    if (cfg.portTyping && k->model == 0x249) {
+        // PC source 0x00449488 explicitly registers thrown axes as one-key words.
+        // This helper runs under the thrower, outside its original SpawnTask.
+        k->typingOriginType = 0x30;
+        k->typingOriginKind = e.anim.kind;
+        k->typingFlags = 0x38000A12u;
+    }
     k->radius = 2.0f;
     k->radius128 = 2.0f;
     k->target = e.target;

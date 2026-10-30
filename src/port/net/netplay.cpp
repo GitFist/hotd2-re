@@ -34,8 +34,8 @@ constexpr double kRelayHelloAfter = 1.0;   // s of direct hellos before the rela
 constexpr double kPathSilence = 2.0;       // s without a packet on the current path: the other path takes over
 constexpr double kKeepaliveEvery = 5.0;    // s between relay keepalives while playing directly
 constexpr double kWelcomeWait = 1.5;       // s the host waits for a pong before sending the welcome without one
-constexpr size_t kRecord = 14;
-constexpr int kMaxRecords = 48;  // ~0.8 s of unacknowledged inputs per packet (resent until acknowledged)
+constexpr size_t kRecord = 49; // 14 pointer/button bytes + length, 32 characters, cancel, item keys.
+constexpr int kMaxRecords = 24; // Keep repeated input packets near the path MTU.
 const char kAlphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 void Put8(std::vector<uint8_t>& p, uint32_t v) { p.push_back(static_cast<uint8_t>(v)); }
@@ -61,6 +61,11 @@ void PutRecord(std::vector<uint8_t>& p, const FrameInput& f) {
     Put8(p, f.in.offscreen ? 1 : 0);
     Put16(p, f.in.held & 0xFFFF);
     Put16(p, f.in.pressed & 0xFFFF);
+    const size_t length = std::min<size_t>(32, f.in.typingText.size());
+    Put8(p, length);
+    for (size_t i = 0; i < 32; ++i) Put8(p, i < length ? uint8_t(f.in.typingText[i]) : 0);
+    Put8(p, f.in.typingCancel ? 1 : 0);
+    Put8(p, f.in.typingItems & 15);
 }
 
 FrameInput GetRecord(const uint8_t* d) {
@@ -76,6 +81,13 @@ FrameInput GetRecord(const uint8_t* d) {
     f.in.offscreen = d[9] != 0;
     f.in.held = Get16(d + 10);
     f.in.pressed = Get16(d + 12);
+    const size_t length = std::min<size_t>(32, d[14]);
+    for (size_t i = 0; i < length; ++i) {
+        const unsigned char c = d[15 + i];
+        if ((c >= 32 && c < 127) || c == 8 || c == 9 || c == 11 || c == 27) f.in.typingText += char(c);
+    }
+    f.in.typingCancel = d[47] != 0;
+    f.in.typingItems = d[48] & 15;
     return f;
 }
 
@@ -440,11 +452,12 @@ static std::vector<uint8_t> LobbyHeader(uint8_t type) {
     return p;
 }
 
-void Session::LobbyCreate(uint8_t flags, int difficulty) {
+void Session::LobbyCreate(uint8_t flags, int difficulty, bool typing) {
     if (difficulty != -1)
         flags = static_cast<uint8_t>((flags & ~kRoomDifficultyMask) | RoomDifficultyFlags(difficulty));
     flags |= kRoomRelay | kRoomRejoin;
     lobbyFlags_ = flags;
+    lobbyTyping_ = typing;
     lobbyHosting_ = true;
     lobbyCreating_ = true;
     lobbyLeavePending_ = false;
@@ -457,6 +470,7 @@ void Session::LobbyCreate(uint8_t flags, int difficulty) {
     LocalEndpoint(ip, &port);
     p.insert(p.end(), ip, ip + 4);
     Put16(p, port);
+    Put8(p, typing ? 1 : 0); // Optional extension; legacy services ignore it.
     SendToLobby(p);
 }
 
@@ -464,7 +478,7 @@ void Session::LobbyRefresh() {
     if (!lobbyHosting_ || sock_ == kNoSocket) return;
     const double since = std::chrono::duration<double>(Clock::now() - lobbyLastSend_).count();
     if (lobbyCreating_) {
-        if (since > 1.0) LobbyCreate(lobbyFlags_);  // the CREATE again (the server returns the same room)
+        if (since > 1.0) LobbyCreate(lobbyFlags_, -1, lobbyTyping_);
         return;
     }
     if (since < 2.0) return;
@@ -550,6 +564,7 @@ void Session::PollLobbyCleanup() {
 void Session::LobbyList() {
     std::vector<uint8_t> p = LobbyHeader(3);
     Put32(p, build_);
+    Put8(p, 1); // Request the optional trailing room-mode metadata.
     SendToLobby(p);
 }
 
@@ -631,6 +646,7 @@ void Session::OnLobbyPacket(const uint8_t* d, size_t n) {
             r.id = Get32(d + 1 + i * 9);
             r.flags = d[5 + i * 9];
             r.build = Get32(d + 6 + i * 9);
+            if (n >= 1 + size_t(count) * 10) r.typing = d[1 + size_t(count) * 9 + i] == 1;
             lobbyRooms_.push_back(r);
         }
         lobbyRoomsKnown_ = true;
@@ -730,6 +746,7 @@ void Session::SendWelcome() {
     const size_t n = std::min<size_t>(config_.save.size(), 60000);
     Put16(p, static_cast<uint32_t>(n));
     p.insert(p.end(), config_.save.begin(), config_.save.begin() + static_cast<std::ptrdiff_t>(n));
+    Put32(p,config_.startedAt);
     SendRaw(p);
 }
 
@@ -922,6 +939,7 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
         const size_t saveLen = Get16(d + 38);
         if (40 + saveLen > n - 4) break;
         c.save.assign(d + 40, d + 40 + saveLen);
+        if (44 + saveLen <= n - 4) c.startedAt = Get32(d + 40 + saveLen);
         if (BuildMismatch()) break;  // never connected: the lobby says why
         // Prefer the route that delivered the complete welcome over an earlier small HELLO/PONG. Once the
         // relay rescued this handshake, a delayed direct duplicate must not send the guest back to a bad route.
@@ -976,7 +994,9 @@ void Session::OnPeerPacket(const uint8_t* d, size_t n, const void* from, int fro
 void Session::PushLocal(uint32_t frame, const FrameInput& in) {
     if (CatchingUp() && (!resumeFrame_ || frame < resumeFrame_)) return;
     if (local_.count(frame)) return;
-    local_[frame] = in;
+    std::vector<uint8_t> encoded;
+    PutRecord(encoded, in);
+    local_[frame] = GetRecord(encoded.data()); // Both peers simulate exactly the wire representation.
     sendPending_ = true;
     if (!haveLocal_ || frame > localLatest_) localLatest_ = frame;
     haveLocal_ = true;
@@ -1187,14 +1207,15 @@ void PutConfig(std::vector<uint8_t>& p, const SessionConfig& c) {
     for (int volume : c.portVolumes) Put32(p, static_cast<uint32_t>(volume));
     Put8(p, c.flags); Put8(p, c.delay); Put32(p, c.startFrame);
     Put16(p, static_cast<uint32_t>(c.save.size())); p.insert(p.end(), c.save.begin(), c.save.end());
+    Put32(p,c.startedAt);
 }
 bool ReadConfig(const uint8_t* d, size_t n, SessionConfig& c) {
-    if (n < 40 || Get16(d + 38) > 60000 || n != 40 + Get16(d + 38) || d[33] < 1 || d[33] > 10) return false;
+    if (n < 44 || Get16(d + 38) > 60000 || n != 44 + Get16(d + 38) || d[33] < 1 || d[33] > 10) return false;
     c.credits = static_cast<int32_t>(Get32(d)); c.seed = Get32(d + 4); c.firstSerial = Get32(d + 8);
     for (int k = 0; k < 5; ++k) c.portVolumes[k] = static_cast<int32_t>(Get32(d + 12 + 4 * k));
     c.flags = d[32]; c.delay = d[33]; c.startFrame = Get32(d + 34);
     if (c.startFrame > 1000000) return false;
-    c.save.assign(d + 40, d + n);
+    c.save.assign(d + 40, d + n - 4); c.startedAt = Get32(d + n - 4);
     return true;
 }
 std::vector<uint8_t> ReadTicket(const std::string& path, uint32_t build) {
@@ -1376,7 +1397,7 @@ void Session::OnRecoveryPacket(uint8_t type, const uint8_t* d, size_t n) {
         const uint32_t end = resumeFrame_ ? std::min(HistoryEnd(), resumeFrame_) : HistoryEnd();
         if (first < config_.startFrame || first > end) return;
         for (int part = 0; part < 6; ++part) {
-            const uint32_t count = std::min<uint32_t>(32, end - first);
+            const uint32_t count = std::min<uint32_t>(10, end - first);
             auto p = Header(10); Put32(p, recoveryNonce_); Put32(p, end); Put32(p, first); Put8(p, count);
             for (uint32_t i = 0; i < count; ++i) {
                 const auto& r = history_[first + i - config_.startFrame];
@@ -1387,12 +1408,12 @@ void Session::OnRecoveryPacket(uint8_t type, const uint8_t* d, size_t n) {
         }
     } else if (type == 10 && CatchingUp() && !waitingInfo_ && n >= 13) {
         const uint32_t end = Get32(d + 4), first = Get32(d + 8), count = d[12];
-        if (count > 32 || n != 13 + count * 32 || end < config_.startFrame || end - config_.startFrame > kMaxHistory ||
+        if (count > 32 || n != 13 + count * (kRecord * 2 + 4) || end < config_.startFrame || end - config_.startFrame > kMaxHistory ||
             first != HistoryEnd() || first > end || count > end - first) return;
         advertisedEnd_ = std::max(advertisedEnd_, end);
         for (uint32_t i = 0; i < count; ++i) {
-            const uint8_t* r = d + 13 + i * 32;
-            HistoryFrame f; f.input[0] = GetRecord(r); f.input[1] = GetRecord(r + 14); f.hash = Get32(r + 28);
+            const uint8_t* r = d + 13 + i * (kRecord * 2 + 4);
+            HistoryFrame f; f.input[0] = GetRecord(r); f.input[1] = GetRecord(r + kRecord); f.hash = Get32(r + kRecord * 2);
             history_.push_back(f);
         }
     } else if (type == 11 && n == 13) {

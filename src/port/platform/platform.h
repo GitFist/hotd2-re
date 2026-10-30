@@ -40,17 +40,20 @@ struct CommonOptions {
 bool ParseCommonArg(int argc, char** argv, int& i, CommonOptions* o);
 const char* CommonUsage();
 
-enum class Key : uint8_t { Unknown, Escape, Enter, Space, Left, Right, Up, Down, PageUp, PageDown, A, P, Backspace, F8, G, H };
+enum class Key : uint8_t { Unknown, Escape, Enter, Space, Left, Right, Up, Down, PageUp, PageDown, A, P, Backspace, F8, G, H, F10, F2 };
 
 struct Event {
     // Focus: the application was activated / deactivated (active). Windows: WM_ACTIVATEAPP, the message Hod2.exe's
     // window callback 0x0049E780 reacts to; elsewhere SDL's window focus events. Only sent on a change.
-    enum class Type : uint8_t { Quit, KeyDown, KeyUp, MouseDown, MouseUp, MouseMove, MouseWheel, Focus };
+    enum class Type : uint8_t { Quit, KeyDown, KeyUp, MouseDown, MouseUp, MouseMove, MouseWheel, Focus, Text };
     Type type = Type::Quit;
     bool active = true;    // Focus
     Key key = Key::Unknown;
     char ch = 0;           // KeyDown / KeyUp: the key's printable ASCII (letters lower case, digits), 0 for others
-    bool shift = false, repeat = false;
+    uint16_t scanCode = 0; // Physical USB keyboard usage, for the typing mode's US/UK layout.
+    uint32_t keyboardId = 0; // Physical keyboard identity; zero is a merged/virtual device.
+    std::string text;      // Text: committed UTF-8 text, ordered as supplied by SDL
+    bool shift = false, repeat = false, alt = false;
     int button = 0;        // 1 left, 2 middle, 3 right
     float x = 0, y = 0;    // pointer, window pixels
     float wheel = 0;       // + away from the user
@@ -82,6 +85,7 @@ public:
     // Pumps the platform's events: feeds the gun source and returns the tool-level events one by one (false when empty).
     // A window close request returns Type::Quit.
     bool PollEvent(Event* e);
+    void SetTextInput(bool enabled);
 
     double Seconds() const;  // monotonic
     void Delay(int ms);

@@ -45,9 +45,8 @@ void XAudioBackend::DestroyVoice(Channel& c) {
 bool XAudioBackend::Open(int ch, const std::string& path, bool streamed) {
     Channel& c = ch_[ch];
     if (!xa_ || c.pcm) return false;  // channel in use
-    std::ifstream f(SoundPath(dir_, path), std::ios::binary);  // the asset pack's copy first
-    if (!f) return false;
-    std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), {});
+    std::vector<uint8_t> d;
+    if (!ReadSoundBytes(dir_,path,d)) return false;
     game::WavInfo w;
     if (!game::ParseWavHeader(d.data(), d.size(), w) || w.formatTag != WAVE_FORMAT_PCM) return false;
     auto pcm = std::make_shared<Pcm>();

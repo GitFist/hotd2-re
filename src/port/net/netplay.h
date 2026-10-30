@@ -28,10 +28,11 @@
 // Configuration schema changes require a new client build ID; relay transport stays version 3.
 //   hello   (both, until connected): build u32
 //   welcome (host -> joiner): build u32, credits i32, seed u32, serial u32, volumes 5 x i32, flags u8, delay u8,
-//                             start frame u32, save u16 + bytes
+//                             start frame u32, save u16 + bytes, host UTC seconds u32
 //   input   (both): player u8, delay u8, recovery epoch u32, ack u32 (first missing frame), hash frame u32,
-//                   hash u32, first frame u32, count u8, count x record (14 bytes: present u8, command u8, kind i8,
-//                   device mode i8, x i16, y i16, fired u8, offscreen u8, held u16, pressed u16)
+//                   hash u32, first frame u32, count u8, count x record (49 bytes: present u8, command u8, kind i8,
+//                   device mode i8, x i16, y i16, fired u8, offscreen u8, held u16, pressed u16,
+//                   text length u8, text32, cancel u8, F1..F4 u8)
 //   bye     (both): recovery epoch u32
 // Authenticated relay-only recovery types 7-12: request, initial config, history request, history chunk,
 // ready/plan/ack, and recovery invite. See notes/agents/netplay.md for the state transitions and bounds.
@@ -66,6 +67,7 @@ struct SessionConfig {
     uint8_t flags = 0;                        // 1 portFeatures, 2 portModernMenu, 4 persistent shared room
     uint8_t delay = 3;                        // input delay in frames (the host decides)
     uint32_t startFrame = 0;                  // the world frame the lockstep starts at (0: from the boot)
+    uint32_t startedAt = 0;                   // Host UTC seconds; deterministic Typing scorebook dates.
     std::vector<uint8_t> save;                // the host's save file (rankings, options); empty = none
 };
 
@@ -80,6 +82,7 @@ struct LobbyRoom {
     uint32_t id = 0;
     uint8_t flags = 0;  // Low five bits: kRoom*; high three bits: RoomDifficulty().
     uint32_t build = 0;
+    bool typing = false;
 };
 constexpr uint8_t kRoomPrivate = 1, kRoomUnlimited = 2, kRoomUnlisted = 4, kRoomRelay = 8, kRoomRejoin = 16;
 // The existing CREATE/ROOMS flags byte has three spare bits. Encoding 1..5
@@ -137,7 +140,7 @@ public:
     bool LobbyConfigured() const { return lobbyKnown_; }
     // Host: a room -> LobbyRoomId / LobbyCode. Supplying a difficulty replaces
     // its flag bits; omitting it preserves encoded bits when CREATE is retried.
-    void LobbyCreate(uint8_t flags, int difficulty = -1);
+    void LobbyCreate(uint8_t flags, int difficulty = -1, bool typing = false);
     bool LobbyCreated() const { return lobbyRoom_ != 0 && lobbyHosting_; }
     uint32_t LobbyRoomId() const { return lobbyRoom_; }
     uint32_t LobbyCode() const { return lobbyCode_; }
@@ -263,6 +266,7 @@ private:
     bool lobbyKnown_ = false, lobbyHosting_ = false, lobbyRoomsKnown_ = false;
     uint8_t lobbyAddr_[16] = {};
     uint8_t lobbyFlags_ = 0;
+    bool lobbyTyping_ = false;
     uint32_t relayRoom_ = 0;
     std::array<uint8_t, 16> relayToken_ = {};
     Path path_ = Path::None;

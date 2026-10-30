@@ -5,10 +5,12 @@
 // effect tasks (trail 0x0047DC30, smoke 0x0047F4A0, glow 0x0047E130, beam 0x0047E2B0, death sparks 0x00480700,
 // explosion 0x00480810). Damage only on node slots 4 / 6 / 11 / 13 (0x0047CE10). Verification: notes/agents/stage5.md.
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
 #include "game/world_st5.h"
+#include "game/typing_boss_rules.h"
 
 namespace game {
 
@@ -33,6 +35,10 @@ struct Boss5Task : EnemyTask {
     float f138C = 0;         // +0x138C (aggression timer)
     float goal[3] = {};      // +0x13C0
     uint32_t serial = 0;
+    int typingWordFamily = -1;
+    int typingMistypePlayer = -1, typingOrbsCleared = 0, typingInterlude = 0;
+    bool typingHopsStarted = false;
+    float typingInterludeStep[3] = {};
 };
 
 struct BossRef {
@@ -87,7 +93,13 @@ int AggRow(const World::Impl& w, uint32_t base, const Boss5Task& b) {  // int ta
 }
 
 float PhaseThr(const World::Impl& w, const Boss5Task& b) {  // (float)(hpMax / 10) * 0x00596774[phase * 8]
+    if (w.typingReferenceActive) return TypingMagicianPhaseThreshold(b.hpMax,b.phase);
     return static_cast<float>(b.hpMax / 10) * F32(w.exe, 0x00596774 + static_cast<uint32_t>(b.phase) * 8);
+}
+
+int PhaseBehaviour(const World::Impl& w, const Boss5Task& b) {
+    return w.typingReferenceActive ? TypingMagicianPhaseBehaviour(b.phase) :
+        w.exe.S16(0x00596770 + static_cast<uint32_t>(b.phase) * 8);
 }
 
 // 0x0047FE90: pick the attacked player (+0x121); 1 when one was taken
@@ -551,10 +563,13 @@ void ShotState0(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E440: fo
     }
 }
 
-void ShotHpCheck(Shot5Task& s) {
+void ShotHpCheck(World::Impl& w, Shot5Task& s, Boss5Task* b) {
     if ((s.flags34 & 8) && --s.hp < 1) {
         s.behaviour = 3;
         s.sub = 0;
+        // Source46F372/46F514: the hit bit persists for five task updates.
+        // Only a typed destruction advances the final-phase orb contract.
+        if (w.typingReferenceActive && b) ++b->typingOrbsCleared;
     }
 }
 
@@ -564,14 +579,15 @@ void ShotState1(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E810: fl
         s.flags34 &= ~0x8000u;
         Zero(s);
         const int agg = b ? static_cast<int8_t>(b->c131E) : 0;
-        const int n = static_cast<int32_t>(w.exe.U32(0x00596958 + static_cast<uint32_t>(agg) * 4));
+        const int n = w.typingReferenceActive ? TypingMagicianTimingForRank(agg).projectile :
+            static_cast<int32_t>(w.exe.U32(0x00596958 + static_cast<uint32_t>(agg) * 4));
         if (s.volley == 2) s.frames = static_cast<int>(static_cast<float>(n) * F32(w.exe, 0x005691B8));
         else s.frames = n;
         const float f = static_cast<float>(s.frames);
         ++s.sub;
         for (int i = 0; i < 3; ++i) s.vel[i] = (s.goal[i] - s.pos[i]) / f;
     } else if (s.sub != 1) {
-        ShotHpCheck(s);
+        ShotHpCheck(w,s,b);
         return;
     }
     for (int i = 0; i < 3; ++i) s.pos[i] = s.vel[i] + s.pos[i];
@@ -585,7 +601,7 @@ void ShotState1(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E810: fl
         s.behaviour = 3;
         s.sub = 0;
     }
-    ShotHpCheck(s);
+    ShotHpCheck(w,s,b);
 }
 
 void ShotState2(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E980: kind 4, to a random point on screen
@@ -595,7 +611,8 @@ void ShotState2(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E980: ki
         RandomPoint(w, s);  // 0x0047EB30
         Zero(s);
         const uint32_t row = 0x005969A0 + static_cast<uint32_t>(b ? static_cast<int8_t>(b->c131E) : 0) * 0x10;
-        int n = w.Rand(0x0047E9D6) % static_cast<int32_t>(w.exe.U32(row + 4)) + static_cast<int32_t>(w.exe.U32(row));
+        int n = w.typingReferenceActive ? TypingMagicianTimingForRank(b ? b->c131E : 0).projectile :
+            w.Rand(0x0047E9D6) % static_cast<int32_t>(w.exe.U32(row + 4)) + static_cast<int32_t>(w.exe.U32(row));
         s.frames = n;
         if (s.c131B == 0) {
             s.frames = ((n + ((n >> 31) & 3)) >> 2) + n;
@@ -607,7 +624,7 @@ void ShotState2(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E980: ki
         ++s.sub;
         s.c133C = s.frames / 6;
     } else if (s.sub != 1) {
-        ShotHpCheck(s);
+        ShotHpCheck(w,s,b);
         return;
     }
     for (int i = 0; i < 3; ++i) s.pos[i] = s.vel[i] + s.pos[i];
@@ -620,7 +637,7 @@ void ShotState2(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047E980: ki
         s.behaviour = 3;
         s.sub = 0;
     }
-    ShotHpCheck(s);
+    ShotHpCheck(w,s,b);
 }
 
 void ShotState3(World::Impl& w, Shot5Task& s, Boss5Task* b) {  // 0x0047ED10: fades out, then Actor_Destroy
@@ -694,6 +711,8 @@ void TaskShot5(Task& t) {
 
 void SpawnShot5(World::Impl& w, Boss5Task& b, int kind) {  // 0x0047EE30
     Shot5Task* s = w.NewTask<Shot5Task>(TaskShot5, 0x0047EFA0);
+    const bool large = w.typingReferenceActive && kind == 6;
+    if (large) kind = 4;
     if (kind == 4) s->c131B = 1;
     else if (kind == 5) {
         s->c131B = 0;
@@ -707,9 +726,14 @@ void SpawnShot5(World::Impl& w, Boss5Task& b, int kind) {  // 0x0047EE30
     s->volley = b.c1360;
     s->index = b.shots;
     s->growTo = kind == 4 ? Bits(0x3FCCCCCD) : Bits(0x3FE00000);
+    if (large) s->growTo *= 5.0f;
     s->count = 0;
     s->radius = Bits(0x3DCCCCCD);
     s->hp = s->hpMax = BossP8(b, 0x10);
+    if (w.cfg.portTyping && s->c131B == 1) {
+        s->hp = s->hpMax = 5;
+        s->typingFlags = 0x38000004u;
+    }
     s->model = 0xB02;
     s->c1320 = 0xFF;
     s->attack131A = b.attack131A;
@@ -792,7 +816,7 @@ void HitNode(World::Impl& w, Boss5Task& b, int p) {
         return;
     }
     if (b.flags34 & 0x4000000) return;
-    switch (slot) {
+    switch (w.typingReferenceActive ? 4 : slot) {
     case 0:
         break;
     case 4: case 6: case 0xB: case 0xD: {
@@ -801,15 +825,26 @@ void HitNode(World::Impl& w, Boss5Task& b, int p) {
         w.AddScore(p, 10);
         float dmg = static_cast<float>(b.record.ParamS8(4));
         if (w.players == 2) dmg = dmg * F32(w.exe, 0x005644F4);
-        if (w.runner->cfg.gameType == 1) {
+        if (w.typingReferenceActive || (w.cfg.portTyping && b.typingStrike)) {
+            b.typingStrike = false;
+            b.hp = static_cast<int16_t>(b.hp - int(TypingMagicianWordDamage(b.behaviour)));
+        } else if (w.runner->cfg.gameType == 1) {
             // 0x0047CF38: x the shooter's item factor (bits 0xBF800000: x 2), _ftol(hp - dmg) at 53-bit precision; the
             // two-player product stays on the x87 stack (not rounded to float)
             double d = static_cast<double>(b.record.ParamS8(4));
             if (w.players == 2) d = d * static_cast<double>(F32(w.exe, 0x005644F4));
             float factor = 1.0f, boost = 0.0f;
             if (ItemDamage(w, p, &factor, &boost)) d = factor == -1.0f ? d + d : d * static_cast<double>(factor);
+            if (b.typingStrike) {
+                const float floor = std::max(0.0f, std::ceil(PhaseThr(w, b)) - 1.0f);
+                d = std::min(TypingDamage(b, static_cast<float>(d)), std::max(0.0f, static_cast<float>(b.hp) - floor));
+            }
             b.hp = static_cast<int16_t>(static_cast<int>(static_cast<double>(b.hp) - d));
         } else {
+            if (b.typingStrike) {
+                const float floor = std::max(0.0f, std::ceil(PhaseThr(w, b)) - 1.0f);
+                dmg = std::min(TypingDamage(b, dmg), std::max(0.0f, static_cast<float>(b.hp) - floor));
+            }
             b.hp = static_cast<int16_t>(static_cast<int>(static_cast<float>(b.hp) - dmg));
         }
         break;
@@ -821,6 +856,7 @@ void HitNode(World::Impl& w, Boss5Task& b, int p) {
     if (b.hp < 1) {
         b.flags34 |= 0x4000000;
         w.AddScore(p, 0x5DC);
+        if (w.cfg.portTyping) w.TypingController(b.typingPlayer).addBasePoints(1300);
         b.killer = static_cast<int8_t>(p);
         w.bossActive = 0;
     }
@@ -889,7 +925,7 @@ void St0(World::Impl& w, Boss5Task& b) {  // 0x00480050
         if (0x1A3 < tick) {
             float p[3];
             int a[3];
-            if (EvalPath(w, 0x180, static_cast<float>(tick), p, a)) {
+            if (EvalPath(w, w.typingReferenceActive ? 0x41A2 : 0x180, static_cast<float>(tick), p, a)) {
                 memcpy(b.pos, p, 12);
                 memcpy(b.rot, a, 12);
             }
@@ -931,7 +967,8 @@ void St1(World::Impl& w, Boss5Task& b) {  // 0x0047D120
         b.c131E = static_cast<int8_t>(w.rank);  // 0x0040A8A0
         b.c132C = 0;
         b.f138C = 0;
-        b.behaviour = w.exe.S16(0x00596770);
+        b.behaviour = PhaseBehaviour(w,b);
+        b.typingHopsStarted = true; // Source46D916: global813080 = 1.
         b.sub = 0;
         w.bossActive = 1;
     }
@@ -1059,7 +1096,7 @@ void St5(World::Impl& w, Boss5Task& b) {  // 0x0047CA50: stagger
     const int8_t a = b.attack131A;
     b.flags34 &= ~0x40000000u;
     if (a == 0) {
-        b.behaviour = 6;
+        b.behaviour = w.typingReferenceActive ? 8 : 6;
         b.sub = 1;
     } else if (a == 1) {
         b.behaviour = 8;
@@ -1071,7 +1108,7 @@ void St5(World::Impl& w, Boss5Task& b) {  // 0x0047CA50: stagger
     if (static_cast<float>(b.hp) < PhaseThr(w, b)) {
         ++b.phase;
         b.sub = 0;
-        b.behaviour = w.exe.S16(0x00596770 + static_cast<uint32_t>(b.phase) * 8);
+        b.behaviour = PhaseBehaviour(w,b);
     }
     b.c131B = -1;
 }
@@ -1178,23 +1215,28 @@ void St8(World::Impl& w, Boss5Task& b) {  // 0x0047D5E0: hops between points, th
     const int every = BossP8(b, 0x19);
     // (0x00596848[aggression] is read where it is used: case 1 changes the aggression first)
     auto row = [&] { return 0x00596848 + static_cast<uint32_t>(static_cast<int8_t>(b.c131E)) * 0x10; };
+    auto timing = [&] { return TypingMagicianTimingForRank(b.c131E); };
     switch (b.sub) {
     case 0:
         b.attack131A = 1;
         b.c1354 = 0;
-        b.c1360 = 0;
+        if (w.typingReferenceActive) b.shots = 0;
+        else b.c1360 = 0;
         b.c1338 = -1;
         b.f138C = 0;
         ++b.sub;
         [[fallthrough]];
     case 1:
-        b.flags34 |= 0x100;
+        if (w.typingReferenceActive) {
+            b.flags34 &= ~0x4100u;
+            w.TypingWords(0,600); // Source46DD5E: every hop window, including after a stagger.
+        } else b.flags34 |= 0x100;
         if (b.anim.motion[0] != 0x8E) w.AnimBlendTo(b, 0x8E, 0, 4);
         if (w.players == 0) return;
         ReleaseTarget(w, b);
-        b.c135C = 0;
+        b.c135C = w.typingReferenceActive && b.typingHopsStarted ? -2 : 0;
         b.c1358 = 1 - 2 * (w.Rand(0x0047D682) & 1);
-        b.hitsLeft = w.players == 1 ? 1 : 2;
+        b.hitsLeft = w.typingReferenceActive || w.players == 1 ? 1 : 2;
         Aggr(b, 1);
         ++b.sub;
         [[fallthrough]];
@@ -1204,7 +1246,7 @@ void St8(World::Impl& w, Boss5Task& b) {  // 0x0047D5E0: hops between points, th
         if (3 < b.c1354) b.c1354 = 0;
         const uint32_t p = 0x00596818 + static_cast<uint32_t>(b.c1354) * 12;
         for (int i = 0; i < 3; ++i) b.goal[i] = w.playerPos[i] + F32(w.exe, p + 4 * i);
-        b.count = static_cast<int32_t>(w.exe.U32(row()));
+        b.count = w.typingReferenceActive ? timing().move : static_cast<int32_t>(w.exe.U32(row()));
         Zero(b);
         VelTo(b, b.count);
         w.Sound(0xF23A9);
@@ -1216,13 +1258,15 @@ void St8(World::Impl& w, Boss5Task& b) {  // 0x0047D5E0: hops between points, th
         if (0 < --b.count) return;
         Zero(b);
         ++b.sub;
-        b.count = static_cast<int32_t>(w.exe.U32(row() + 4));
+        b.count = w.typingReferenceActive ? timing().hold : static_cast<int32_t>(w.exe.U32(row() + 4));
         [[fallthrough]];
     case 4:
-        if (0 < --b.count) return;
-        if (++b.c135C < static_cast<int32_t>(w.exe.U32(row() + 8))) {
-            b.sub = 2;
-            return;
+        if (!w.typingReferenceActive || b.typingMistypePlayer == -1) {
+            if (0 < --b.count) return;
+            if (++b.c135C < (w.typingReferenceActive ? timing().repeats : static_cast<int32_t>(w.exe.U32(row() + 8)))) {
+                b.sub = 2;
+                return;
+            }
         }
         ++b.sub;
         [[fallthrough]];
@@ -1238,8 +1282,11 @@ void St8(World::Impl& w, Boss5Task& b) {  // 0x0047D5E0: hops between points, th
 }
 
 void St9(World::Impl& w, Boss5Task& b) {  // 0x0047D890: the charge at the players
+    if (w.typingReferenceActive && b.typingMistypePlayer != -1 && !(w.frameCounter2BAC & 8))
+        w.TypingSprite(0xB84,320,340,1,1,0xA,0x004B2960);
     if (b.sub == 0) {
-        b.flags34 = (b.flags34 & ~0x100u) | 0x10000000;
+        if (w.typingReferenceActive) b.flags34 |= 0x10000100u;
+        else b.flags34 = (b.flags34 & ~0x100u) | 0x10000000;
         const float pp[3] = { w.playerPos[0], w.playerPos[1] + F32(w.exe, 0x004C4CB8), w.playerPos[2] };
         float v[3];
         mx::Transform(w.cam.view, pp, v);  // 0x009A6000[ctx]
@@ -1248,7 +1295,8 @@ void St9(World::Impl& w, Boss5Task& b) {  // 0x0047D890: the charge at the playe
         mx::Transform(w.cam.inverse, v, o);  // 0x009A6040[ctx]
         memcpy(b.goal, o, 12);
         w.AnimBlendTo(b, 0x84, 0, 4);
-        const int n = static_cast<int32_t>(w.exe.U32(0x00596854 + static_cast<uint32_t>(static_cast<int8_t>(b.c131E)) * 0x10));
+        const int n = w.typingReferenceActive ? TypingMagicianTimingForRank(b.c131E).charge :
+            static_cast<int32_t>(w.exe.U32(0x00596854 + static_cast<uint32_t>(static_cast<int8_t>(b.c131E)) * 0x10));
         Zero(b);
         b.count = n;
         VelTo(b, n);
@@ -1264,14 +1312,15 @@ void St9(World::Impl& w, Boss5Task& b) {  // 0x0047D890: the charge at the playe
         if (0 < b.count) return;
         Zero(b);
         w.Sound(0xD23A9);
-        const bool v0 = TargetValid(w, 0);
+        const bool v0 = TargetValid(w, 0) && (!w.typingReferenceActive || b.typingMistypePlayer == -1 || b.typingMistypePlayer == 0);
         if (v0) w.PlayerTakeHit(0, 1, 7);
-        if (TargetValid(w, 1)) {
+        if (TargetValid(w, 1) && (!w.typingReferenceActive || b.typingMistypePlayer == -1 || b.typingMistypePlayer == 1)) {
             w.PlayerTakeHit(1, 1, 7);
             Aggr(b, -3);
         } else if (v0) {
             Aggr(b, -3);
         }
+        b.typingMistypePlayer = -1;
         ++b.sub;
     }
     if (Ticks(w, b) - 2 <= b.anim.tick[0]) {
@@ -1281,7 +1330,136 @@ void St9(World::Impl& w, Boss5Task& b) {  // 0x0047D890: the charge at the playe
     }
 }
 
+void TypingFinalBeam(World::Impl& w, Boss5Task& b) {
+    if (b.anim.tick[0] >= 0x95 || w.seedCounter % 0x2D == 0) return;
+    FxTask* k = w.NewTask<FxTask>(TaskBeam, 0x0047E2B0);
+    k->boss = {&b,b.serial};
+    k->rot[2] = w.Rand(0x0047E27A) & 0xFFFF;
+    k->a1350 = 0x1279; k->a1354 = 0x127A; k->a1358 = 0x1299;
+}
+
+// Supplied English PC46E500: clear three small words to expose the single
+// large word; only that second completion hits the boss. Failed volleys retry.
+void TypingSt10(World::Impl& w, Boss5Task& b) {
+    switch (b.sub) {
+    case 0:
+        b.typingFlags |= 0x400u;
+        b.flags34 |= 0x100u;
+        b.attack131A = 3;
+        b.goal[0] = Bits(0x44110000); b.goal[1] = Bits(0xC0400000); b.goal[2] = Bits(0xC6079400);
+        b.sub = 20;
+        [[fallthrough]];
+    case 20:
+        b.typingInterlude = w.cfg.gameType == 3 ? 180 : 0;
+        for (int i=0;i<3;++i) b.typingInterludeStep[i] = (w.env.lightColor[i]-.4f)*(1.0f/30.0f);
+        b.sub = 21;
+        [[fallthrough]];
+    case 21: {
+        // 424CB0/424E90, also used for Hierophant's phase instructions.
+        const int frame = b.typingInterlude;
+        if (w.cfg.gameType != 3) {
+            if (frame < 30 || frame > 150)
+                for (int i=0;i<3;++i) w.env.lightColor[i] += (frame < 30 ? -1.0f : 1.0f)*b.typingInterludeStep[i];
+            else {
+                if (frame == 30) w.TypingSound(0x436A9);
+                for (int i=0;i<4;++i) w.TypingSprite(0xDB1+i,128.0f*float(i+1),334,1,.1f,0xA,0x00424D30);
+            }
+        }
+        if (++b.typingInterlude < 180) return;
+        b.sub = 1; b.count = 30;
+        Zero(b); VelTo(b,b.count);
+        w.AnimBlendTo(b,0x8D,0,4); w.Sound(0xF23A9);
+        b.flags136C |= 0x20;
+        FxTask* k = w.NewTask<FxTask>(TaskGlow,0x0047E130);
+        k->boss = {&b,b.serial}; memcpy(k->pos,b.pos,12);
+        k->a1350=0xB3; k->a1354=0xB4; k->a1358=199;
+        return; // Source46E611 returns before the first movement decrement.
+    }
+    case 1:
+        if (++b.c133C % BossP8(b,0x19) == 0) SpawnTrail(w,b);
+        if (--b.count > 0) return;
+        Zero(b); w.AnimBlendTo(b,0x8D,0,4);
+        b.sub=2; b.count=150;
+        [[fallthrough]];
+    case 2:
+        if (w.players == 0 || --b.count > 0) return;
+        b.f138C=0; b.flags34 &= ~0x100u; b.sub=3;
+        [[fallthrough]];
+    case 3:
+        if (w.players == 0) return;
+        b.vel[1]=Bits(0x3E4CCCCD);
+        w.AnimBlendTo(b,0x94,0,4); w.Sound(0xB23A9);
+        b.sub=4; b.c1328=0;
+        [[fallthrough]];
+    case 4:
+        if (b.anim.tick[0] != 165) {
+            TypingFinalBeam(w,b);
+            if (w.seedCounter % 15 == 1 && b.shots < 10)
+                SpawnShot5(w,b,++b.c1328 <= 3 ? 4 : 5);
+            return;
+        }
+        w.Sound(0xC23A9); Zero(b);
+        w.TypingWords(0,w.players == 2 ? 300 : 200);
+        b.typingOrbsCleared=0; b.sub=5;
+        return;
+    case 5:
+        if (b.typingOrbsCleared == 3) {
+            b.typingOrbsCleared=0; b.sub=8;
+            return;
+        }
+        if (b.anim.tick[0] < Ticks(w,b)-2) return;
+        if (b.anim.motion[0] != 0x8D) w.AnimBlendTo(b,0x8D,0,4);
+        if (b.shots > 0) return;
+        b.count=40; Zero(b); VelTo(b,b.count); b.sub=6;
+        [[fallthrough]];
+    case 6:
+        if (--b.count > 0) return;
+        Zero(b); b.flags34 &= ~0x4000u; b.sub=7;
+        [[fallthrough]];
+    case 7:
+        Aggr(b,1); b.sub=3;
+        return;
+    case 8:
+        if (w.players == 0) return;
+        w.TypingWords(0,700);
+        b.vel[1]=Bits(0x3E4CCCCD);
+        w.AnimBlendTo(b,0x94,0,4); w.Sound(0xB23A9);
+        b.sub=9; b.c1328=0;
+        [[fallthrough]];
+    case 9:
+        if (b.anim.tick[0] != 165) {
+            TypingFinalBeam(w,b);
+            if (b.anim.tick[0] == 20) SpawnShot5(w,b,6);
+            return;
+        }
+        w.Sound(0xC23A9); Zero(b); b.sub=10;
+        return;
+    case 10:
+        if (b.typingOrbsCleared != 0) {
+            b.typingOrbsCleared=0;
+            b.flags34=(b.flags34 & ~0x100u)|0xEu;
+            // The PC hit routine applies its fixed twenty damage for each
+            // active player; its final attack deliberately supplies both bits.
+            b.hitNode[0]=b.hitNode[1]=4;
+        }
+        if (b.anim.tick[0] < Ticks(w,b)-2) return;
+        if (b.anim.motion[0] != 0x8D) w.AnimBlendTo(b,0x8D,0,4);
+        if (b.shots > 0) return;
+        b.count=40; Zero(b); VelTo(b,b.count); b.sub=11;
+        [[fallthrough]];
+    case 11:
+        if (--b.count > 0) return;
+        Zero(b); b.flags34 &= ~0x4000u; b.sub=12;
+        [[fallthrough]];
+    case 12:
+        Aggr(b,1); b.sub=3;
+        return;
+    default: return;
+    }
+}
+
 void St10(World::Impl& w, Boss5Task& b) {  // 0x0047DD50: the final phase
+    if (w.typingReferenceActive) { TypingSt10(w,b); return; }
     const int every = BossP8(b, 0x19);
     switch (b.sub) {
     case 0:
@@ -1386,7 +1564,7 @@ void TaskBoss5(Task& t) {
     w.bossBar = b.hp < 1 ? 0.0f : static_cast<float>(b.hp) / static_cast<float>(b.hpMax);  // 0x009C8E10
     const float f = b.f138C + F32(w.exe, 0x004C4380);
     b.f138C = f;
-    if (F32(w.exe, 0x005691B0) < f) {
+    if (!w.typingReferenceActive && F32(w.exe, 0x005691B0) < f) {
         b.c131E = 0x10;
         b.f138C = 0;
     }
@@ -1400,10 +1578,22 @@ void TaskBoss5(Task& t) {
     case 5: St5(w, b); break;
     case 6: St6(w, b); break;
     case 7: St7(w, b); break;
-    case 8: St8(w, b); break;
+    case 8:
+        St8(w,b);
+        if (w.typingReferenceActive)
+            b.typingFrameColor=std::max(0.0f,1.0f-float(b.c135C)/float(TypingMagicianTimingForRank(b.c131E).repeats-1));
+        break;
     case 9: St9(w, b); break;
     case 10: case 11: St10(w, b); break;
     default: break;
+    }
+    if (w.cfg.portTyping && !w.typingReferenceActive && b.behaviour >= 6 && b.behaviour <= 11) {
+        const int family = b.behaviour < 8 ? 0 : b.behaviour < 10 ? 1 : 2;
+        if (family != b.typingWordFamily) {
+            b.typingWordFamily = family;
+            w.typing.setWordSelection(0, family == 0 ? 600 : family == 1 ? (w.players == 2 ? 300 : 200) : 700);
+            w.typing2.setWordSelection(0, family == 0 ? 600 : family == 1 ? (w.players == 2 ? 300 : 200) : 700);
+        }
     }
     for (int i = 0; i < 3; ++i) b.pos[i] = b.vel[i] + b.pos[i];
     int pitch = 0;
@@ -1419,6 +1609,19 @@ void TaskBoss5(Task& t) {
 }
 
 }  // namespace
+
+void TypingBoss5Mistype(World::Impl& w, uint32_t serial, int player) {
+    if (!w.typingReferenceActive || player < 0 || player > 1) return;
+    for (Task* t : w.ts.Live()) {
+        if (t->serial != serial) continue;
+        auto* b=dynamic_cast<Boss5Task*>(t->data.get());
+        if (b && b->hp > 0 && (b->typingFlags & 0x200000u)) {
+            b->flags34 |= 0x100u; // Source4B2940: close the word window.
+            b->typingMistypePlayer=player;
+        }
+        return;
+    }
+}
 
 // Actor type 0x32 (0x0047F5F0): the spawn task becomes the boss (first run of 0x0047C960 next frame)
 void World::Impl::SpawnBoss5(Task& t, const SpawnRecord& r) {
@@ -1450,7 +1653,7 @@ void World::Impl::SpawnBoss5(Task& t, const SpawnRecord& r) {
     if (runner->cfg.gameType == 3) {  // boss mode: placed on camera path 0x180 at 598, sub-state 3, flag 0x16
         float p[3] = {}, tg[3] = {};
         int roll = 0;
-        if (cameraBank.Evaluate(0x180, 598.0f, p, tg, &roll, false)) {  // 0x004042D0
+        if (cameraBank.Evaluate(typingReferenceActive ? 0x41A2 : 0x180, 598.0f, p, tg, &roll, false)) {  // 0x004042D0
             memcpy(b.pos, p, 12);
             for (int k = 0; k < 3; ++k) b.rot[k] = static_cast<int>(tg[k]);
         }
@@ -1463,6 +1666,56 @@ void World::Impl::SpawnBoss5(Task& t, const SpawnRecord& r) {
     t.data = std::move(d);
     t.fn = TaskBoss5;
     SpawnNameCard(0x00596AC0);  // 0x00437A70
+}
+
+bool TypingBoss5(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    if (auto* b = dynamic_cast<Boss5Task*>(&actor)) {
+        out.boss = true;
+        if (b->hp < 1 || b->behaviour < 5 || b->behaviour > 11 || (b->flags34 & 0x4000000u)) return true;
+        out.retain = true;
+        out.token = 0x500000u | (static_cast<uint32_t>(b->phase) << 12);
+        memcpy(out.view, b->anim.nodes[4].hit, 12);
+        if (b->behaviour < 6 || (b->flags34 & 0x40008100u)) return true;
+        if (w.cfg.portTyping) {
+            out.node = 4;
+            if (complete) {
+                b->flags34 &= ~0x4000u;
+                TypingDeliver(*b, out.node);
+            }
+            return true;
+        }
+        for (int node : {4, 6, 11, 13}) {
+            const EnemyNode& n = b->anim.nodes[node];
+            if (n.model != 0 && (n.radius > 0.0f || n.mesh != -1) && (n.flags & 0x20)) {
+                out.node = node;
+                memcpy(out.view, n.hit, 12);
+                break;
+            }
+        }
+        if (complete && out.node >= 0) {
+            // The entrance carries a hold bit into the first combat pose. A
+            // completed phrase must let the native stagger animation advance;
+            // otherwise St5 waits forever at its initial animation frame.
+            b->flags34 &= ~0x4000u;
+            TypingDeliver(*b, out.node);
+        }
+        return true;
+    }
+    if (auto* shot = dynamic_cast<Shot5Task*>(&actor)) {
+        out.danger = true;
+        out.projectile = false;
+        if (w.cfg.portTyping && (shot->kind != 4 || shot->c131B != 1 || (shot->flags34 & 8))) return true;
+        if (shot->behaviour < 1 || shot->behaviour > 2 || (shot->flags34 & 0x04008000u)) return true;
+        out.node = 1;
+        out.token = 0x510000u | (static_cast<uint32_t>(shot->behaviour) << 4) | static_cast<uint32_t>(shot->sub);
+        memcpy(out.view, shot->viewPos, 12);
+        if (complete) {
+            TypingDeliver(*shot, out.node);
+            shot->typingStrike = false;
+        }
+        return true;
+    }
+    return false;
 }
 
 }  // namespace game

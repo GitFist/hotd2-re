@@ -11,7 +11,7 @@ constexpr size_t kNameLength = 12;
 constexpr int kDelete = 40, kClear = 41, kPublish = 42, kSkip = 43;
 constexpr uint32_t kText = 0xFFFFF4E5, kMuted = 0xFFB9AA91, kDisabled = 0xFF677072;
 constexpr const char* kBoards[] = {"ARCADE", "ORIGINAL", "HORDE", "JUDGMENT", "HIEROPHANT A",
-    "HIEROPHANT B", "TOWER A", "TOWER B", "STRENGTH A", "STRENGTH B", "MAGICIAN", "EMPEROR", "BOSS RUSH"};
+    "HIEROPHANT B", "TOWER A", "TOWER B", "STRENGTH A", "STRENGTH B", "MAGICIAN", "EMPEROR", "BOSS RUSH", "TYPING OF THE DEAD"};
 
 std::string Trim(const std::string& text) {
     const auto first = text.find_first_not_of(' ');
@@ -51,7 +51,7 @@ void Pointer(game::WorldHud& hud, float x, float y) {
 
 std::string RunDetail(int table, uint32_t score, uint16_t rounds) {
     std::string detail = kBoards[table];
-    if (table >= 3) {
+    if (table >= 3 && table <= 12) {
         char time[32];
         std::snprintf(time, sizeof(time), " / %u:%02u.%02u", score / 3600, (score / 60) % 60,
                       (score % 60) * 100 / 60);

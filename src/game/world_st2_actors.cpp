@@ -30,6 +30,19 @@ float Bits(uint32_t u) {
     return f;
 }
 
+bool PcDrill(const World::Impl& w) {
+    return w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2;
+}
+
+// PC Actor21's data-only path/visibility tables, 0x4EE0B8 / 0x4EE12A..
+// These keys are source camera ids in the prepared namespace, not HOD aliases.
+constexpr int kDrill21Path[11] = {0x416A,0x4170,0x416F,0x41BC,0x41BD,0x41BE,0x41BF,0x41C0,0x41C1,0x41C2,0x41C3};
+constexpr int kDrill21Start[11] = {775,940,1005,60,200,320,440,580,700,850,900};
+constexpr int kDrill21Wait[11] = {625,760,795,60,230,380,530,700,850,1020,1040};
+constexpr int kDrill21Hide[11] = {850,1020,1040,227,369,490,609,757,878,1018,1069};
+constexpr int kDrill21Sound[11] = {878,1018,1069,120,260,380,500,630,750,910,960};
+constexpr int kDrill21End[11] = {200,370,130,260,400,520,640,780,900,1050,1100};
+
 // 0x00401EC0(a, b, num, den): a moved toward b by num / (num + den) of the shorter way
 int AngleLerp(int a, int b, int num, int den) {
     const uint32_t d = static_cast<uint32_t>(b - a) & 0xFFFF;
@@ -71,6 +84,7 @@ struct Actor21Task : EnemyTask {
     int sinkTimer = 0;        // +0x1338
     float delta[3] = {};      // +0x13CC (path step of the last frame)
     int count = 0;            // +0x132C (game type 2: the path time)
+    int drillSelector = 0;
 };
 
 struct VehicleTask : WTask {  // 0x00452150 / 0x004521B0 / 0x004522A0 (object 0x13F4)
@@ -233,6 +247,13 @@ void Actor21Alive(World::Impl& w, Task& t, Actor21Task& a) {
 // Game type 2 (training lesson 7): 0x00452540 / 0x004528B0 wait for camera tick 60 (the count starts there and runs
 // while flag 0xF2 is clear) until 0x00565F46[(idx + difficulty * 8)], then the count restarts at 0x00565F66[idx]
 bool TrainWait(World::Impl& w, int& count, int idx) {
+    if (PcDrill(w)) { // PC 0x440E30 / 0x4411F0: start twenty frames before its authored entry.
+        if (count != 0 && w.runner->flags[0xF2] == 0) ++count;
+        if (w.runner->camera.tick == 0) count = kDrill21Wait[idx] - 20;
+        if (count != kDrill21Wait[idx]) return false;
+        count = kDrill21Start[idx];
+        return true;
+    }
     if (count != 0 && w.runner->flags[0xF2] == 0) ++count;
     if (w.runner->camera.tick == 0x3C) count = 0x3C;
     const uint32_t k = static_cast<uint32_t>(idx + w.runner->cfg.playerVariant * 8) * 2;
@@ -257,6 +278,7 @@ void Actor21Train(World::Impl& w, Actor21Task& a) {
         return;
     }
     if (a.flags34 & 8) {
+        if (PcDrill(w)) a.hp = 0; // PC 0x440F2E: one completed word releases the rider.
         for (int i = 0; i < 16; ++i) {
             EnemyNode& n = a.anim.nodes[i];
             if (!(n.flags & 8)) continue;
@@ -267,9 +289,11 @@ void Actor21Train(World::Impl& w, Actor21Task& a) {
             n.flags &= ~6u;
         }
     }
-    const int path = w.exe.S16(0x00565EF4 + static_cast<uint32_t>(a.pathIdx) * 2);
+    const bool pcDrill = PcDrill(w);
+    const int path = pcDrill ? kDrill21Path[a.pathIdx] : w.exe.S16(0x00565EF4 + static_cast<uint32_t>(a.pathIdx) * 2);
     if (a.hp < 1) {
         w.runner->globals[0x009A244A] = static_cast<uint32_t>(w.GlobalInt(0x009A244A, 0) + 1);
+        if (pcDrill) ++w.typingDrillGame.reflexWaves; // source 0x834248.
         w.EnemyVoice(a, 1);
         int r[3];
         NormalizeRot(a.rot, r);  // 0x004018E0 of RotZ RotY RotX
@@ -283,7 +307,11 @@ void Actor21Train(World::Impl& w, Actor21Task& a) {
         ++a.anim.counter[0];
         a.fn = 0x00451D80;
     } else {
-        if (w.exe.S16(0x00565F96 + static_cast<uint32_t>(a.pathIdx) * 2) <= a.count) w.runner->globals[0x009A2234] = 1;
+        if (pcDrill) {
+            if (a.count == kDrill21Hide[a.pathIdx])
+                a.typingFlags = (a.typingFlags & ~0x200u) | 0x400u;
+        } else if (w.exe.S16(0x00565F96 + static_cast<uint32_t>(a.pathIdx) * 2) <= a.count)
+            w.runner->globals[0x009A2234] = 1;
         float p[3];
         int ang[3];
         if (EvalPath(w, path, static_cast<float>(a.count), p, ang)) {  // 0x004042D0
@@ -296,7 +324,8 @@ void Actor21Train(World::Impl& w, Actor21Task& a) {
         mx::Transform(w.cam.view, a.body, a.viewPos);
         a.flags34 &= ~8u;
         w.RegisterTarget(&a);  // 0x00405160
-        if (static_cast<int32_t>(w.exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4)) <= a.count) {
+        const int end = pcDrill ? kDrill21End[a.pathIdx] : static_cast<int32_t>(w.exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4));
+        if (end <= a.count) {
             Actor21Release(w, a);
             w.EnemyDestroy(a);  // 0x00409CC0
             return;
@@ -309,7 +338,14 @@ void TaskActor21(Task& t) {
     World::Impl& w = *CurrentWorld();
     Actor21Task& a = t.As<Actor21Task>();
     if (a.fn == 0x00452540) {
-        if (!TrainWait(w, a.count, a.pathIdx)) return;
+        if (!TrainWait(w, a.count, a.pathIdx)) {
+            if (PcDrill(w)) a.typingFlags = (a.typingFlags & ~0x200u) | 0x400u;
+            return;
+        }
+        if (PcDrill(w)) {
+            a.typingFlags = (a.typingFlags & ~0x400u) | 0x200u;
+            if (w.typingDrillGame.courseCount > 30) w.TypingWords(-1,a.drillSelector-100);
+        }
         a.fn = 0x004525C0;
     }
     switch (a.fn) {
@@ -441,7 +477,8 @@ void TaskVehicle(Task& t) {
             return;
         }
         v.wheelAngle += 0x1000;
-        const int path = w.exe.S16(0x00565EF4 + static_cast<uint32_t>(v.param) * 2);
+        const bool pcDrill = PcDrill(w);
+        const int path = pcDrill ? kDrill21Path[v.param] : w.exe.S16(0x00565EF4 + static_cast<uint32_t>(v.param) * 2);
         float p[3];
         int ang[3];
         if (EvalPath(w, path, static_cast<float>(v.count), p, ang)) {
@@ -449,11 +486,12 @@ void TaskVehicle(Task& t) {
             memcpy(v.rot, ang, 12);
         }
         VehicleDraw(w, v);
-        if (static_cast<int32_t>(w.exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4)) <= v.count) {
+        const int end = pcDrill ? kDrill21End[v.param] : static_cast<int32_t>(w.exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4));
+        if (end <= v.count) {
             w.ts.KillCurrent();  // Task_Kill 0x004A7040
             return;
         }
-        if (v.count == w.exe.S16(0x00565FA6 + static_cast<uint32_t>(v.param) * 2)) w.Sound(0x719A9);
+        if (v.count == (pcDrill ? kDrill21Sound[v.param] : w.exe.S16(0x00565FA6 + static_cast<uint32_t>(v.param) * 2))) w.Sound(0x719A9);
         ++v.count;
         return;
     }
@@ -506,6 +544,7 @@ void Actor21BigHeadNode(World::Impl& w, EnemyTask& e, int idx, const Mat4& m) {
 void SpawnActor21(World::Impl& w, Task& t, const SpawnRecord& r) {
     auto d = std::make_unique<Actor21Task>();
     d->fn = 0x00451860;
+    w.SetTypingSpawnOrigin(*d, r);
     d->record = r;
     d->flags34 = r.flags | 1;  // 0x00408970
     memcpy(d->pos, r.pos, 12);
@@ -516,6 +555,20 @@ void SpawnActor21(World::Impl& w, Task& t, const SpawnRecord& r) {
     d->variant = r.ParamS8(1);
     d->slot120 = -1;
     d->anim.motion[0] = 0x3E6;
+    if (PcDrill(w)) { // PC 0x4400D9: eight paths; occasional large/small rider.
+        // PC 0x440056 consumes this initial pose random even when game type3
+        // skips its first AnimInit. It draws a second pose random below.
+        w.Rand(0x00440056);
+        d->pathIdx = w.typingDrillGame.courseCount % 8 + 3;
+        const int number = ++w.typingDrillGame.courseCount;
+        d->drillSelector = number <= 5 ? 400 : number <= 15 ? 300 : number <= 30 ? 200 : 150;
+        if ((w.Rand(0x00440155) & 15) == 0) {
+            if (number <= 50) { d->drillSelector += 100; d->anim.kind = 0; }
+            else { d->drillSelector -= 100; d->anim.kind = 15; }
+        }
+        w.TypingWords(-1,d->drillSelector);
+        d->typingFlags = (d->typingFlags & ~0x200u) | 0x400u;
+    }
     w.EnemyInitPose(*d);  // Anim_InitEnemy 0x00410440 (+ actor slot 0x00409270)
     d->anim.rotOrder = 5;
     d->anim.drawFlags &= ~2u;
@@ -530,8 +583,8 @@ void SpawnActor21(World::Impl& w, Task& t, const SpawnRecord& r) {
     ++w.liveEnemies;
     if (w.runner->cfg.gameType == 2) {  // training lesson 7: path index = the record's state, hp 2, 0x00452540
         d->count = 0;
-        d->pathIdx = d->hp;
-        d->hp = 2;
+        if (!PcDrill(w)) d->pathIdx = d->hp;
+        d->hp = PcDrill(w) ? 3 : 2;
         VehicleTask* v = w.NewTask<VehicleTask>(TaskVehicle, 0x00452150);  // 0x00452120(idx)
         v->param = d->pathIdx;
         d->fn = 0x00452540;
@@ -569,6 +622,7 @@ void RegisterSlot(World::Impl& w, EnemyTask& e) {
 template <class T> std::unique_ptr<T> FromRecord(const SpawnRecord& r, uint32_t fn) {
     auto d = std::make_unique<T>();
     d->fn = fn;
+    if (auto* world = CurrentWorld()) world->SetTypingSpawnOrigin(*d, r);
     d->record = r;
     d->flags34 = r.flags | 1;
     memcpy(d->pos, r.pos, 12);
@@ -1410,6 +1464,10 @@ void SpawnKomono37(World::Impl& w, const SpawnRecord& r) {
         if (k->slot > 0) {
             if (r.rot[0] < 2) w.itemCounter[k->slot & 15] = 1;
             else w.itemCounter[k->slot & 15] = static_cast<uint8_t>(w.Rand(0) % r.rot[0] + 1);
+            // TOTD 0x00455CB0 registers only the member selected by this
+            // original drop counter, rather than both visually identical boxes.
+            if (n == static_cast<int>(w.itemCounter[k->slot & 15]) - 1)
+                k->typingFlags = 0x00400018u;
         }
     }
     g_boxesLeft = 2;

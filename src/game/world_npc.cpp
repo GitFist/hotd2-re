@@ -471,7 +471,7 @@ static void TaskActor25(Task& t) {
             break;
         }
         case 0xD:
-            w.Sound(EvU32(mem, p + 4));
+            w.TypingSound(EvU32(mem, p + 4));
             next(8);
             break;
         case 0xE:

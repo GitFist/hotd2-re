@@ -20,6 +20,7 @@
 #include "game/mstack.h"
 #include "game/shoot_camera.h"
 #include "game/world_internal.h"
+#include "game/world_typing_drill_scene.h"
 #include "game/world_modes.h"
 #include "game/world_prototype.h"
 #include "game/world_nightshift.h"
@@ -142,16 +143,28 @@ void World::Impl::FrontStep() {
     }
     FrontApplyMode();   // Game_ApplyState 0x0040E860
     FrontStartCheck();  // 0x004043C0
+    // The front-end view-mapping task follows the menu task. Restore the
+    // original exercise camera after that task before submitting its arena.
+    RestoreTypingDrillCamera(*this);
     inFrontStep = false;
     ts.FreeDead();
     UpdateLightsFrame();
+    PresentTypingDrillGame();
     FillHud();
     hud.modeFrames = front.modeFrames;
     hud.bootFrames = front.bootFrames;
     hud.demoIndex = front.demoIndex;
     hud.menuCursor = front.menuCursor;
     hud.gameType = front.gameType;
-    hud.nightShiftPage = cfg.portFeatures && (cfg.portModernMenu || (gameMode == 4 && front.nightShiftPage == 9))
+    hud.typingHome = front.typingHome;
+    hud.menuSwitching = gameMode == 4 && front.menuSwitchAge >= 0;
+    hud.menuSwitchFade = 0;
+    if (hud.menuSwitching) {
+        const float t = std::clamp(front.menuSwitchAge <= 24 ? float(front.menuSwitchAge)/24.f :
+                                  float(48-front.menuSwitchAge)/24.f,0.f,1.f);
+        hud.menuSwitchFade = t*t*(3.f-2.f*t);
+    }
+    hud.nightShiftPage = cfg.portFeatures && (cfg.portModernMenu || front.typingHome || front.menuSwitchAge>=0 || (gameMode == 4 && front.nightShiftPage == 9))
                             ? (gameMode == 4 ? front.nightShiftPage : gameMode == 12 ? 7
                                : gameMode == 15 && cfg.portNetworkRoom ? 10 : -1)
                             : -1;
@@ -168,7 +181,7 @@ void World::Impl::FrontStep() {
     hud.portLeaderboardInitials = front.leaderboardInitials;
     hud.portDisplayRequests += front.nightShiftDisplayRequests;
     hud.portDisplayPage = gameMode==4?front.nightShiftDisplayPage:-1;
-    if (hud.nightShiftPage < 0) {hud.menuPanels.clear();hud.menuText.clear();}
+    if (hud.nightShiftPage < 0 && !typingResultsActive && !cfg.portTyping) {hud.menuPanels.clear();hud.menuText.clear();}
 }
 
 // Game_UpdateInput's button part (0x0040D590 -> 0x0040D6C0 / 0x0040D850): held 0x009C9034 / pressed 0x009C9028
@@ -230,7 +243,13 @@ void World::Impl::FrontResetBlink() { front.blink = front.blinkLast = 0; }  // 0
 void World::Impl::FrontApplyMode() {
     if (front.modeRequest < 0) return;
     // Connected players stay in the room after a game or a mode's Back action.
-    const int m = cfg.portNetworkRoom && (front.modeRequest == 3 || front.modeRequest == 4) ? 15 : front.modeRequest;
+    const int requested = cfg.portFeatures && front.typingHome && front.modeRequest == 3 ? 4 : front.modeRequest;
+    const int m = cfg.portNetworkRoom && (requested == 3 || requested == 4) ? 15 : requested;
+    // Keep the completed typing statistics until another mode is selected, but do not type through attract scenes.
+    if ((gameMode == 6 || gameMode == 7) && m != 6 && m != 7) {
+        cfg.portTyping = false;
+        RestoreTypingGameOptions();
+    }
     front.modeRequest = -1;
     resQueue.clear();
     SetGameMode(m);
@@ -241,7 +260,7 @@ void World::Impl::FrontApplyMode() {
         front.sceneSelect = false;
         front.sceneStart = -1;
         front.gameType = 0;
-        front.menuCursor = 0;
+        front.menuCursor = cfg.portTypingRoom ? 6 : 0;
         front.modeFrames = 0;
         FrontScreensFree();
         front.nightShiftPage = front.nightShiftRow = 0;
@@ -572,11 +591,11 @@ void World::Impl::MenuFrame() {
 // 0x00496960: cursor up / down (0x005978C8 / 0x005978D0 per player 0x009A3790; the keyboard masks with 0x009A37A8 are
 // not driven), the selected entry's label visible, the logo strip, confirm (0x005978D8: trigger or start)
 void World::Impl::TaskMenu(Task& t) {
-    if (cfg.portFeatures && (cfg.portModernMenu || front.nightShiftPage == 9)) {
+    if (cfg.portFeatures && (cfg.portModernMenu || front.typingHome || front.menuSwitchAge>=0 || front.nightShiftPage == 9)) {
         for (auto& s : front.screens) s.visible = false;
         const size_t first = hudSprites.size();
         NightShiftMenuFrame(*this);
-        if (cfg.portModernMenu || front.nightShiftPage == 9) return;
+        if (cfg.portModernMenu || front.typingHome || front.menuSwitchAge>=0 || front.nightShiftPage == 9) return;
         // Extras shares the native page, then restores the existing Classic menu in this same frame.
         hudSprites.resize(first);
         hud.menuPanels.clear();
@@ -709,6 +728,9 @@ void World::Impl::TaskMenu(Task& t) {
         return;  // Preserve Classic's menu screens behind the port's options overlay and on Back.
     }
     FrontScreensFree();  // 0x0049ED70, 0x00413CB0 (-> 0x0049DFD0)
+    cfg.portTyping = false;
+    RestoreTypingGameOptions();
+    ResetTyping();
     if (onPortEntry) {  // port: the Scene Select page (world_scene_select.cpp)
         SceneSelectMenuConfirm(*this);
         return;
@@ -805,7 +827,8 @@ void World::Impl::GameStartFrame() {
     PortLeaderboardBegin(*this);
     // SceneSelectStart clears sceneSelect; sceneStart still identifies that origin
     // here, before this function consumes it. Keep the decision across chapter loads.
-    portRunOriginEligible = !front.sceneSelect && front.sceneStart<0 &&
+    portRunOriginEligible = (!cfg.portTyping || cfg.typingOriginal) && !front.sceneSelect &&
+        (front.sceneStart<0 || (cfg.portTyping && front.sceneStart==0)) &&
         !front.hordeStart && !front.randomizerStart &&
         (front.gameType==0 || front.gameType==1 || front.gameType==3);
     // game type 0: event mode 0, scene 0 (types 2 / 3 are refused by the mode select); 0x0048A0D0, rank init, 0x00463680,
@@ -824,7 +847,7 @@ void World::Impl::GameStartFrame() {
     if (front.sceneStart >= 0) {  // port only: the Scene Select's chapter (an arcade game at a later stage's first scene)
         c.gameType = 0;
         c.eventMode = front.sceneStart;
-        c.scene = SceneSelectFirstScene(front.sceneStart);
+        c.scene = c.portTyping && typingReference.Available() ? 0 : SceneSelectFirstScene(front.sceneStart);
         front.sceneStart = -1;
     }
     const bool horde = front.hordeStart;  // port only: the Horde mode (an arcade game at stage 1's street, world_horde.cpp)

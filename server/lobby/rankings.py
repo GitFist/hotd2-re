@@ -24,6 +24,7 @@ COOKIE_SECONDS = 300
 # These released clients used kBuildId before that separation. Keep their
 # records and retry identities intact; query the compatible IDs together.
 LEADERBOARD_COMPATIBILITY_ID = 1
+TYPING_BOARD = 13
 COMPATIBLE_BUILDS = (LEADERBOARD_COMPATIBILITY_ID,
                      2026102200, 2026102201, 2026102300, 2026102301)
 ROW = struct.Struct("<3sIHBB")  # initials, score/60-Hz time, rounds, difficulty/stage, players
@@ -32,7 +33,7 @@ SUBMIT = struct.Struct("<IB3sIHBB16s")
 SUBMIT_V2 = struct.Struct("<IB12sIHBB16s")
 SCHEMA = """CREATE TABLE IF NOT EXISTS rankings_v1 (
     run BLOB PRIMARY KEY CHECK(length(run)=16), build INTEGER NOT NULL,
-    board INTEGER NOT NULL CHECK(board BETWEEN 0 AND 12),
+    board INTEGER NOT NULL CHECK(board BETWEEN 0 AND 13),
     name BLOB NOT NULL CHECK(length(name) BETWEEN 1 AND 12),
     score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 2000000000),
     rounds INTEGER NOT NULL CHECK(rounds BETWEEN 0 AND 65535),
@@ -58,7 +59,7 @@ class Rankings:
             self.db = sqlite3.connect(database, timeout=0.1)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
-            # SQLite cannot widen a CHECK in place. Rebuild an existing three-byte
+            # SQLite cannot widen a CHECK in place. Rebuild an existing narrow
             # table in one explicit transaction; run IDs, timestamps and rankings
             # survive, and an interrupted/failed migration rolls back the rename.
             try:
@@ -66,7 +67,8 @@ class Rankings:
                     self.db.execute("BEGIN IMMEDIATE")
                     self.db.execute(SCHEMA)
                     schema = self.db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='rankings_v1'").fetchone()[0]
-                    if "length(name)=3" in "".join(schema.lower().split()):
+                    normalized = "".join(schema.lower().split())
+                    if "length(name)=3" in normalized or "boardbetween0and12" in normalized:
                         self.db.execute("ALTER TABLE rankings_v1 RENAME TO rankings_name3_legacy")
                         self.db.execute(SCHEMA)
                         self.db.execute("INSERT INTO rankings_v1 SELECT * FROM rankings_name3_legacy")
@@ -109,7 +111,7 @@ class Rankings:
 
     @staticmethod
     def _order(board):
-        return "rounds DESC,score DESC,created,run" if board==2 else "score ASC,created,run" if board>=3 else "score DESC,created,run"
+        return "rounds DESC,score DESC,created,run" if board==2 else "score ASC,created,run" if 3<=board<=12 else "score DESC,created,run"
 
     def _query(self, build, board):
         if not self.db:
@@ -121,11 +123,11 @@ class Rankings:
     def _submit(self, build, board, name, score, rounds, difficulty, players, run):
         if not self.db:
             return 3  # service disabled until explicitly configured
-        if (not build or board>12 or not 1<=score<=2000000000 or not 1<=players<=2 or
-            difficulty>(6 if board<2 else 4) or not any(run) or
+        if (not build or not 0<=board<=TYPING_BOARD or not 1<=score<=2000000000 or not 1<=players<=2 or
+            not 0<=difficulty<=(6 if board<2 or board==TYPING_BOARD else 4) or not any(run) or
             not 1<=len(name)<=12 or
             any(c not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-" for c in name) or not name.strip() or
-            (board!=2 and rounds) or (board==2 and not rounds) or (board>=3 and (players!=1 or score>1296000))):
+            (board!=2 and rounds) or (board==2 and not rounds) or (3<=board<=12 and (players!=1 or score>1296000))):
             return 2
         values = (build,board,name,score,rounds,difficulty,players)
         try:
@@ -158,7 +160,7 @@ class Rankings:
         if kind==2 and len(packet)==31:
             build,board = struct.unpack_from("<IB",packet,10)
             if not self._cookie_valid(address,packet[15:31]) or not self._allow(address[0],False): return None
-            if not build or board>12: return None
+            if not build or board>TYPING_BOARD: return None
             try:
                 rows = self._query(build,board)
                 status = 0 if self.db else 3

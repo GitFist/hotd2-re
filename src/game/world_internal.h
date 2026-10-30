@@ -24,7 +24,10 @@
 #include "game/shooting.h"
 #include "game/stage.h"
 #include "game/task.h"
+#include "game/typing_reference.h"
 #include "game/world.h"
+#include "game/world_typing_drill.h"
+#include "game/world_typing_drill_game.h"
 
 namespace game {
 
@@ -91,6 +94,18 @@ struct ActorTask : WTask {
     float viewPos[3] = {};     // +0x70
     float radius = 0;          // +0x124
     int8_t hitNode[2] = {0, 0};  // +0x190 + player
+    bool typingStrike = false;
+    int typingPlayer = 0;
+    int typingPickupItem = 0;
+    uint32_t typingRevision = 0;
+    // Reference: explicit word-post registration, separate from gun collision.
+    // Preserve the event source because identical props from type 0x44 do not
+    // inherit the typing words of generic komono type 0x41.
+    uint32_t typingFlags = 0;
+    float typingFrameColor = 1; // source4B17B2: word-post +0x48; zero flashes, .5 yellow, one green
+    int typingWordStyle = 0;  // original common actor +0x11C; distinct from custom actors' private HP
+    uint32_t typingOriginType = 0xFFFFFFFFu;
+    int typingOriginKind = -1;
     float radius128 = 0;       // +0x128 collision radius (0: the pusher copies +0x124 into it)
     float sphere[3] = {};      // +0x12C collision sphere centre
     bool pushed = false;       // +0x138 != 0 (pushed by another actor)
@@ -285,11 +300,32 @@ struct St5State;    // world_st5.h
 struct ModesState;  // world_modes.h
 struct St6State;    // world_st6.h
 
+struct TypingTargetSpec {
+    int node = -1;
+    uint32_t token = 0;
+    bool boss = false, danger = false, retain = false, projectile = false;
+    float view[3] = {};
+    const TypingWordRecord* word = nullptr;
+};
+
 struct World::Impl : public EventHost, public CrtRand::Observer {
     Impl();
 
     // ---------------------------------------------------------------- data
     std::string gameDir;
+    TypingReference typingReference;
+    bool typingReferenceActive = false;
+    struct TypingChallengeCtl {
+        bool active = false, inputBlocked = false, success = false, rewardPending = false, keyActivity = false;
+        int state = 0, shared = 0, deadline = 0, interval = 0, maximum = 0, quota = 0;
+        int timer = 0, spawned = 0, side = 0, finishFrames = 0, reward = 0;
+        int instruction = -1, instructionFrames = 0, instructionAge = 0, instructionTarget = 0;
+        uint64_t startingErrors = 0;
+        std::vector<uint32_t> records;
+        std::vector<int> weighted;
+    } typingChallenge;
+    int typingSavedRank = 0;          // reference A372A8: rank before the most recent item
+    int typingRankClears = 0;         // reference A372A4: scene clears before rank restoration
     ExeImage exe;
     EventMemory mem;
     std::vector<SkyEntry> skyTable;
@@ -308,6 +344,89 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
 
     // ---------------------------------------------------------------- state
     WorldConfig cfg;
+    TypingModeController typing;
+    TypingDrillUi typingDrill;
+    TypingDrillGameState typingDrillGame;
+    std::string typingCharacters;
+    bool typingCancel = false;
+    std::map<std::pair<uint32_t,uint32_t>,std::array<float,2>> typingPositions;
+    std::map<uint32_t, std::pair<TypingTarget, TypingTargetSpec>> typingCachedTargets;
+    std::map<uint32_t,uint32_t> typingPendingBoss;
+    uint32_t typingEpoch = 0;
+    bool typingWasReady = false;
+    bool typingPropsEnabled = false;  // TOTD event 0x66; original global 0x0083497C
+    unsigned typingGradeProgress = 0;
+    std::string typingQuestion;
+    float typingQuestionSeconds = 0;
+    struct TypingHudPresentation {
+        int lastFrame = -1;
+        unsigned previousStreak = 0;
+        int perfectFrames = 0;
+        bool brokenStreak = false;
+        uint64_t displayedGauge = 0, previousThreshold = 400;
+        int lifeAwardAge = -1;
+        int questionSlide = -960;
+        bool questionVisible = false;
+        struct Mistake {
+            uint32_t serial = 0, token = 0;
+            std::array<float, 2> anchor{};
+            int age = 0, lastFrame = -1;
+        };
+        struct Complete {
+            std::array<float, 3> view{};
+            TypingRank grade = TypingRank::Unranked;
+            int age = 0, lastFrame = -1;
+        };
+        std::map<uint32_t, Mistake> mistakes;
+        std::vector<Complete> completions;
+        struct PosterState {
+            std::array<float, 3> view{}; // Original word-post XYZ, including the five-unit depth offset.
+            int lastFrame = -1;
+        };
+        std::map<std::pair<uint32_t, uint32_t>, PosterState> posters;
+        int postersFrame = -1;
+        struct StoryLine {
+            TypingWordRecord word{};
+            std::array<float, 3> view{}; // Original Strength child actor's direct view-space position.
+            float velocity = 0;
+            int phase = 0, bounce = 0, hold = 0;
+            bool enabled = false;
+        };
+        struct StoryPosters {
+            uint32_t owner = 0, generation = 0;
+            unsigned line = 0;
+            int age = 0, lastFrame = -1, deadline = -1, bossState = 0;
+            bool active = false, available = false;
+            std::array<StoryLine, 4> lines;
+        } story;
+    } typingHud;
+    TypingModeController typing2;
+    std::string typingCharacters2;
+    bool typingCancel2 = false, typingWasReady2 = false;
+    decltype(typingPositions) typingPositions2;
+    decltype(typingCachedTargets) typingCachedTargets2;
+    decltype(typingPendingBoss) typingPendingBoss2;
+    decltype(typingHud) typingHud2;
+    unsigned typingGradeProgress2 = 0;
+    int typingPlayer = 0;
+    uint8_t typingItemKeys[2] = {};
+    TypingModeController& TypingController(int p) { return p == typingPlayer ? typing : typing2; }
+    const TypingModeController& TypingController(int p) const { return p == typingPlayer ? typing : typing2; }
+    void SwapTypingPlayer();
+    uint64_t typingEmperorAnswerWeight = 0;
+    struct TypingPreviousOptions {
+        bool valid = false, freePlay = false;
+        int difficulty = 2, lives = 3, creditSetting = -1, credits = 0;
+    } typingPreviousOptions;
+    int typingAttackDelay = 0;  // Reference 0x005E53D8, shared attack grace counter
+    int typingAttractDemo = -1; // Isolated preview: PC demo script variant, with native typing controls.
+    bool typingResultsActive = false;
+    struct TypingChapterChooser {
+        bool active = false;
+        int selected = 0, remaining = 720;
+        float rotation = 0, desired = 0;
+        uint32_t savedFlags = 0;
+    } typingChapterChooser;
     int frame = 0;
     TaskSystem ts;
     CrtRand rng;
@@ -600,6 +719,16 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     // While a skeleton node callback runs (AnimNode) it gets the node's model-view matrix (the original's matrix-stack
     // top, built from the view) and every draw is recorded as model-view (viewSpace).
     bool drawMv = false;
+    int nativeModelKind = -1, nativeModelNode = -1;
+    struct NativeModelDrawScope {
+        Impl& w;
+        int kind, node;
+        NativeModelDrawScope(Impl& wi, int nextKind, int nextNode = -1)
+            : w(wi), kind(wi.nativeModelKind), node(wi.nativeModelNode) {
+            w.nativeModelKind = nextKind; w.nativeModelNode = nextNode;
+        }
+        ~NativeModelDrawScope() { w.nativeModelKind = kind; w.nativeModelNode = node; }
+    };
     // Draw-only code that builds its matrices on cam.view (the matrix-stack top) like the original: every draw in the
     // scope is recorded as model-view
     struct DrawMvScope {
@@ -624,6 +753,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
 
     // ---------------------------------------------------------------- frame
     void StartStage(const WorldConfig& c);
+    void PresentTypingDrillGame();
     void Step();
     void BeginFrame();
     void StepResources(int steps);
@@ -646,13 +776,17 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         Task* t = ts.Create(f, std::make_unique<T>());
         T& d = t->As<T>();
         d.fn = origFn;
+        if (auto* actor = dynamic_cast<ActorTask*>(&d)) InitTypingSpawnOrigin(*actor);
         return &d;
     }
     const Motion* PropMotion(int id);
     const PropSkeleton& PropSkel(int type);
     const Motion* EnemyMotion(int id, int nodes);
     const Skeleton& EnemySkeleton(int kind);
-    int MotionTicks(int id) const { return exe.S16(0x004E07D0 + id * 2); }
+    int MotionTicks(int id) const {
+        if (typingReferenceActive) if (const Motion* motion = typingReference.ExtraMotion(id)) return motion->ticks;
+        return exe.S16(0x004E07D0 + id * 2);
+    }
     bool MotionResident(int motion);
     void MotionTouch(int motion);  // 0x00412F50: an animation fetch loads a non-resident motion's file at once
     void UpdateCamera();
@@ -682,6 +816,18 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     void TaskLockOn(Task& t);
     void TaskAttackOrder(Task& t);
     void TaskHit(Task& t);
+    void TypingStep();
+    void TypingPlayerStep();
+    void ResetTyping();
+    void RestoreTypingGameOptions();
+    bool SpawnTypingFlow(Task& task, SpawnTask& spawn);
+    void TaskTypingFlow(Task& task);
+    void InitTypingSpawnOrigin(ActorTask& actor);
+    void SetTypingSpawnOrigin(ActorTask& actor, const SpawnRecord& record);
+    uint32_t CivWord(uint32_t address) const;
+    float CivFloat(uint32_t address) const;
+    void TypingAttackTimer(int operation);  // TOTD 0x004AFFF0: clear/tick/reload/minimum
+    bool TypingAttackReady() const { return !cfg.portTyping || typingAttackDelay == 0; }
     void TaskSpawn(Task& t);      // actor type function (first run of a spawned actor)
     void TaskEffect(Task& t);
     void TaskSpark(Task& t);
@@ -810,6 +956,22 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     bool PlayersReady() override;  // op 0x32 (0x0045F900)
     int ShakeY() override { return shake; }
     void Spawn(uint32_t kind, uint32_t record) override;
+    void TypingWords(int group, int selector) override;
+    void TypingProps(bool enabled) override;
+    void TypingWordLimits(int maximum, int minimum) override;
+    void TypingSceneClear() override;
+    bool TypingChallenge(const EventOp& op) override;
+    void TypingCountdown(int instruction, int frames) override;
+    int TypingChallengeStatus() override;
+    void TypingClearActorSlots() override;
+    void TypingChallengeStep();
+    void TypingSprite(int rawId, float x, float y, float alpha = 1, float depth = .1f,
+                      uint32_t flags = 0xA, uint32_t source = 0);
+    void TypingSound(uint32_t id) override;
+    void TypingSoundRepeat(uint32_t id, int count, int interval) override;
+    void TypingVoice(int id) override;
+    int TypingPlayers() override;
+    int TypingModeId() override;
     void SoundRepeat(uint32_t id, int count, int interval) override;
     void Voice(int id) override;
     void Bgm(uint32_t a, uint32_t b, uint32_t c, uint32_t d) override;
@@ -930,7 +1092,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     int8_t komono40Count = 0;  // 0x007DCF18: kind-9 pieces broken (game type 1; reset by their ctor 0x004636A0, route 2 at two)
     WorldCarry MakeCarry() const;  // the carry from this world's own state (in-run stage switch)
     void ChainStage();             // mode 6 sub-state 1 after a stage end: the next stage inside the same run
-    bool LoadStageTable(int eventMode, std::string* error, int gameType = -1);  // Evt_LoadTable 0x00413160 + the stage sections
+    bool LoadStageTable(int eventMode, std::string* error, int gameType = -1, int typingMode = -1);  // Evt_LoadTable + prepared typing data
     void ApplyCarry();  // WorldConfig::carry: mode 6 sub-state 1 (0x0045FFF0) instead of sub-state 0 (0x0045FEF0)
     bool SpawnStage2(Task& t, SpawnTask& s);  // world_st2_actors.cpp: stage-2 actor types (first run)
     bool EnemyBehaviourSt2(EnemyTask& e);     // world_st2_enemy.cpp: behaviours first met in stage 2 (false: not ported)
@@ -1076,6 +1238,10 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         bool hordeStart = false;
         bool randomizerStart = false;  // Original mode with a randomized campaign
         int nightShiftPage = 0, nightShiftRow = 0, nightShiftTable = 0;
+        bool typingHome = false, menuSwitchTargetTyping = false;
+        int menuSwitchAge = -1;
+        bool typingOptionsLoaded = false;
+        int typingSoundEffect = 0, typingSoundMusic = 0;
         int nightShiftAimX = -1, nightShiftAimY = -1;
         struct Recording { uint32_t id; std::string name; };
         std::vector<Recording> extrasMusic, extrasEffects;
@@ -1090,6 +1256,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
         std::vector<PortHomeRoom> homeRooms;
         std::string homeRoomsStatus = "ROOMS UNAVAILABLE";
         std::vector<HordeLeaderboardEntry> hordeLeaderboard;
+        std::vector<SharedLeaderboardEntry> typingLeaderboard;
         bool nightShiftShared = false;
         int portLeaderboardRequests = 0, sharedTable = -1;
         std::vector<SharedLeaderboardEntry> sharedLeaderboard;
@@ -1223,6 +1390,15 @@ void WaterReset(World::Impl& w);
 void SpawnSplashRing(World::Impl& w, const float pos[3], float base);
 
 World::Impl* CurrentWorld();  // the world whose tasks are running
+bool TypingNativeProp(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss1(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss2(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss3(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss4(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss5(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+bool TypingBoss6(World::Impl&, ActorTask&, TypingTargetSpec&, bool complete);
+void TypingDeliver(ActorTask&, int node);
+float TypingDamage(ActorTask&, float base);
 void SetCurrentWorld(World::Impl* w);
 
 // Task trampoline for Impl member task functions.

@@ -12,7 +12,10 @@
 #include "game/model.h"
 #include "game/mstack.h"
 #include "game/prs.h"
+#include "game/sound_table.h"
 #include "game/world_internal.h"
+#include "game/typing_drill_stage_data.h"
+#include "game/world_typing_drill_game.h"
 #include "game/world_modes.h"
 #include "game/world_prototype.h"
 
@@ -72,6 +75,27 @@ struct Type33Task : WTask {
 
 }  // namespace
 
+// A break callback receives a word only when its original spawn path registered
+// a typing post. Identical type-0x44 props remain scenery.
+bool TypingNativeProp(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    if (dynamic_cast<HangingTask*>(&actor) || dynamic_cast<AnimatedTask*>(&actor)) return true;
+    auto* b = dynamic_cast<BreakableTask*>(&actor);
+    if (!b) return false;
+    if (b->typingFlags == 0 || b->typingRevision != 0 || !b->p.HitTarget() ||
+        (w.cfg.eventMode == 1 && w.runner->scene == 0x11 && w.runner->flags[0x28] == 0)) return true;
+    out.node = 1;
+    out.token = 0x740000u | static_cast<uint32_t>(b->p.subKind);
+    memcpy(out.view, b->viewPos, 12);
+    if (complete) {
+        // This casing normally consumes the first bullet. A complete word breaks
+        // the full prop through the same native break animation and item drop.
+        if (b->p.model == 0x19E8) b->p.model = -1;
+        TypingDeliver(*b, out.node);
+        b->typingStrike = false;
+    }
+    return true;
+}
+
 World::Impl* CurrentWorld() { return g_cur; }
 void SetCurrentWorld(World::Impl* w) { g_cur = w; }  // the front end (world_front.cpp) runs tasks outside Step()
 
@@ -121,6 +145,9 @@ WTask* World::Impl::CurrentTask() {
 
 WorldDraw* World::Impl::Draw(int model, const Mat4& world, uint8_t mode, float alpha, bool alt, int node, bool viewSpace,
                              bool cull) {
+    const int nativeModel = model;
+    if (cfg.portTyping && typingReferenceActive && nativeModelKind >= 0)
+        model = typingReference.NativeEnemyModel(nativeModelKind, node >= 0 ? node : nativeModelNode, model);
     if (model == 0) return nullptr;  // 0x00418560 / 0x004185A0 / 0x004185E0: id 0 draws nothing (only 0x0041EBB0(1.0))
     if (residency && !cull && model > 0 && model < static_cast<int>(modelLoaded.size()) && !modelLoaded[static_cast<size_t>(model)])
         return nullptr;  // Mdl_Draw 0x00418560: slot not loaded
@@ -130,6 +157,7 @@ WorldDraw* World::Impl::Draw(int model, const Mat4& world, uint8_t mode, float a
     }
     WorldDraw d;
     d.model = model;
+    if (model != nativeModel) d.skinModel = nativeModel;
     d.world = world;
     d.drawMode = mode;
     d.alpha = alpha;
@@ -148,7 +176,8 @@ WorldDraw* World::Impl::Draw(int model, const Mat4& world, uint8_t mode, float a
     d.cullFlip = CullFlipModel(exe, model) &&
                  (!residency || model >= static_cast<int>(modelLoaded.size()) || modelLoaded[static_cast<size_t>(model)] == 4);
     if (!modelEdits.empty()) {  // the model's data as the original has edited it in memory (0x0040F960)
-        auto it = modelEdits.find(model);
+        auto it = modelEdits.find(nativeModel);
+        if (it == modelEdits.end() && model != nativeModel) it = modelEdits.find(model);
         if (it != modelEdits.end()) d.edit = it->second;
     }
     draws.push_back(d);
@@ -169,15 +198,57 @@ void World::Impl::SoundCall(int kind, uint32_t id) {
         (kind == World::kPlayGameSound && ((id >> 28) == 2 || id == 0x80000002u))))
         RandomizerClearSubtitles(*this);
     if (kind == World::kPlayGameSound) id = RandomizerVoiceSound(*this, id);
+    if (kind == World::kPlayGameSound && cfg.portTyping && typingReferenceActive && !(id & kTypingSoundFlag)) {
+        uint32_t source = 0;
+        if (typingReference.NativeSound(id,&source)) id = source | kTypingSoundFlag;
+    }
     sounds.push_back({ id, CurrentSerial(), kind, gameMode, cfg.gameType });
     // the current BGM 0x009C8FB8: set by every BGM play (0x1xxxxxxx), cleared by
     // 0x80000000 and Snd_StopAll
     if (kind == World::kStopAll || (kind == World::kPlayGameSound && id == 0x80000000u)) currentBgm = 0;
-    else if (kind == World::kPlayGameSound && (id >> 28) == 1) currentBgm = id;
+    else if (kind == World::kPlayGameSound && ((id & ~kTypingSoundFlag) >> 28) == 1) currentBgm = id & ~kTypingSoundFlag;
 }
 void World::Impl::SoundRepeat(uint32_t id, int count, int interval) { SpawnSoundRepeat(id, count, interval); }  // 0x00435EE0 (world_st1b_boss.cpp)
-void World::Impl::Bgm(uint32_t, uint32_t, uint32_t c, uint32_t) { Sound(0x80000000u), Sound(c); }  // Snd_EntryBgm 0x0041D450
+void World::Impl::Bgm(uint32_t, uint32_t, uint32_t c, uint32_t) { TypingSound(0x80000000u); TypingSound(c); }  // Snd_EntryBgm 0x0041D450
 void World::Impl::Error(const std::string& what) { Note("event runner: " + what); }
+void World::Impl::TypingWords(int group, int selector) {
+    typing.setDynamicRank(rank);
+    typing.setChapter(cfg.eventMode + 1);
+    typingCachedTargets.clear();
+    typing.setWordSelection(group, selector);
+    // Source4B00F0 ->4B27E0 resets both player input text buffers together
+    // with the old words, before any newly assigned word accepts characters.
+    typingCharacters.clear();
+    typing2.setDynamicRank(rank); typing2.setChapter(cfg.eventMode + 1);
+    typing2.setWordSelection(group, selector);
+    typingCachedTargets2.clear(); typingCharacters2.clear();
+}
+void World::Impl::TypingWordLimits(int maximum, int minimum) {
+    typing.setWordLimits(maximum, minimum); typing2.setWordLimits(maximum, minimum);
+}
+void World::Impl::TypingProps(bool enabled) { typingPropsEnabled = enabled; }
+void World::Impl::TypingSceneClear() {
+    typing.originalSceneClear(); typing2.originalSceneClear();
+    typingPropsEnabled = false;
+    typing.cancelSelection();
+    typingCharacters.clear();
+    typingPendingBoss.clear();
+    typingCachedTargets.clear();
+    typing.syncTargets({});
+    typing2.cancelSelection(); typingCharacters2.clear(); typingPendingBoss2.clear();
+    typingCachedTargets2.clear(); typing2.syncTargets({});
+    // 0x004B1550 -> 0x0040B120: temporary difficulty rewards expire on the
+    // authored clear commands, rather than after a number of animation frames.
+    if (typingRankClears != 0 && --typingRankClears == 0) rank = typingSavedRank;
+}
+int World::Impl::TypingPlayers() {
+    int count = 0;
+    for (const auto& p : player) if (p.state == 0 || p.state == 3 || p.state == 4 || p.state == 5) ++count;
+    return count;
+}
+int World::Impl::TypingModeId() {
+    return cfg.typingOriginal ? 1 : 0;
+}
 void World::Impl::Env(const EventOp& op) {
     if (op.opcode == 0x17) return StartLightTask(op);  // 0x0045F2A0 (world_st2_misc.cpp)
 }
@@ -240,6 +311,8 @@ void World::Impl::StepResources(int steps) {
 // loaded flags 0x009A66AC that Mdl_Draw 0x00418560 tests)
 void World::Impl::ProcessRequest(const Request& r) {
     if (r.op == 0x54 || r.op == 0x55) {  // texture file load (type 6, 0x0041CCA0) / unload (type 7, 0x0041CD00)
+        if (typingReferenceActive && typingReference.Resource(r.arg, 1) && r.arg >= texFiles.size())
+            texFiles.resize(static_cast<size_t>(r.arg) + 1);
         if (r.arg < texFiles.size()) {
             if (r.op == 0x54) {
                 if (texFiles[r.arg] == 0) texFiles[r.arg] = 4;  // 0x0041C890: state 3 while loading, 4 at the end
@@ -272,12 +345,23 @@ void World::Impl::ProcessRequest(const Request& r) {
             else if (r.op == 0x51 && *s == 4) *s = 0;
         }
         if (r.op == 0x50) {  // the model's pol file (0x004E83B4[id]), for the port's texture prefetch
+            if (typingReferenceActive) {
+                const int file = typingReference.ModelFile(static_cast<int>(r.arg));
+                if (file >= 0) { polFileLoads.push_back(file); return; }
+            }
             uint16_t file = 0;
             if (exe.Read(0x004E83B4 + r.arg * 2, &file, 2)) polFileLoads.push_back(file);
         }
     } else if (r.op == 0x52 || r.op == 0x53) {
         const uint32_t file = r.arg;
         if (r.op == 0x52) polFileLoads.push_back(static_cast<int>(file));
+        if (typingReferenceActive) if (const auto* models = typingReference.PolModels(file)) {
+            for (int id : *models) if (uint8_t* s = slot(id)) {
+                if (r.op == 0x53) *s = 0;
+                else if (*s == 0) *s = 8;
+            }
+            return;
+        }
         const uint32_t ids = exe.U32(0x004E794C + file * 4);
         const int count = exe.S16(0x004E803C + file * 2);
         for (int i = 0; ids != 0 && i < count; ++i)
@@ -303,6 +387,8 @@ bool CullFlipModel(const ExeImage& exe, int model) {
 // 0x0041D510 too, so this is also the state after the boot.
 void World::Impl::ResetTexFiles() {
     texFiles.assign(0x1BD, 0);
+    if (typingReferenceActive) for (const auto& resource : typingReference.Resources())
+        if (resource.kind == 1 && resource.file >= texFiles.size()) texFiles.resize(static_cast<size_t>(resource.file) + 1);
     for (uint32_t f : { 1u, 0x147u, exe.U32(0x0057A384), exe.U32(0x0057A388) })
         if (f < texFiles.size()) texFiles[f] = 4;
 }
@@ -351,6 +437,7 @@ const std::vector<std::array<uint32_t, 8>>& World::Impl::InlineRecords(int id) {
 // file becomes resident when the queue loads it (op 0x56: 0x00412C10 / 0x00412D90) or on demand (MotionTouch), and
 // stops being resident at its release (op 0x57: 0x00412E40).
 bool World::Impl::MotionResident(int motion) {
+    if (typingReferenceActive && typingReference.ExtraMotion(motion)) return true;
     const int file = static_cast<int8_t>(exe.S16(0x004E2C40 + motion) & 0xFF);
     return file < 0 || loadedMotionFiles.count(file) != 0;
 }
@@ -359,6 +446,7 @@ bool World::Impl::MotionResident(int motion) {
 // whose state is not 2 has its whole file loaded at once (0x0041D860 queues it at the head after finishing the head
 // request, 0x0041D810 processes it). The props test the state before they animate, so only animations load on demand.
 void World::Impl::MotionTouch(int motion) {
+    if (typingReferenceActive && typingReference.ExtraMotion(motion)) return;
     const int file = static_cast<int8_t>(exe.S16(0x004E2C40 + motion) & 0xFF);
     if (file < 0 || loadedMotionFiles.count(file) != 0) return;
     loadedMotionFiles.insert(file);
@@ -380,7 +468,8 @@ const Motion* World::Impl::PropMotion(int id) {
     auto it = propMotions.find(id);
     if (it == propMotions.end()) {
         Motion m;
-        if (!LoadMotionById(exe, gameDir, id, m)) Note("prop motion " + std::to_string(id) + " not found");
+        if (typingReferenceActive && typingReference.ExtraMotion(id)) m = *typingReference.ExtraMotion(id);
+        else if (!LoadMotionById(exe, gameDir, id, m)) Note("prop motion " + std::to_string(id) + " not found");
         it = propMotions.emplace(id, std::move(m)).first;
     }
     return &it->second;
@@ -392,7 +481,12 @@ const Motion* World::Impl::EnemyMotion(int id, int nodes) {
     auto it = enemyMotions.find(key);
     if (it == enemyMotions.end()) {
         Motion found;
+        if (typingReferenceActive && typingReference.ExtraMotion(id)) {
+            found = *typingReference.ExtraMotion(id);
+            found.nodes = nodes;
+        }
         for (const MotionFileEntry& f : motionFiles) {
+            if (!found.data.empty()) break;
             if (std::find(f.motionIds.begin(), f.motionIds.end(), static_cast<int16_t>(id)) == f.motionIds.end()) continue;
             const std::vector<uint8_t> file = ReadAll(fs::path(gameDir) / "mot" / f.name);
             for (Motion& m : SplitMotionFile(exe, f, file, nodes))
@@ -523,6 +617,7 @@ void World::Impl::UpdateCamera() {
 // =====================================================================================================================
 
 void World::Impl::BeginFrame() {
+    if (cfg.portTyping) { hud.menuPanels.clear(); hud.menuText.clear(); }
     projCenterFrame[0] = projCenter[0];  // Proj_Setup 0x004184C0 at the frame start
     projCenterFrame[1] = projCenter[1];
     draws.clear();
@@ -547,6 +642,26 @@ void World::Impl::BeginFrame() {
 void World::Impl::StartStage(const WorldConfig& c) {
     prototype.reset();
     cfg = c;
+    typingChallenge = TypingChallengeCtl{};
+    typingPropsEnabled = false;
+    if (!cfg.carry.valid) { typingSavedRank = 0; typingRankClears = 0; }
+    if (!cfg.carry.valid) ResetTyping();
+    else {
+        typing.syncTargets({});
+        typing2.syncTargets({}); typingPositions2.clear(); typingCachedTargets2.clear();
+        typingPendingBoss2.clear(); typingCharacters2.clear(); typingCancel2 = false; typingWasReady2 = false;
+        typingPositions.clear();
+        typingCachedTargets.clear();
+        typingPendingBoss.clear();
+        typingCharacters.clear();
+        typingCancel = false;
+        ++typingEpoch;
+    }
+    if (cfg.portTyping && ((cfg.eventMode >= 0 && cfg.eventMode < 6)||cfg.eventMode==7)) {
+        typing.beginChapter();
+        typing2.beginChapter();
+        typingResultsActive = false;
+    }
     RandomizerStage(*this);  // roll before weapon effects and player bodies are initialized
     stageResults = {};
     horde.reset();  // port: a Horde game's state does not outlive its stage (HordeGameStart recreates it after this)
@@ -581,6 +696,7 @@ void World::Impl::StartStage(const WorldConfig& c) {
         // ---- 0x0045FEF0 (mode 6, sub-state 0): event mode 0 / scene 0 (tables loaded by Load), rank init
         // 0x00460770 (rank = 0x005679F4[difficulty], rank timer on), resets (0x009A5920, 0x009C89C0.., 0x009C8EC0..)
         rank = static_cast<int8_t>(exe.S16(0x005679F4 + cfg.difficulty) & 0xFF);
+        if (cfg.portTyping && !cfg.carry.valid) rank = cfg.eventMode == 0 ? 1 : 7;
         rankTimerOn = true;
         memset(komono40Intact, 1, sizeof(komono40Intact));  // 0x00463680
         subState = 1;  // Stage_Start runs with sub-state 1; 2 afterwards
@@ -606,7 +722,7 @@ void World::Impl::StartStage(const WorldConfig& c) {
     if (residency) {
         // HYPOTHESIS: the mode switch frees every model slot but common.bin's (0x0041D510 / 0x0041D540); Stage_Start
         // requests pol 0x26 (stage1.bin, event mode 0) and texture 0x17B, then flushes the queue (0x0041D970)
-        modelLoaded.assign(0x4000, 0);
+        modelLoaded.assign(typingReferenceActive ? 0x8000 : 0x4000, 0);
         ProcessRequest({ 0x52, 1 });
         if (cfg.eventMode == 0 || adv) ProcessRequest({ 0x52, 0x26 });
         if (cfg.gameType == 1 && modes) {  // game type 1: the players' weapon effects (0x009A2248 / 0x009A225C byte 1)
@@ -663,11 +779,18 @@ void World::Impl::StartStage(const WorldConfig& c) {
         EventRunner::Config rc;
         rc.gameMode = cfg.gameMode;
         rc.demoIndex = cfg.demoIndex;
+        if (cfg.portTyping && typingAttractDemo >= 0) {
+            rc.gameMode = 5;
+            rc.demoIndex = typingAttractDemo;
+        }
         rc.gameType = cfg.gameType;  // 0x009CA08C (world_modes*.cpp)
         rc.route = 0;    // 0x009C8E84 / 0x009C8E80: updated from the players before every VM run (TaskEvent)
         rc.players = 0;
         runner->camera.SetCameraBank(&cameraBank);
-        runner->Start(cfg.eventMode, cfg.scene, rc);
+        // The reference's ending VM is mode 11; native world mode 9 still
+        // owns the ending root/player lifecycle. Reference common mode 9 is
+        // the chapter-end halt, so it cannot be used as the ending VM.
+        runner->Start(typingReferenceActive && cfg.eventMode == 9 ? 11 : cfg.eventMode, cfg.scene, rc);
         if (cfg.gameType != 0) runner->globals[0x009CA08C] = static_cast<uint32_t>(cfg.gameType);  // GlobalInt readers
         // camera task init 0x00402260 -> 0x004021D0: Env_InitBlock 0x0041DBA0 on both env blocks (the env writes at
         // 0x00460250..0x0046032F, Environment::StageDefaults, did not run at any stage start of the captured game)
@@ -820,7 +943,14 @@ void World::Impl::Step() {
         // Game_UpdateInput 0x0040E4D0 (AUTORELOAD 0x007C17AC assumed off). The demo's gun records are written by its
         // auto-gun (0x00415710), so mode 5 skips the device part.
         InputFrame();
+        const bool wasPaused=paused;
         PauseFrame();  // 0x0040E500 (the pause toggle with the start button)
+        if(TypingDrillGameRunning(*this)) {
+            // PC40C410/40C430 exclude paused time and add five seconds on
+            // resuming, except scene19's airborne-coin exercise.
+            if(paused)++typingDrillGame.runStartFrame;
+            else if(wasPaused&&typingDrillGame.exercise!=5)typingDrillGame.runStartFrame-=300;
+        }
         if (!paused) Mode6Frame();  // Game_UpdateMode 0x004608A0 -> 0x0045FEE0 (skipped while paused)
     } else {
         // 0x00426800 sub-state 1 -> 0x004606D0: tasks, Game_UpdateRank 0x004607B0 (the rank timer 0x009C8A7C does not
@@ -867,6 +997,7 @@ void World::Impl::TaskEvent(Task& t) {
             if (runner->skippable) skip2230 = 0;
             break;
         case 0x4D:  // 0x0045EEC0: Game_SeedRandom 0x004157D0 (mode 5: only the first 0x4D after the stage start)
+            typingPropsEnabled = false;
             if (gameMode != 5 || !seededSinceStart) {
                 rng.Seed(GameRandomSeed(GameIsDemoMode(gameMode, subState), seedCounter));
                 seededSinceStart = true;
@@ -1085,6 +1216,7 @@ struct HitEntry {
 
 // Hit task 0x004044A0 -> 0x00404570
 void World::Impl::TaskHit(Task&) {
+    if (cfg.portTyping) TypingStep();
     for (int p = 0; p < 2; ++p) {
         hitFlag[p] = 0;
         Player& P = player[p];
@@ -1212,6 +1344,7 @@ void World::Impl::Spawn(uint32_t kind, uint32_t record) {
     if (tfn == fn::kEnemyCreate) {
         if (RandomizerSpawn(*this, kind, r)) return;
         EnemyTask* e = NewTask<EnemyTask>(Tramp<&Impl::TaskEnemy>, fn::kEnemyCreate);
+        SetTypingSpawnOrigin(*e, r);
         e->lock = &lockTargets[nextLockTarget++];
         e->flags34 = r.flags | 1;  // 0x00408970
         memcpy(e->pos, r.pos, 12);
@@ -1228,6 +1361,7 @@ void World::Impl::Spawn(uint32_t kind, uint32_t record) {
     }
     if (tfn == 0x0045CD60) {  // actor 0x18: an enemy riding the last vehicle (world_st3_vehicle.cpp)
         EnemyTask* e = SpawnVehicleEnemy(r);
+        SetTypingSpawnOrigin(*e, r);
         if (kind == 0x09) {
             e->anim.kind = static_cast<int16_t>(static_cast<int8_t>(r.params[0]));
             e->variant = static_cast<int8_t>(r.params[1]);
@@ -1236,6 +1370,7 @@ void World::Impl::Spawn(uint32_t kind, uint32_t record) {
     }
     if (tfn == 0x0048A3E0) {  // scripted civilian (world_civilian.cpp)
         CivTask* c = NewTask<CivTask>(Tramp<&Impl::TaskCivilian>, 0x0048A3E0);
+        SetTypingSpawnOrigin(*c, r);
         c->lock = &lockTargets[nextLockTarget++];
         c->flags34 = r.flags | 1;  // 0x00408970
         memcpy(c->pos, r.pos, 12);
@@ -1253,6 +1388,8 @@ void World::Impl::Spawn(uint32_t kind, uint32_t record) {
 // First run of a spawned (non-enemy) actor: the actor type function.
 void World::Impl::TaskSpawn(Task& t) {
     SpawnTask& s = t.As<SpawnTask>();
+    if (SpawnTypingDrillGame(*this,t,s)) return;
+    if (SpawnTypingFlow(t, s)) return;
     if (modes && SpawnModes(*this, t, s)) return;  // world_modes_boss.cpp: select screens 0x6C / 0x6D / 0x6E
     if (SpawnStory(*this, t, s)) return;           // world_modes_story.cpp: mode-11 title card, actor type 0x50
     if (SpawnStage6(t, s)) return;    // world_st6.cpp
@@ -1528,6 +1665,13 @@ bool World::Load(const std::string& gameDir, int eventMode, std::string* error) 
         return false;
     };
     if (!w.exe.Load((fs::path(gameDir) / "Hod2.exe").string())) return fail("cannot load Hod2.exe");
+    {
+        // An explicit path helps offline conversion/validation. Installed clients
+        // place the data-only bank next to their HOD2 data directory.
+        const char* reference = std::getenv("HOTD2_TYPING_REFERENCE");
+        std::string ignored;
+        w.typingReference.Load(reference && *reference ? reference : (fs::path(gameDir) / "typing_reference.bank").string(), &ignored, false);
+    }
     // comevtbl.bin + the stage table 0x004D1C7C[0x00579928[mode]] (Evt_LoadCommonTable 0x00413070 /
     // Evt_LoadTable 0x00413160)
     const std::vector<uint8_t> common = ReadAll(fs::path(gameDir) / "evt" / "comevtbl.bin");
@@ -1555,7 +1699,14 @@ bool World::Load(const std::string& gameDir, int eventMode, std::string* error) 
 }
 
 // Evt_LoadTable 0x00413160: the stage table 0x004D1C7C[0x00579928[mode]] and the stage's section objects
-bool World::Impl::LoadStageTable(int eventMode, std::string* error, int gameType) {
+bool World::Impl::LoadStageTable(int eventMode, std::string* error, int gameType, int typingMode) {
+    const bool wantsTyping = typingMode < 0 ? cfg.portTyping : typingMode != 0;
+    const bool prepared=wantsTyping&&((eventMode>=0&&eventMode<6)||eventMode==7||eventMode==9)&&typingReference.Available();
+    if(prepared) {
+        cameraBank.Load(exe,[&](const std::string& name){return ReadAll(fs::path(gameDir)/"cam"/name);});
+        if(!typingReference.ApplyStage(eventMode,mem,cameraBank,error))return false;
+        typingReferenceActive=true;
+    } else {
     const int tableIndex = static_cast<int>(exe.U32(0x00579928 + 4 * eventMode));
     std::string table = exe.CStr(exe.U32(0x004D1C7C + 4 * tableIndex));
     if (table.empty()) table = "st1evtbl.bin";
@@ -1564,10 +1715,25 @@ bool World::Impl::LoadStageTable(int eventMode, std::string* error, int gameType
         if (error) *error = "cannot read evt/" + table;
         return false;
     }
-    mem.Load(EventMemory::kStageBase, st);
+        if (typingReferenceActive) {
+            cameraBank.Load(exe, [&](const std::string& name) { return ReadAll(fs::path(gameDir) / "cam" / name); });
+            mem.Clear();
+            mem.Load(EventMemory::kCommonBase, ReadAll(fs::path(gameDir) / "evt" / "comevtbl.bin"));
+        }
+        typingReferenceActive = false;
+        mem.SetTypingDialect(false);
+        mem.Load(EventMemory::kStageBase, st);
+    }
+    propMotions.clear();
+    enemyMotions.clear();
     // Stage_SelectTables 0x004014C0: game type 1 (original mode) has its own section tables
     if (gameType < 0) gameType = frontEnd ? front.gameType : cfg.gameType;
-    sections.Load(exe, eventMode, gameType == 1);
+    if(prepared&&eventMode==7) {
+        if(!LoadTypingDrillSections(typingReference,sections)) {
+            if(error)*error="Prepared original Drill section geometry is incomplete";
+            return false;
+        }
+    } else sections.Load(exe, eventMode, gameType == 1);
     NoteSectionPolFiles();
     return true;
 }
@@ -1576,6 +1742,13 @@ bool World::Impl::LoadStageTable(int eventMode, std::string* error, int gameType
 // stage / title geometry is drawn from the first frame on, not loaded through the resource queue.
 void World::Impl::NoteSectionPolFiles() {
     for (const auto& [modelId, mode] : sections.objects) {
+        if(typingReferenceActive) {
+            const int preparedFile=typingReference.ModelFile(modelId);
+            if(preparedFile>=0) {
+                if(std::find(polFileLoads.begin(),polFileLoads.end(),preparedFile)==polFileLoads.end())polFileLoads.push_back(preparedFile);
+                continue;
+            }
+        }
         uint16_t file = 0;
         if (modelId > 0 && exe.Read(0x004E83B4 + static_cast<uint32_t>(modelId) * 2, &file, 2) &&
             std::find(polFileLoads.begin(), polFileLoads.end(), static_cast<int>(file)) == polFileLoads.end())
@@ -1584,10 +1757,12 @@ void World::Impl::NoteSectionPolFiles() {
 }
 
 bool World::StartStage(const WorldConfig& cfg, std::string* error) {
+    if(!(cfg.portTyping&&cfg.eventMode==7&&cfg.gameType==2))impl_->typingDrillGame={};
+    impl_->typingAttractDemo = -1;
     // The in-game network lobby starts through this public entry point. TitleFrame replaced the
     // section table installed by Load(); an attract demo may also have replaced the event table.
     // Mirror GameStartFrame's Evt_LoadTable / Stage_SelectTables before creating the stage tasks.
-    if (!impl_->LoadStageTable(cfg.eventMode, error, cfg.gameType)) return false;
+    if (!impl_->LoadStageTable(cfg.eventMode, error, cfg.gameType, cfg.portTyping ? 1 : 0)) return false;
     if (impl_->frontEnd) impl_->front.gameType = cfg.gameType;
     impl_->StartStage(cfg);
     return true;
@@ -1595,9 +1770,14 @@ bool World::StartStage(const WorldConfig& cfg, std::string* error) {
 bool World::StartNetworkGame(const WorldConfig& cfg, std::string* error) {
     World fresh;
     if (!fresh.Load(impl_->gameDir, cfg.eventMode, error)) return false;
+    if ((cfg.portTyping || cfg.portTypingRoom) && !fresh.impl_->typingReference.Available()) {
+        if (error) *error = "This Typing room requires the prepared Typing of the Dead bank.";
+        return false;
+    }
     WorldConfig boot = cfg;
     boot.startFrame = 0;
     fresh.Boot(boot);
+    fresh.impl_->front.typingHome=cfg.portTypingRoom;
     if (cfg.portNetworkRoom) {
         auto& w = *fresh.impl_;
         w.frame = cfg.startFrame - 1;
@@ -1709,6 +1889,9 @@ void World::RequestTitle() {
 }
 void World::SetInput(int player, const WorldInput& in) {
     if (player < 0 || player > 1) return;
+    if (in.typingCancel) PortTypingInput({},true,player);
+    if (!in.typingText.empty()) PortTypingInput(in.typingText,false,player);
+    if (impl_->cfg.portTyping) impl_->typingItemKeys[player] |= in.typingItems & 15;
     impl_->input[player] = in;
     impl_->inputEdge[player] = true;
 }

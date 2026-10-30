@@ -279,8 +279,34 @@ void ValuesAndActions() {
     Require(!display.showCrosshairs && sounds == std::vector<uint32_t>{game::kOptionSelectSound},
             "local gameplay sight visibility remains editable during a run");
     menu.FocusRow(Menu::kBlood);
-    press(8);
-    Require(!display.redBlood, "local blood appearance can switch from default red to green during a run");
+    Require(display.bloodColor == port::BloodColor::Red, "local blood appearance defaults to red");
+    for (uint32_t key : {8u, 0x80u}) {
+        for (const auto [color, label] : {std::pair{port::BloodColor::Green, "Green"}, {port::BloodColor::Blue, "Blue"},
+                                         {port::BloodColor::Purple, "Purple"}, {port::BloodColor::Red, "Red"}}) {
+            press(key);
+            Require(display.bloodColor == color && Menu::ValueText(display, Menu::kBlood) == label &&
+                        sounds == std::vector<uint32_t>{game::kOptionSelectSound},
+                    "confirm and Right cycle every blood color forward with its label and one select sound during a run");
+            game::WorldHud bloodHud;
+            menu.ModernHud(display, bloodHud);
+            Require(Text(bloodHud, label), "modern options show the selected blood color");
+        }
+    }
+    for (auto color : {port::BloodColor::Purple, port::BloodColor::Blue, port::BloodColor::Green, port::BloodColor::Red}) {
+        press(0x40);
+        Require(display.bloodColor == color && sounds == std::vector<uint32_t>{game::kOptionSelectSound},
+                "Left cycles all blood colors backward and wraps from red to purple");
+    }
+    const float bloodY = Top(menu, Menu::kBlood) + 12;
+    sounds.clear();
+    menu.Update(Point(360, bloodY, true), display, sounds);
+    Require(display.bloodColor == port::BloodColor::Purple, "pointer left arrow wraps red to purple");
+    menu.Update(Point(600, bloodY, true), display, sounds);
+    Require(display.bloodColor == port::BloodColor::Red, "pointer right arrow wraps purple to red");
+    auto reloadBlood = Point(500, bloodY);
+    reloadBlood.reload = true;
+    menu.Update(reloadBlood, display, sounds);
+    Require(display.bloodColor == port::BloodColor::Purple, "reload cycles blood backward during a run");
     menu.SetPage(Menu::kDevices);
     for (const auto [row, action] : {std::pair{Menu::kLightguns, Menu::DeviceAction::Lightguns},
                                    {Menu::kWiiRemotes, Menu::DeviceAction::WiiRemotes}}) {
@@ -303,7 +329,7 @@ void ValuesAndActions() {
     press(8);
     Require(menu.TakeGraphicsReset() && display.renderScale == play::DisplaySettings{}.renderScale,
             "graphics reset restores rendering defaults");
-    Require(!display.redBlood && !display.showCrosshairs && !display.nightShift,
+    Require(display.bloodColor == port::BloodColor::Purple && !display.showCrosshairs && !display.nightShift,
             "graphics reset preserves Gameplay cosmetics and chosen menu theme");
     values.gameplayEditable = true;
     menu.SetOptionValues(values);

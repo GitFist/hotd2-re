@@ -494,7 +494,7 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
         case kRender:
             return std::to_string(d.renderScale) + "x";
         case kBlood:
-            return d.redBlood ? "Red" : "Green";
+            return port::BloodColorLabel(d.bloodColor);
         case kInteger:
             return OnOff(d.integerScale);
         case kPreset:
@@ -636,7 +636,7 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
             d.viewport = Wrap(d.viewport + delta, 5);
             break;
         case kBlood:
-            if (delta % 2) d.redBlood = !d.redBlood;
+            d.bloodColor = static_cast<port::BloodColor>(Wrap(static_cast<int>(d.bloodColor) + delta, 4));
             break;
         case kCrt:
             d.crt = Wrap(d.crt + delta, 4);
@@ -1043,10 +1043,11 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
                 if (resetGameplayConfirm_) {
                     if (optionValues_.gameplayEditable) gameplayReset_ = true;
                 } else {
-                    const bool nightShift = d.nightShift, blood = d.redBlood, crosshairs = d.showCrosshairs;
+                    const bool nightShift = d.nightShift, crosshairs = d.showCrosshairs;
+                    const auto blood = d.bloodColor;
                     d = DisplaySettings{};
                     d.nightShift = nightShift;
-                    d.redBlood = blood;
+                    d.bloodColor = blood;
                     d.showCrosshairs = crosshairs;
                     graphicsReset_ = true;  // acknowledge and persist even if already at defaults
                     status_ = "Graphics defaults restored. Restart may be required.";

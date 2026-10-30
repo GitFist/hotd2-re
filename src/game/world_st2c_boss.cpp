@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "game/mstack.h"
+#include "game/typing_boss_rules.h"
 #include "game/world_internal.h"
 
 namespace game {
@@ -98,7 +99,29 @@ struct Boss2Task : EnemyTask {
     // 0x00476AD0's foot points (locals: node 15 / node 12 * camera * T(0, -1.25, 0)); the foot globals 0x009A3500 are
     // World::Impl::st2Feet (actor type 0x15's rafts)
     float footA[3] = {}, footB[3] = {};
+    int typingSelector = 700, typingInterlude = 0, typingWalkChoice = 0;
+    float typingInterludeStep[3] = {};
 };
+
+// Reference5B3140: three open/closed delays followed by the two model-frame
+// rates, indexed by the live typing rank rather than the gun aggression row.
+struct TypingChestRow { int open[3], closed[3]; float opening, closing; };
+constexpr TypingChestRow kTypingChest[16] = {
+    {{600,-1,-1},{30,0,0},1,-1}, {{600,-1,-1},{30,0,0},1,-1},
+    {{600,-1,-1},{30,0,0},1,-1}, {{600,-1,-1},{30,0,0},1,-1},
+    {{120,140,-1},{35,30,0},2,-2}, {{120,130,-1},{40,40,0},2,-2},
+    {{120,120,-1},{45,45,0},2,-2}, {{120,110,-1},{50,50,0},3,-3},
+    {{120,100,-1},{55,55,0},3,-3}, {{120,90,-1},{60,60,0},3,-3},
+    {{115,85,-1},{65,65,0},4,-4}, {{110,80,-1},{70,70,0},4,-4},
+    {{105,75,-1},{75,75,0},4,-4}, {{100,70,-1},{80,80,0},5,-5},
+    {{95,65,-1},{85,85,0},5,-5}, {{90,60,-1},{90,90,0},5,-5}
+};
+
+void BossWords(World::Impl& w, Boss2Task& b, int selector = -1) {
+    if (!w.typingReferenceActive) return;
+    if (selector >= 0) b.typingSelector = selector;
+    w.TypingWords(0, b.typingSelector); // Source4B0560 reposts the current selection.
+}
 
 void NoNode(World::Impl&, EnemyTask&, int, const Mat4&) {}  // node callback 0x0041EBB0
 void NoPostRoot(World::Impl&, EnemyTask&) {}               // 0x00420810
@@ -109,7 +132,11 @@ int MotionOfRow(const World::Impl& w, int row) {  // *(s16 *)0x00596408[row]
 
 int Ticks(const World::Impl& w, const EnemyTask& e) { return w.MotionTicks(e.anim.motion[0]); }
 
-float Thr(const World::Impl& w, int phase) { return F32(w.exe, 0x00596670 + static_cast<uint32_t>(phase) * 4); }
+float Thr(const World::Impl& w, int phase) {
+    if (w.typingReferenceActive && (phase == 0 || phase == 1)) return .45f; // Source5B32D0.
+    if (w.typingReferenceActive && phase == 3) return .5f;
+    return F32(w.exe, 0x00596670 + static_cast<uint32_t>(phase) * 4);
+}
 
 // (float)hp <= (float)hpMax * thr[phase]
 bool BelowPhase(const World::Impl& w, const Boss2Task& b) {
@@ -270,39 +297,41 @@ void ChestHit(World::Impl& w, Boss2Task& b, int node, int p) {
         mx::Translate(m, 0.0f, 4.0f, 1.0f);
         float v[3];
         mx::GetTranslation(m, v);
-        if (!ShotHitsSphere(w.player[p].ray, v, 3.5f)) {  // 0x004062A0
+        if (!b.typingStrike && !ShotHitsSphere(w.player[p].ray, v, 3.5f)) {  // 0x004062A0
             Spark(w, b, node, p);
             return;
         }
     }
     const uint32_t row = 0x00596480 + static_cast<uint32_t>(c.m88 - c.m8A) * 8;
     const int maxYaw = w.exe.S16(row), rotX = w.exe.S16(row + 2), minP = w.exe.S16(row + 4), maxP = w.exe.S16(row + 6);
-    if (maxYaw == 0) {
+    if (maxYaw == 0 && !b.typingStrike) {
         Spark(w, b, node, p);
         return;
     }
-    Mat4 m = NodeTimesCamera(w, b, 1);  // 0x004A9230(camera) * node 1
-    mx::Translate(m, 0.0f, 3.0f, 0.0f);
-    float ctr[3];
-    mx::GetTranslation(m, ctr);
-    float o[3], d[3];
-    WorldRay(w, p, o, d);
-    const float s[3] = { d[0] + o[0], d[1] + o[1], d[2] + o[2] };
-    float A[3] = {}, B[3] = {};
-    if (LineSphere(5.5f, ctr, o, s, A, B) == 0) w.Note("stage-2 boss chest: ray misses the 5.5 sphere (stack values used)");
-    const float a0 = o[2] - A[2], a1 = o[1] - A[1], a2 = o[0] - A[0];
-    const float b0 = o[2] - B[2], b1 = o[1] - B[1], b2 = o[0] - B[0];
-    mx::RotX(m, rotX);
-    const Mat4 inv = mx::Inverse(m);  // 0x004A8D20(0)
-    float l[3];
-    if (std::sqrt((b0 * b0 + b1 * b1) + b2 * b2) < std::sqrt((a0 * a0 + a1 * a1) + a2 * a2)) mx::Transform(inv, B, l);
-    else mx::Transform(inv, A, l);
-    const int pitch = AngleOf(-l[1], l[2]);
-    int yaw = AngleOf(l[0], l[2]);
-    if (yaw < 0) yaw = -yaw;
-    if (!(yaw <= maxYaw && minP <= pitch && pitch <= maxP)) {
-        Spark(w, b, node, p);
-        return;
+    if (!b.typingStrike) {
+        Mat4 m = NodeTimesCamera(w, b, 1);  // 0x004A9230(camera) * node 1
+        mx::Translate(m, 0.0f, 3.0f, 0.0f);
+        float ctr[3];
+        mx::GetTranslation(m, ctr);
+        float o[3], d[3];
+        WorldRay(w, p, o, d);
+        const float s[3] = { d[0] + o[0], d[1] + o[1], d[2] + o[2] };
+        float A[3] = {}, B[3] = {};
+        if (LineSphere(5.5f, ctr, o, s, A, B) == 0) w.Note("stage-2 boss chest: ray misses the 5.5 sphere (stack values used)");
+        const float a0 = o[2] - A[2], a1 = o[1] - A[1], a2 = o[0] - A[0];
+        const float b0 = o[2] - B[2], b1 = o[1] - B[1], b2 = o[0] - B[0];
+        mx::RotX(m, rotX);
+        const Mat4 inv = mx::Inverse(m);  // 0x004A8D20(0)
+        float l[3];
+        if (std::sqrt((b0 * b0 + b1 * b1) + b2 * b2) < std::sqrt((a0 * a0 + a1 * a1) + a2 * a2)) mx::Transform(inv, B, l);
+        else mx::Transform(inv, A, l);
+        const int pitch = AngleOf(-l[1], l[2]);
+        int yaw = AngleOf(l[0], l[2]);
+        if (yaw < 0) yaw = -yaw;
+        if (!(yaw <= maxYaw && minP <= pitch && pitch <= maxP)) {
+            Spark(w, b, node, p);
+            return;
+        }
     }
     if (!(b.flags34 & 0x4000000)) {
         float dmg = static_cast<float>(static_cast<int8_t>(U8(w.exe, 0x00596697 + static_cast<uint32_t>(w.players) +
@@ -311,6 +340,12 @@ void ChestHit(World::Impl& w, Boss2Task& b, int node, int p) {
         if (w.runner->cfg.gameType == 1 && ItemDamage(w, p, &factor, &boost))  // player +0xC: -1 doubles, else x factor
             dmg = factor == -1.0f ? dmg + dmg : dmg * factor;
         if (!(dmg <= F32(w.exe, 0x0055E1B4))) dmg = F32(w.exe, 0x0055E1B4);
+        if (b.typingStrike) {
+            if (w.cfg.portTyping) {
+                b.typingStrike = false;
+                dmg = float(TypingHierophantWordDamage());
+            } else dmg = TypingDamage(b, dmg);
+        }
         b.hp = static_cast<int16_t>(static_cast<int>(static_cast<float>(b.hp) - dmg));
         ++c.hits;
         w.Sound(0x316A9);
@@ -319,6 +354,7 @@ void ChestHit(World::Impl& w, Boss2Task& b, int node, int p) {
             b.flags34 = (b.flags34 & ~0x2000u) | 0x4000000u;
             --w.liveEnemies;
             w.AddScore(p, 0x5DC);
+            if (w.cfg.portTyping) w.TypingController(p).addBasePoints(550);
             BossRecords(w);  // 0x00425F40: boss-mode (game type 3) records (world_modes_boss.cpp)
         } else {
             w.bossBar = static_cast<float>(b.hp) / static_cast<float>(b.hpMax);
@@ -341,8 +377,10 @@ void ChestHit(World::Impl& w, Boss2Task& b, int node, int p) {
         if (!fall) c.radius = 6.0f;
         w.Sound(0x1117A9);
     }
-    c.row94 = static_cast<int16_t>(c.row94 + 2);
-    if (8 <= c.row94) c.row94 = 7;
+    if (!w.typingReferenceActive) {
+        c.row94 = static_cast<int16_t>(c.row94 + 2);
+        if (8 <= c.row94) c.row94 = 7;
+    }
 }
 
 // 0x00476270: this frame's hits (players in random order when both hit), node 1 -> 0x004763E0, else a spark
@@ -504,7 +542,28 @@ void DrawBoss(World::Impl& w, Boss2Task& b) {
         }
     }
     // chest model +0x88 (opening frames 0x2EE..0x315)
-    if (c.m8E != 0) {
+    if (w.typingReferenceActive) {
+        // Source467FE9..468139: the word stays visible while the chest is
+        // closed (typing flag10000); the controller cannot accept its input.
+        if (c.m8E != 0) --c.m8E;
+        else {
+            const auto& row = kTypingChest[std::clamp(w.rank, 0, 15)];
+            const int column = std::clamp<int>(c.row94, 0, 2);
+            c.m88 = static_cast<int16_t>(static_cast<int>(float(c.m88) + c.m90));
+            if (c.m88 >= c.m8C) {
+                b.typingFlags &= ~0x10000u;
+                c.m88 = c.m8C;
+                c.m8E = static_cast<int16_t>(row.open[column]);
+                c.m90 = row.closing;
+            } else if (c.m88 <= c.m8A) {
+                b.typingFlags |= 0x10000u;
+                c.m88 = c.m8A;
+                c.m8E = static_cast<int16_t>(row.closed[column]);
+                c.m90 = row.opening;
+                c.row94 = static_cast<int16_t>(std::min(2, column + 1));
+            }
+        }
+    } else if (c.m8E != 0) {
         if (b.flags34 & 0x100) {
             if (c.m88 != c.m8A) c.m8E = 0;
         } else if (0 <= c.m8E && c.m8E <= 0x78) {
@@ -528,13 +587,14 @@ void DrawBoss(World::Impl& w, Boss2Task& b) {
             c.m90 = F32(w.exe, r + 4);
         }
     }
-    if (c.m90 < 1.0f) {
+    if (!w.typingReferenceActive && c.m90 < 1.0f) {
         if (!(c.m90 < 0.0f)) c.m90 = 1.0f;
         else if (c.m90 < -1.0f) c.m90 = -1.0f;
-    } else if (c.m90 < -1.0f && c.m90 <= 0.0f) {
+    } else if (!w.typingReferenceActive && c.m90 < -1.0f && c.m90 <= 0.0f) {
         c.m90 = -1.0f;
     }
     if (b.anim.drawFlags & 1) {
+        World::Impl::NativeModelDrawScope modelScope(w,b.anim.kind);
         // model-view draws on top of T(0, lift, 0): nodes 1..9 (node 1 with +0x7C / +0x88), then each leg rebuilt from
         // its upper node: RotY(yaw) RotX(pitch) -> upper; T(0, -8.432, 0) RotX(bend + knee) -> lower; T(0, -9.514, 0)
         // gives the foot node's position (its rotation stays the animated one)
@@ -598,6 +658,7 @@ void Phases(World::Impl& w, Boss2Task& b) {
             c.state = 10;
             c.sub = 0;
             c.phase = 1;
+            BossWords(w, b, 350);
         }
         return;
     case 3: case 5: case 6:
@@ -605,6 +666,8 @@ void Phases(World::Impl& w, Boss2Task& b) {
             c.state = 6;
             c.sub = 0;
             c.phase = c.phase == 3 ? 4 : c.phase == 5 ? 6 : 7;
+            if (c.phase == 4) BossWords(w, b, 350);
+            if (w.typingReferenceActive && c.phase == 7) b.typingFlags &= ~0x40u;
             c.flags |= 1;
             c.c9C = 1;
         }
@@ -614,6 +677,7 @@ void Phases(World::Impl& w, Boss2Task& b) {
             c.state = 6;
             c.sub = 0;
             c.phase = 9;
+            BossWords(w, b, 500);
             c.c9C = 0;
         }
         return;
@@ -702,6 +766,95 @@ void LocalSaved(const Boss2Task& b, float out[3]) {
 void TurnHome(World::Impl& w, Boss2Task& b, float k) {
     const Boss2Ctl& c = b.c;
     TurnTo(w, b, (c.saved[0] - c.dir[0] * k) - b.pos[0], (c.saved[2] - c.dir[2] * k) - b.pos[2], 0x200);
+}
+
+void TypingWalk(World::Impl& w, Boss2Task& b) {
+    // Source469120: approach, back away to the saved point, then pick the
+    // authored attack. The gun game's two-state walk omits this retreat.
+    auto& c = b.c;
+    static constexpr int approachChance[16] = {100,95,90,85,80,75,70,65,60,50,40,30,20,10,10,10};
+    const int rank = std::clamp(w.rank, 0, 15);
+    const bool basePhase = c.phase == 0 || c.phase == 3 || c.phase == 8;
+    const auto motion = [&](int row) {
+        c.row = static_cast<int16_t>(row);
+        w.AnimBlendTo(b, MotionOfRow(w, row), 0, 10);
+    };
+    const auto turn = [&] { TurnTo(w,b,b.pos[0]-w.playerPos[0],b.pos[2]-w.playerPos[2],0x200); };
+    const auto nearAttack = [&] {
+        const float dx = b.pos[0]-w.playerPos[0], dz = b.pos[2]-w.playerPos[2];
+        const float distance = std::sqrt(dx*dx+dz*dz);
+        if (basePhase) return distance < 55.0f;
+        if (c.phase != 2 && c.phase != 9 && c.phase != 5 && c.phase != 6 && c.phase != 7) return false;
+        return distance < 135.0f && std::abs(LocalAngle(w,b,dx,dz)) < 0x2000;
+    };
+    if (c.sub == 0) {
+        b.typingWalkChoice = w.Rand(0x00469143)%100;
+        c.row94 = 0;
+        if (c.m88 == c.m8C) c.m8E = static_cast<int16_t>(kTypingChest[rank].open[0]);
+        if (basePhase) b.typingFlags &= ~0x400u;
+        c.sub = 1;
+    }
+    if (c.sub == 1) {
+        int row = 5;
+        if (b.typingWalkChoice < approachChance[rank]) {
+            if ((Thr(w,c.phase)+1.0f)*float(b.hpMax)*.5f < float(b.hp)) row = 2;
+            else row = c.level == 15 ? 4 : c.level == 0 ? 0 : c.level < 3 ? 3 : 5;
+        }
+        motion(row);
+        c.sub = 2;
+    }
+    if (c.sub == 2) {
+        turn();
+        if (Wall(b.pos,c.corner[0],c.corner[1],15.0f)) Wall(b.pos,c.corner[2],c.corner[3],15.0f);
+        if (nearAttack()) { motion(basePhase ? 0x1A : 0x19); c.sub = 3; }
+        return;
+    }
+    if (c.sub == 3) {
+        float local[3];
+        LocalSaved(b,local);
+        if (local[2] >= 3.0f) { TurnHome(w,b,50.0f); return; }
+        if (basePhase && c.m8E > -1) { b.anim.tick[0] = 0; c.sub = 1; return; }
+        motion(b.typingWalkChoice < approachChance[rank] ? 2 : 5);
+        c.sub = 4;
+        return;
+    }
+    if (c.sub == 4) {
+        turn();
+        if (nearAttack()) {
+            c.state = basePhase ? 8 : (c.phase == 2 || c.phase == 9) ? 9 : 12;
+            c.sub = 0;
+            PickTarget(w,b);
+        }
+    }
+}
+
+void TypingInterlude(World::Impl& w, Boss2Task& b) {
+    // Source424CB0/424E90: 180 calls, with 30-frame lighting fades around
+    // the four original instruction glyphs. Boss Mode starts at frame180.
+    auto& c = b.c;
+    if (c.sub == 0) {
+        c.row = 8;
+        w.AnimBlendTo(b,MotionOfRow(w,8),0,10);
+        b.typingInterlude = w.cfg.gameType == 3 ? 180 : 0;
+        for (int i=0;i<3;++i) b.typingInterludeStep[i] = (w.env.lightColor[i]-.4f)*(1.0f/30.0f);
+        c.sub = 1;
+        return;
+    }
+    const int frame = b.typingInterlude;
+    if (w.cfg.gameType != 3) {
+        if (frame < 30 || frame > 150)
+            for (int i=0;i<3;++i) w.env.lightColor[i] += (frame < 30 ? -1.0f : 1.0f)*b.typingInterludeStep[i];
+        else {
+            if (frame == 30) w.TypingSound(0x436A9);
+            for (int i=0;i<4;++i) w.TypingSprite(0xBE0+i,128.0f*float(i+1),334,1,.1f,0xA,0x00424D30);
+        }
+    }
+    if (++b.typingInterlude >= 180) {
+        c.row = 0xC;
+        w.AnimBlendTo(b,MotionOfRow(w,0xC),0,10);
+        c.state = 5; c.sub = 0; c.phase = 2;
+        b.flags34 |= 0x10000000u;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -974,6 +1127,10 @@ void St8(World::Impl& w, Boss2Task& b) {  // 0x00478EE0: swipe (row 0x15), Playe
         return;
     }
     const int t = b.anim.tick[0];
+    if (w.typingReferenceActive && t > 0x37) {
+        c.m8E = c.m88 == c.m8A ? 1 : 0;
+        b.typingFlags |= 0x400u; // Source469D40: the swipe's word window has closed.
+    }
     if (0x1D < t && t < 0x38) {
         if (w.route == 2) {
             if (b.target == 0) b.rot[1] -= 0x1C;
@@ -1011,6 +1168,7 @@ void StJump(World::Impl& w, Boss2Task& b, bool twelve) {
             b.flags34 &= ~0x100u;
         }
         ZeroVel(b);
+        BossWords(w,b); // Source469E38/46A708 starts a fresh phrase for the leap.
         ++c.sub;
         [[fallthrough]];
     case 1: {
@@ -1022,6 +1180,13 @@ void StJump(World::Impl& w, Boss2Task& b, bool twelve) {
             float k = F32(w.exe, 0x0055D2A4);
             if (!twelve && c.phase == 9) k = F32(w.exe, 0x005691A8);
             JumpAt(w, b, k);
+            if (w.typingReferenceActive) {
+                static constexpr float speed[16] = {.4f,.4f,.41f,.42f,.43f,.43f,.44f,.44f,.45f,.46f,.48f,.52f,.54f,.56f,.58f,.58f};
+                const float scale = speed[std::clamp(w.rank,0,15)];
+                for (float& velocity : b.vel) velocity *= scale;
+                b.acc[1] *= scale;
+                b.typingFlags &= ~0x400u;
+            }
             w.Sound(0x2A16A9);
             ++c.sub;
         }
@@ -1047,6 +1212,7 @@ void StJump(World::Impl& w, Boss2Task& b, bool twelve) {
             b.vel[2] = b.vel[2] * k;
             b.acc[1] = 0;
             c.c9C = 10;
+            if (w.typingReferenceActive) { b.typingFlags |= 0x400u; BossWords(w,b); }
             if (--c.row94 < 0) c.row94 = 0;
             ++c.sub;
         }
@@ -1246,8 +1412,11 @@ void St10(World::Impl& w, Boss2Task& b) {  // 0x00479530: back to the start, thr
 
 void St11(World::Impl& w, Boss2Task& b) {  // 0x00479BE0: in the water: calls, camera 0x6A / 0x6B, then state 13
     Boss2Ctl& c = b.c;
+    if (w.typingReferenceActive && c.sub >= 3 && c.sub <= 10)
+        for (int i=0;i<4;++i) w.TypingSprite(0xBE0+i,128.0f*float(i+1),334,1,.1f,0xA,0x0046A386);
     switch (c.sub) {
     case 0:
+        if (w.typingReferenceActive) { b.typingFlags |= 0x400u; BossWords(w,b); }
         w.AnimBlendTo(b, 0x23, 0, 10);
         b.flags34 &= ~0x4000u;
         c.c9C = 3;
@@ -1262,11 +1431,10 @@ void St11(World::Impl& w, Boss2Task& b) {  // 0x00479BE0: in the water: calls, c
         }
         return;
     case 2:
-        if (w.runner->camera.camId == 0x6A && w.runner->camera.tick == 0x5F) {
+        if (w.runner->camera.camId == (w.typingReferenceActive ? 0x407A : 0x6A) && w.runner->camera.tick == 0x5F) {
             b.flags34 &= 0xFFFEFEFFu;
-            c.m8E = 0;
-            c.cA8 = 0x1E;
-            c.sub = 4;
+            if (!w.typingReferenceActive) { c.m8E = 0; c.cA8 = 0x1E; }
+            c.sub = w.typingReferenceActive ? 7 : 4; // Source46A4A6 skips the gun-only fish wave.
         }
         return;
     case 3:
@@ -1304,7 +1472,7 @@ void St11(World::Impl& w, Boss2Task& b) {  // 0x00479BE0: in the water: calls, c
             if (0xF < ++c.level) c.level = 0xF;
             c.cAC = 0;
         }
-        if (w.attackers == 1 && 0 < w.players) {
+        if (w.typingReferenceActive || (w.attackers == 1 && 0 < w.players)) {
             w.AnimBlendTo(b, 0x2A, 0, 10);
             c.sub = 9;
             c.c9C = w.Rand(0x0047A19A) & 1;
@@ -1328,10 +1496,11 @@ void St11(World::Impl& w, Boss2Task& b) {  // 0x00479BE0: in the water: calls, c
         }
         return;
     case 11:
-        if (w.runner->camera.camId == 0x6B && w.runner->camera.tick == 100) {
+        if (w.runner->camera.camId == (w.typingReferenceActive ? 0x407B : 0x6B) && w.runner->camera.tick == 100) {
             c.state = 0xD;
             c.sub = 0;
             c.phase = 5;
+            if (w.typingReferenceActive) b.typingFlags &= ~0x400u;
         }
         return;
     default:
@@ -1342,6 +1511,7 @@ void St11(World::Impl& w, Boss2Task& b) {  // 0x00479BE0: in the water: calls, c
 void St13(World::Impl& w, Boss2Task& b) {  // 0x0047A7C0: comes out of the water beside the arena (motion 0x38 / 0x39)
     Boss2Ctl& c = b.c;
     if (c.sub == 0) {
+        if (w.typingReferenceActive) b.typingFlags |= 0x400u;
         const float mid = (c.corner[2][0] + c.corner[1][0]) * F32(w.exe, 0x004C43AC);
         if (c.c9C == 0) {
             w.AnimSetMotion(b, 0x38);
@@ -1410,6 +1580,7 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
         }
         if (b.vel[1] < 0.0f) {
             b.flags34 &= 0xFFFF9EFFu;
+            if (w.typingReferenceActive) b.typingFlags &= ~0x400u;
             const int r = w.Rand(0x0047AC8F) & 3;
             c.m8E = static_cast<int16_t>(r * 8 + 1);
             ++c.sub;
@@ -1432,6 +1603,10 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
             b.vel[2] = b.vel[2] * k;
             b.acc[1] = 0;
             c.c9C = 10;
+            if (w.typingReferenceActive) {
+                b.typingFlags = (b.typingFlags & ~0x40u) | 0x400u;
+                BossWords(w,b);
+            }
             if (--c.row94 < 0) c.row94 = 0;
             c.sub = 4;
         }
@@ -1516,6 +1691,7 @@ void St15(World::Impl& w, Boss2Task& b) {  // 0x0047AF60: dives into the water, 
             if (c.phase == 6) w.runner->flags[0xD] = 1;
             else if (c.phase == 7) w.runner->flags[0xF] = 1;
             c.c9C = (w.Rand(0x0047B15E) & 1) == 0 ? 0x6D : 0x6C;
+            if (w.typingReferenceActive) c.c9C += 0x4010;
             c.cA0 = 0;
             ++c.sub;
         }
@@ -1528,6 +1704,12 @@ void St15(World::Impl& w, Boss2Task& b) {  // 0x0047AF60: dives into the water, 
             c.c9C = w.Rand(0x0047B1E3) & 1;
             c.state = 0xE;
             c.sub = 0;
+            if (w.typingReferenceActive) {
+                // Source46B60F: remove the old word before forcing the next
+                // leap's abbreviation record. The global selection is kept.
+                ++b.typingRevision;
+                b.typingFlags |= 0x40u;
+            }
             PickTarget(w, b);
             return;
         }
@@ -1547,6 +1729,7 @@ void St15(World::Impl& w, Boss2Task& b) {  // 0x0047AF60: dives into the water, 
 void St16(World::Impl& w, Boss2Task& b) {  // 0x0047B280: staggers after a chest hit, then back to the old state
     Boss2Ctl& c = b.c;
     if (c.sub == 0) {
+        if (w.typingReferenceActive) b.typingFlags |= 0x400u;
         if (c.prevState == 0xB) {
             w.AnimBlendTo(b, 0x29, 0, 10);
         } else {
@@ -1573,6 +1756,7 @@ void St16(World::Impl& w, Boss2Task& b) {  // 0x0047B280: staggers after a chest
         b.flags34 &= ~0x40000000u;
         const int r = w.Rand(0x0047B40F);
         c.m8E = static_cast<int16_t>(((r % 7) + 4) * 5);
+        BossWords(w,b);
         return;
     }
     if (b.anim.tick[0] == 0x14 && (b.flags34 & 0x4000000)) {
@@ -1608,6 +1792,7 @@ void St17(World::Impl& w, Boss2Task& b) {  // 0x0047B4C0: knocked back in the ai
     };
     switch (c.sub) {
     case 0: {
+        if (w.typingReferenceActive) { c.flags &= ~1u; b.typingFlags |= 0x400u; }
         c.cA0 = 10;
         c.c9C = 10;
         blendRow(0x14);
@@ -1675,6 +1860,7 @@ void St17(World::Impl& w, Boss2Task& b) {  // 0x0047B4C0: knocked back in the ai
             b.flags34 &= ~0x40000000u;
             const int r = w.Rand(0x0047BA15);
             c.m8E = static_cast<int16_t>(((r % 7) + 4) * 5);
+            BossWords(w,b);
             break;
         }
         if (b.anim.tick[0] == 0x3C && (b.flags34 & 0x4000000)) {
@@ -1975,12 +2161,12 @@ void TaskBoss2(Task& t) {
     case 0: case 3: St0(w, b); break;
     case 1: case 4: St1(w, b, false); break;
     case 2: St1(w, b, true); break;
-    case 5: St5(w, b); break;
+    case 5: if (w.typingReferenceActive) TypingWalk(w,b); else St5(w, b); break;
     case 6: St6(w, b); break;
     case 7: St7(w, b); break;
     case 8: St8(w, b); break;
     case 9: StJump(w, b, false); break;
-    case 10: St10(w, b); break;
+    case 10: if (w.typingReferenceActive) TypingInterlude(w,b); else St10(w, b); break;
     case 11: St11(w, b); break;
     case 12: StJump(w, b, true); break;
     case 13: St13(w, b); break;
@@ -2082,6 +2268,7 @@ bool World::Impl::SpawnStage2c(Task& t, SpawnTask& s) {
     if (r.type != 0x14) return false;
     // 0x00475E90: the spawn task becomes the boss
     auto d = std::make_unique<Boss2Task>();
+    SetTypingSpawnOrigin(*d, r);
     Boss2Task& b = *d;
     b.record = r;
     b.flags34 = r.flags | 1;  // 0x00408A20
@@ -2133,7 +2320,7 @@ bool World::Impl::SpawnStage2c(Task& t, SpawnTask& s) {
     c.m8C = 0x315;
     c.m8E = 0;
     c.row94 = 0;
-    c.m90 = F32(exe, 0x005965C4);
+    c.m90 = typingReferenceActive ? 1.0f : F32(exe, 0x005965C4);
     c.level = static_cast<int8_t>(rank);  // 0x0040A8A0
     c.hits = 0;
     c.lives[0] = static_cast<int8_t>(player[0].lives);  // 0x009A5C66
@@ -2143,6 +2330,26 @@ bool World::Impl::SpawnStage2c(Task& t, SpawnTask& s) {
     b.fn = 0x00476150;
     t.data = std::move(d);
     t.fn = TaskBoss2;
+    if (typingReferenceActive) BossWords(*this,b,cfg.eventMode == 1 ? 550 : 700);
+    else if (cfg.portTyping) { typing.setWordSelection(0, 700); typing2.setWordSelection(0,700); }
+    return true;
+}
+
+bool TypingBoss2(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    auto* b = dynamic_cast<Boss2Task*>(&actor);
+    if (!b) return false;
+    out.boss = true;
+    const auto& c = b->c;
+    if (b->hp < 1 || (b->flags34 & 0x4000000u) || c.state < 5 || c.state >= 18) return true;
+    if (w.typingReferenceActive && (b->flags34 & 0x8100u) && !(b->typingFlags & 0x200u)) return true;
+    out.retain = true;
+    out.token = 0x200000u | (static_cast<uint32_t>(c.phase) << 12);
+    Mat4 m = NodeMV(w, *b, 1);
+    mx::Translate(m, 0.0f, 4.0f, 1.0f);
+    mx::GetTranslation(m, out.view);
+    if ((b->flags34 & 0x40008100u) || (w.typingReferenceActive && (b->typingFlags & 0x10000u))) return true;
+    out.node = 1;
+    if (complete) TypingDeliver(*b, out.node);
     return true;
 }
 

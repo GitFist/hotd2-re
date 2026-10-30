@@ -45,6 +45,7 @@ struct HeadTask : WTask {
     int timer = 0;             // +0x198
     int spinX = 0, spinY = 0;  // +0x19C (added to +0x68) / +0x1A0 (added to +0x64)
     int model = 0;             // +0x1A4
+    int kind = -1;            // retain the originating skeleton's prepared model binding
     float scale = 1.0f;        // +0x118
 };
 
@@ -117,6 +118,7 @@ void TaskHead(Task& t) {
     mx::RotY(m, h.ry);
     mx::RotX(m, h.rx);
     mx::Scale(m, h.scale, h.scale, h.scale);
+    World::Impl::NativeModelDrawScope modelScope(w,h.kind,2);
     w.Draw(h.model, m);
 }
 
@@ -140,6 +142,7 @@ void World::Impl::SpawnFlyingHead(EnemyTask& e) {
     h->rx = n.cur[0];
     h->ry = n.cur[1];
     h->model = n.model;
+    h->kind = e.anim.kind;
     h->scale = FlyingHeadScale(*this, e);
 }
 
@@ -151,6 +154,7 @@ void World::Impl::SpawnFlyingHeadModel(EnemyTask& e, int model) {
     h->rx = n.cur[0];
     h->ry = n.cur[1];
     h->model = model;
+    h->kind = e.anim.kind;
     h->scale = FlyingHeadScale(*this, e);
 }
 

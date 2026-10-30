@@ -13,7 +13,7 @@ static void Step(game::World& w,int x=630,int y=465,uint32_t pressed=0,bool shot
 static void Menu(game::World& w) {game::WorldConfig cfg;cfg.portFeatures=true;cfg.portModernMenu=true;w.Boot(cfg);w.ForceMode(4,0x10000,0,0);Step(w);Step(w);Step(w);Require(w.Hud().nightShiftPage==0,"open Night Shift Home");}
 static bool RoomRules(const game::World& w,int row,const std::string& expected) {
     for(const auto& text:w.Hud().menuText)
-        if(text.x==378&&text.y==194+row*50&&text.text==expected)return true;
+        if(text.x==378&&text.y==308+row*50&&text.text==expected)return true;
     return false;
 }
 int main(int argc,char** argv) {
@@ -73,22 +73,25 @@ int main(int argc,char** argv) {
     }
     const game::PortHomeRoom legacy{123,false,true,build};
     Require(legacy.difficulty==-1,"existing aggregate callers default to unknown difficulty");
-    world.SetPortHomeRooms(visible,"WAITING FOR A PARTNER");Step(world,450,185);
-    Require(world.Hud().nightShiftRow==7,"hover first real room");
+    world.SetPortHomeRooms(visible,"WAITING FOR A PARTNER");Step(world,450,299);
+    Require(world.Hud().nightShiftRow==8,"hover first real room after the game switch button");
     Require(RoomRules(world,0,"VERY EASY / 3 CONTINUES")&&RoomRules(world,1,"VERY HARD / UNLIMITED"),
             "Home displays the actual private and public room difficulties before joining");
-    auto reversed=visible;std::swap(reversed[0],reversed[1]);world.SetPortHomeRooms(reversed,"REFRESHED");Step(world,450,185);
-    Require(world.Hud().nightShiftRow==8,"directory refresh must retain selected room ID when ordering changes");
+    auto reversed=visible;std::swap(reversed[0],reversed[1]);world.SetPortHomeRooms(reversed,"REFRESHED");Step(world,450,299);
+    Require(world.Hud().nightShiftRow==9,"directory refresh must retain selected room ID when ordering changes");
     Require(RoomRules(world,0,"VERY HARD / UNLIMITED")&&RoomRules(world,1,"VERY EASY / 3 CONTINUES"),
             "refreshed labels stay attached to their room IDs");
-    Step(world,450,185,4,false);Step(world,450,185); // keyboard confirm retains selected room ID after reorder
+    Step(world,450,299,4,false);Step(world,450,299); // keyboard confirm retains selected room ID after reorder
     Require(world.GameMode()==15&&world.Hud().portLobbyAction==4&&world.Hud().portLobbyRoom==privateHost.LobbyRoomId(),"room confirmation routed a different refreshed room ID");
     Require(!directory.PeerKnown()&&!privateJoiner.PeerKnown(),"clicking private room prematurely joined before code entry");
-    // Losing the selected room moves focus to Host; refreshing room count must
-    // keep Host/Browse/P2P selected by action rather than its former row index.
-    Menu(world);world.SetPortHomeRooms(visible,"WAITING");Step(world,450,185);
-    world.SetPortHomeRooms({visible[1]},"REFRESHED");Step(world,450,185);Require(world.Hud().nightShiftRow==8,"removed room did not move focus safely to Host");
-    for(int action=1;action<=3;++action){Menu(world);world.SetPortHomeRooms(visible,"WAITING");Step(world,450,298+(action-1)*40);Require(world.Hud().nightShiftRow==9+action-1,"Home network button hover");world.SetPortHomeRooms({},"EMPTY");Step(world,450,298+(action-1)*40);Require(world.Hud().nightShiftRow==7+action-1,"room count refresh changed selected network action");Step(world,450,298+(action-1)*40,4,true);Step(world);Require(world.GameMode()==15&&world.Hud().portLobbyAction==action,"Host/Browse/P2P button did not route existing page");}
+    // Losing the selected room moves focus safely to the game switch. Directory
+    // changes must preserve that action as the number of lobby cards changes.
+    Menu(world);world.SetPortHomeRooms(visible,"WAITING");Step(world,450,299);
+    world.SetPortHomeRooms({visible[1]},"REFRESHED");Step(world,450,299);Require(world.Hud().nightShiftRow==7,"removed room did not move focus safely to the game switch");
+    world.SetPortHomeRooms({},"EMPTY");Step(world,450,299);
+    Require(world.Hud().nightShiftRow==7,"room count refresh changed game switch focus");
+    for(const auto& text:world.Hud().menuText)Require(text.text!="HOST ONLINE"&&text.text!="BROWSE LOBBY"&&text.text!="PEER TO PEER",
+        "retired Home network shortcuts remain visible");
     // Only deliberate existing join calls below are allowed to emit JOIN packets.
     joiner.LobbyJoin(publicHost.LobbyRoomId(),0);until([&]{return joiner.LobbyJoinResult()!=port::net::JoinResult::Pending;},"public room join result");Require(joiner.LobbyJoinResult()==port::net::JoinResult::Ok,"public room rejected explicit join");
     privateJoiner.LobbyJoin(privateHost.LobbyRoomId(),0);until([&]{return privateJoiner.LobbyJoinResult()!=port::net::JoinResult::Pending;},"private wrong-code result");Require(privateJoiner.LobbyJoinResult()==port::net::JoinResult::WrongCode,"private room joined without its code");
@@ -99,5 +102,5 @@ int main(int argc,char** argv) {
     Menu(world);world.SetPortHomeRooms(after,"WAITING");Step(world);
     Require(RoomRules(world,0,"NORMAL / 3 CONTINUES"),"live room replacement updates the displayed difficulty");
     Require(!directory.PeerKnown()&&!directory.Connected(),"directory acquired a gameplay peer during refresh");
-    std::puts("PASS real local Home directory: advertised difficulty and unknown fallback, visibility/build/limit policy, room-ID refresh, Host/Browse/P2P, private code and deliberate public joins");
+    std::puts("PASS real local Home directory: advertised difficulty, visibility/build policy, game-switch focus, room-ID refresh, private code and deliberate public joins");
 }

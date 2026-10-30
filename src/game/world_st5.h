@@ -68,6 +68,7 @@ void DestroyActor(World::Impl& w, ActorTask& a);
 template <class T> std::unique_ptr<T> FromRecord(const SpawnRecord& r, uint32_t fn) {
     auto d = std::make_unique<T>();
     d->fn = fn;
+    if (auto* world = CurrentWorld()) world->SetTypingSpawnOrigin(*d, r);
     d->record = r;
     d->flags34 = r.flags | 1;
     memcpy(d->pos, r.pos, 12);

@@ -180,6 +180,7 @@ void Beh33(World::Impl& w, EnemyTask& e) {
         ++e.sub;
         // fallthrough
     case 2:
+        if (e.variant == 7) w.TypingAttackTimer(0);  // TOTD 0x00447CA2, scripted throwing deadline
         if (e.variant == 7 && w.EnemyPickTarget(e) == 0) {
             if (e.anim.motion[0] == m0) return;
             const int r = w.Rand(0x0045922B);

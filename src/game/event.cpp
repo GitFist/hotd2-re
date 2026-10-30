@@ -14,7 +14,7 @@ namespace {
 //   Block30    0x30: (n/16)*4 + 8 bytes, n = first argument (C division)
 //   PerPlayer  0x49-0x4B: N -1 terminated lists, the selected one processed, then everything up to a -2 word
 //   Invalid    0x00/0x2A/0x34/0x3C/0x4C: handler 0x0041EBB0 returns without advancing (the VM would spin)
-enum class Len { Fixed, List, Env20, EnvInterp, Block30, PerPlayer, Invalid };
+enum class Len { Fixed, List, Env20, EnvInterp, Block30, PerPlayer, TypingMessage, Invalid };
 
 struct OpInfo {
     const char* name;
@@ -23,7 +23,7 @@ struct OpInfo {
 };
 
 // All 96 opcodes of the handler table 0x005931D8. Names with '?' are hypotheses.
-const OpInfo kOps[96] = {
+const OpInfo kOps[117] = {
     /*00*/ { "invalid_00", Len::Invalid, 0 },          { "route1_spawn09", Len::List, 0 },
     /*02*/ { "route1_spawn0a", Len::List, 0 },         { "route1_spawn0b", Len::List, 0 },
     /*04*/ { "route1_spawn0c", Len::List, 0 },         { "route2_spawn09", Len::List, 0 },
@@ -72,11 +72,24 @@ const OpInfo kOps[96] = {
     /*5A*/ { "flush_8_10", Len::Fixed, 4 },            { "nop4_5b", Len::Fixed, 4 },
     /*5C*/ { "nop4_5c", Len::Fixed, 4 },               { "snd_load_pack", Len::Fixed, 12 },
     /*5E*/ { "snd_free_pack", Len::Fixed, 8 },         { "bgm", Len::Fixed, 20 },
+    // supplied English PC TOTD reference table 0x0059D700. Decoding a command does not imply that its
+    // runtime contract is implemented; unsupported commands fail explicitly.
+    /*60*/ { "typing_challenge", Len::TypingMessage, 0 }, { "typing_words", Len::Fixed, 12 },
+    /*62*/ { "typing_countdown", Len::Fixed, 12 },     { "typing_wait_challenge", Len::Fixed, 8 },
+    /*64*/ { "typing_words_one_player", Len::Fixed, 12 }, { "typing_words_two_players", Len::Fixed, 12 },
+    /*66*/ { "typing_props", Len::Fixed, 8 },         { "typing_clear_actor_slots", Len::Fixed, 4 },
+    /*68*/ { "typing_word_limits", Len::Fixed, 12 },  { "typing_lesson", Len::Invalid, 0 },
+    /*6A*/ { "typing_wait_lesson", Len::Fixed, 8 },    { "typing_wait_count", Len::Fixed, 8 },
+    /*6C*/ { "typing_camera_one_player", Len::Block30, 0 }, { "typing_camera_two_players", Len::Block30, 0 },
+    /*6E*/ { "typing_branch_one_player", Len::Fixed, 8 }, { "typing_branch_two_players", Len::Fixed, 8 },
+    /*70*/ { "typing_checkpoint", Len::Fixed, 4 },    { "typing_retry_checkpoint", Len::Fixed, 4 },
+    /*72*/ { "typing_lesson_objects", Len::List, 0 }, { "typing_mode_branch", Len::Fixed, 12 },
+    /*74*/ { "typing_wait_result", Len::Fixed, 8 },
 };
 
 }  // namespace
 
-const char* EventOpName(uint32_t opcode) { return opcode < 96 ? kOps[opcode].name : "unknown"; }
+const char* EventOpName(uint32_t opcode) { return opcode < 117 ? kOps[opcode].name : "unknown"; }
 
 void EventMemory::Load(uint32_t base, const std::vector<uint8_t>& file) {
     size_t i = 0;
@@ -104,6 +117,13 @@ bool EventMemory::Read(uint32_t addr, uint32_t* out) const {
     return true;
 }
 
+bool EventMemory::SceneRoute(int mode, int word, int16_t* value) const {
+    const auto found = sceneRoutes_.find(mode);
+    if (word < 0 || found == sceneRoutes_.end() || static_cast<size_t>(word) >= found->second.size() / 2) return false;
+    memcpy(value, found->second.data() + static_cast<size_t>(word) * 2, 2);
+    return true;
+}
+
 uint32_t EventMemory::Script(int mode, int scene, int variant) const {
     uint32_t a = 0, b = 0, c = 0;
     if (!Read(kCommonBase + mode * 4, &a) || !a) return 0;
@@ -115,7 +135,7 @@ uint32_t EventMemory::Script(int mode, int scene, int variant) const {
 bool DecodeEvent(const EventMemory& mem, uint32_t addr, EventOp& out) {
     out = EventOp{};
     out.addr = addr;
-    if (!mem.Read(addr, &out.opcode) || out.opcode >= 96) return false;
+    if (!mem.Read(addr, &out.opcode) || out.opcode >= (mem.TypingDialect() ? 117u : 96u)) return false;
     const OpInfo& info = kOps[out.opcode];
     out.name = info.name;
     uint32_t w = 0;
@@ -150,6 +170,16 @@ bool DecodeEvent(const EventMemory& mem, uint32_t addr, EventOp& out) {
         const int32_t n = static_cast<int32_t>(w);
         if (n < 0) return false;
         out.length = static_cast<uint32_t>((n / 16) * 4 + 8);
+        break;
+    }
+    case Len::TypingMessage: {
+        // Four fixed operands, then (count, data pointer) pairs, terminated by
+        // a count of -1; English PC reference handler 0x00420610.
+        uint32_t n = 5;
+        for (int guard = 0;; ++guard, n += 2) {
+            if (guard >= 64 || !mem.Read(addr + n * 4, &w)) return false;
+            if (w == 0xFFFFFFFFu) { out.length = (n + 1) * 4; break; }
+        }
         break;
     }
     }

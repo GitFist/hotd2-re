@@ -1169,12 +1169,12 @@ SDL_GPUGraphicsPipeline* SdlGpuDevice::Pipeline(GpuDraw::Pipeline kind, const Gp
 }
 
 SDL_GPUSampler* SdlGpuDevice::Sampler(const GpuState& s) {
-    const int key = (s.linear ? 1 : 0) | (s.addrU << 1) | (s.addrV << 4) | (s.mipmapped ? 1 << 8 : 0);
+    const int key = (s.linear ? 1 : 0) | (s.addrU << 1) | (s.addrV << 4) | (s.mipmapped << 8);
     auto it = samplers_.find(key);
     if (it != samplers_.end()) return it->second;
     SDL_GPUSamplerCreateInfo si = {};
     si.min_filter = si.mag_filter = s.linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
-    if (s.mipmapped) si.min_filter = SDL_GPU_FILTER_LINEAR;
+    if(s.mipmapped)si.min_filter=s.mipmapped==2&&!s.linear?SDL_GPU_FILTER_NEAREST:SDL_GPU_FILTER_LINEAR;
     si.mipmap_mode = s.mipmapped ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     si.address_mode_u = ToAddress(s.addrU);
     si.address_mode_v = ToAddress(s.addrV);

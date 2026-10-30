@@ -37,9 +37,15 @@ bool World::Impl::CollLoad() {
     const char* names[2] = { "coli0.bin", nullptr };
     char other[32];
     snprintf(other, sizeof(other), "coli%d.bin", cfg.eventMode + 1);  // 0x0048A3B0: coli0 + coli<0x009A1A08 + 1>
-    if (cfg.eventMode == 6) snprintf(other, sizeof(other), "coliT.bin");  // names 0x004D1CC4[7]: training (trnevtbl)
+    if (cfg.eventMode == 6) snprintf(other, sizeof(other), "coliT.bin");
     names[1] = other;
+    if(cfg.portTyping&&cfg.eventMode==7) {
+        if(cfg.scene==3||cfg.scene==23)names[1]="coli2.bin";
+        else if(cfg.scene==11||cfg.scene==13)names[1]="coli1.bin";
+        else names[1]=nullptr;
+    }
     for (int i = 0; i < 2; ++i) {
+        if(!names[i])continue;
         std::ifstream f(gameDir + "/coli/" + names[i], std::ios::binary);
         if (!f) {
             Note(std::string("collision file ") + names[i] + " missing");

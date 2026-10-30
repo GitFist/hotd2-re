@@ -31,7 +31,7 @@ float MaxAxisScale(const float t[16]) {
 
 // Like IDirect3DDevice7::ComputeSphereVisibility's D3DSTATUS_CLIPINTERSECTION* bits (0xFFF000), which Mdl_Draw tests:
 // true when the sphere lies completely outside one of the six clip planes (row-vector world->clip matrix).
-bool SphereOutside(const float m[16], const float c[3], float r, bool meshTest) {
+bool SphereOutside(const float m[16], const float c[3], float r, bool meshTest, float zNear) {
     // Mesh test (Mdl_Draw's ComputeSphereVisibility): HYPOTHESIS fitted to the captured pass-1 lists (the D3D runtime is
     // not in the exe). Rule 2 (default): a sphere that is not entirely in front of the near plane is only reported outside
     // when entirely behind it; otherwise the exact six-plane test. Matches 41/43 stage-demo and 95/95 title lists vs 4/23 for
@@ -54,7 +54,7 @@ bool SphereOutside(const float m[16], const float c[3], float r, bool meshTest) 
     for (int k = 0; k < 6; ++k) {
         const auto& p = planes[k];
         if (meshTest && rule == 1 && w < 0 && k != 4) continue;
-        if (meshTest && rule == 2 && w - 0.8f < r && k != 4) continue;  // sphere not entirely in front of the near plane
+        if (meshTest && rule == 2 && w - zNear < r && k != 4) continue;  // sphere not entirely in front of the near plane
         const float len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
         if (len <= 0) continue;
         if ((p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3]) / len < -r) return true;
@@ -252,6 +252,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
     itemPriority_.clear();
     itemAlpha_.clear();
     itemUnitSpecular_.clear();
+    itemAuthoredMinification_.clear();
     itemSortBackToFront_.clear();
     itemCullFlip_.clear();
     itemLight_.clear();
@@ -308,6 +309,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
         itemPriority_.push_back(item.priority);
         itemAlpha_.push_back(item.alpha);
         itemUnitSpecular_.push_back(item.unitSpecular ? 1 : 0);
+        itemAuthoredMinification_.push_back(item.authoredMinification ? 1 : 0);
         itemSortBackToFront_.push_back(item.sortBackToFront ? 1 : 0);
         itemCullFlip_.push_back(item.cullFlip ? 1 : 0);
         itemLight_.push_back(item.light);
@@ -735,6 +737,8 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         GpuState cs = st;
         static const bool noMips = getenv("HOTD2_NO_MIPS") != nullptr;
         cs.mipmapped = noMips ? 0 : 1;
+        if(!noMips&&itemAuthoredMinification_[bb->item]&&device_->EffectiveGraphics().textureFilter==0&&
+           device_->EffectiveGraphics().anisotropy<=1)cs.mipmapped=2;
         const bool softSmoke = pass == 1 && (b->layeredCards || itemSortBackToFront_[bb->item]) &&
                                cs.srcBlend == 5 && cs.dstBlend == 6 && gameView && projection && std::abs(projection[11]) > 1e-6f;
         const int softness = device_->EffectiveGraphics().softParticles;
@@ -792,10 +796,17 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     // when ComputeSphereVisibility reports it outside, and such a skipped mesh also defers the model to pass 1.
     std::vector<char> itemCulled(itemOrigin_.size(), 0), batchCulled(batches_.size(), 0);
     if (gameView) {
+        float zNear=.8f;
+        // DeviceView changes both signs. Screen-centre/Hor+ transforms leave
+        // this ratio intact: use the active lens for the near-intersection rule.
+        if (projection && std::abs(projection[11])>1e-6f && std::abs(projection[10])>1e-6f) {
+            const float value=projection[14]/projection[10];
+            if (std::isfinite(value) && value>0) zNear=value;
+        }
         for (size_t i = 0; i < itemSphere_.size(); ++i)
-            itemCulled[i] = itemCullable_[i] && SphereOutside(viewProj, itemSphere_[i].data(), itemSphere_[i][3], false);
+            itemCulled[i] = itemCullable_[i] && SphereOutside(viewProj, itemSphere_[i].data(), itemSphere_[i][3], false,zNear);
         for (size_t i = 0; i < batches_.size(); ++i)
-            batchCulled[i] = !batches_[i].noMeshCull && SphereOutside(viewProj, batches_[i].meshCenter, batches_[i].meshRadius, true);
+            batchCulled[i] = !batches_[i].noMeshCull && SphereOutside(viewProj, batches_[i].meshCenter, batches_[i].meshRadius, true,zNear);
         if (getenv("HOTD2_DEBUG_CULL"))
             for (size_t i = 0; i < batches_.size(); ++i)
                 if (batchCulled[i] && !itemCulled[batches_[i].item])

@@ -43,7 +43,7 @@ struct GpuState {
     uint8_t zfunc = 4;                   // D3DCMPFUNC 1..8 (NEVER, LESS, EQUAL, LESSEQUAL, GREATER, NOTEQUAL, GREATEREQUAL, ALWAYS)
     uint8_t zwrite = 1;
     uint8_t linear = 0;                  // authored magnification filter: bilinear (else point)
-    uint8_t mipmapped = 0;               // filtered smaller levels for minified 3D textures; sprites keep level zero
+    uint8_t mipmapped = 0;               // 0 level zero, 1 smooth minification, 2 authored min filter + linear mip blend
     uint8_t addrU = 1, addrV = 1;        // D3DTEXTUREADDRESS (1 wrap, 2 mirror, 3 clamp)
     uint8_t cull = 1;                    // D3DCULL (1 none, 2 CW, 3 CCW): per strip in Mdl_Draw 0x004A7EF0 (table 0x00598B20)
 };

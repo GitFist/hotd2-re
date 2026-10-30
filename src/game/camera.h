@@ -48,6 +48,8 @@ class CameraBank {
 public:
     // read(name) returns the bytes of cam\<name> (empty when missing; those ids stay unknown).
     bool Load(const ExeImage& exe, const std::function<std::vector<uint8_t>(const std::string&)>& read);
+    // Appends exact imported curves under ids assigned by the offline converter.
+    bool AddPreparedFile(std::vector<uint8_t> bytes, const std::vector<int>& ids);
     bool Has(int id) const { return ids_.count(id) != 0; }
     // Cam_Evaluate: pos/target; roll = curve 6 when the roll channel is on (0x009A21B0), else 0.
     bool Evaluate(int id, float t, float pos[3], float target[3], int* roll, bool rollEnabled) const;

@@ -78,7 +78,7 @@ play::DisplaySettings CustomizedGraphics(bool nightShift) {
     d.windowScale = 3;
     d.stretch = true;
     d.viewport = 3;
-    d.redBlood = true;
+    d.bloodColor = nightShift ? port::BloodColor::Purple : port::BloodColor::Blue;
     d.crt = 2;
     d.renderScale = 4;
     d.integerScale = true;
@@ -245,7 +245,7 @@ void CheckGraphicsReset() {
         input(Pad(0x40)); input(Pad(8));
         auto expected = play::DisplaySettings{};
         expected.nightShift = before.display.nightShift;
-        expected.redBlood = before.display.redBlood;
+        expected.bloodColor = before.display.bloodColor;
         expected.showCrosshairs = before.display.showCrosshairs;
         Check(settings.display == expected && menu.TakeGraphicsReset() && !menu.TakeGraphicsReset(),
               "confirmed graphics reset restores all graphics and preserves gameplay cosmetics/menu theme");
@@ -268,6 +268,16 @@ int main() {
     DisplayMenu page;
     Check(v.master == 5 && v.music == 5 && v.guns == 5 && v.sfx == 5 && v.attraction == 5,
           "all five audio levels default to five");
+    Check(v.display.bloodColor == port::BloodColor::Red, "blood color still defaults to red");
+    const bool typingIntro=play::TypingGameplayKeyboard(true,false,2,false);
+    Check(typingIntro && play::WorldKeyboardBits(play::kEscapeKey,false,false,typingIntro)==8 &&
+          play::WorldKeyboardBits(8,false,false,typingIntro)==4,
+          "typing intro Escape pauses before automatic join while Enter stays a confirmation");
+    Check(!play::TypingGameplayKeyboard(true,true,2,false) &&
+          !play::TypingGameplayKeyboard(true,false,2,true) &&
+          !play::TypingGameplayKeyboard(true,false,6,false) &&
+          play::WorldKeyboardBits(play::kEscapeKey,false,true)==2,
+          "typing reports, chapter results and chapter choice retain menu Back instead of gameplay pause");
     for (bool inGame : {false, true})
         for (bool activePlayer : {false, true}) {
             const uint32_t regularKeys = 0xF8u | play::kEscapeKey;
@@ -298,7 +308,7 @@ int main() {
     a.display.stretch = true;
     a.display.crt = 2;
     a.display.renderScale = 3;
-    a.display.redBlood = true;
+    a.display.bloodColor = port::BloodColor::Purple;
     a.display.graphics.msaa = 4;
     a.display.graphics.anisotropy = 16;
     a.display.graphics.postAA = 1;
@@ -394,7 +404,8 @@ int main() {
         play::Settings oldDisplay;
         Check(oldDisplay.Load(path) && oldDisplay.display.fullscreen && oldDisplay.display.exclusiveFullscreen &&
                   oldDisplay.display.windowScale == 0 && oldDisplay.display.stretch && oldDisplay.display.viewport == 3 &&
-                  oldDisplay.display.crt == 2 && oldDisplay.display.renderScale == 3 && oldDisplay.display.redBlood,
+                  oldDisplay.display.crt == 2 && oldDisplay.display.renderScale == 3 &&
+                  oldDisplay.display.bloodColor == port::BloodColor::Red,
               "previous display keys retain their meanings after rows move and "
               "labels change");
         Check(DisplayMenu::ValueText(oldDisplay.display, DisplayMenu::kFullscreen) == "Fullscreen" &&
@@ -402,13 +413,25 @@ int main() {
                   DisplayMenu::ValueText(oldDisplay.display, DisplayMenu::kAspect) == "Stretch",
               "legacy display choices have consistent modern values");
     }
-    {
+    for (const auto [color, name] : {std::pair{port::BloodColor::Red, "red"}, {port::BloodColor::Green, "green"},
+                                    {port::BloodColor::Blue, "blue"}, {port::BloodColor::Purple, "purple"}}) {
+        play::Settings saved, loaded;
+        saved.display.bloodColor = color;
+        loaded.display.bloodColor = color == port::BloodColor::Red ? port::BloodColor::Green : port::BloodColor::Red;
+        Check(saved.Save(path) && loaded.Load(path) && loaded.display.bloodColor == color,
+              "each blood color survives saving and reopening settings");
         FILE* f = fopen(path.c_str(), "w");
-        fputs("blood=invalid\n", f);
+        fprintf(f, "blood=%s\n", name);
         fclose(f);
-        play::Settings d;
-        d.display.redBlood = true;
-        Check(d.Load(path) && d.display.redBlood, "invalid blood value keeps current choice");
+        loaded.display.bloodColor = color == port::BloodColor::Red ? port::BloodColor::Green : port::BloodColor::Red;
+        Check(loaded.Load(path) && loaded.display.bloodColor == color,
+              "blood key accepts the existing red/green values and new blue/purple values");
+        for (const char* invalid : {"invalid", "", "Blue", "purplejunk", "1"}) {
+            f = fopen(path.c_str(), "w");
+            fprintf(f, "blood=%s\n", invalid);
+            fclose(f);
+            Check(loaded.Load(path) && loaded.display.bloodColor == color, "invalid blood value keeps each current choice");
+        }
     }
     {
         FILE* f = fopen(path.c_str(), "w");

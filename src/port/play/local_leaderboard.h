@@ -5,6 +5,17 @@
 #include "game/world.h"
 
 namespace play {
+class LocalTypingLeaderboard {
+public:
+    bool Load(const std::string& path);
+    bool Save(const std::string& path) const;
+    // Receives only newly completed eligible Typing runs, never historical saves.
+    bool Observe(const game::LeaderboardRunSnapshot& run, const std::string& name);
+    const std::vector<game::SharedLeaderboardEntry>& Entries() const { return entries_; }
+private:
+    uint64_t sequence_ = 0;
+    std::vector<game::SharedLeaderboardEntry> entries_;
+};
 // Independent port sidecar: never changes the original's binary ranking/save block.
 class LocalHordeLeaderboard {
 public:

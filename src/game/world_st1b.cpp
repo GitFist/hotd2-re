@@ -719,7 +719,9 @@ static void TaskType28(Task& t) {
     Type28Task& k = t.As<Type28Task>();
     const ExeImage& exe = w.exe;
     const uint32_t e = 0x00589AE0 + static_cast<uint32_t>(k.index) * 4;
-    const int path = exe.S16(e);
+    const int nativePath = exe.S16(e);
+    // Source paths 0x167/0x168 are the same curves under prepared ids 0x4167/0x4168.
+    const int path = w.typingReferenceActive ? 0x4000 + nativePath + 0x22 : nativePath;
     const CameraDirector& c = w.runner->camera;
     auto place = [&](float tick) {  // 0x004042D0
         float p[3] = {}, tg[3] = {};
@@ -755,12 +757,12 @@ static void TaskType28(Task& t) {
     } else if (k.sub == 1) {
         check = true;
     } else if (k.sub == 2) {
-        if (static_cast<int32_t>(exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4)) <= c.tick) {
+        if (static_cast<int32_t>(exe.U32(0x00576D38 + static_cast<uint32_t>(nativePath) * 4)) <= c.tick) {
             w.ts.KillCurrent();
             return;
         }
     }
-    if (check && c.camId == 0x2F && exe.S16(e + 2) <= c.tick) {
+    if (check && c.camId == (w.typingReferenceActive ? 0x403F : 0x2F) && exe.S16(e + 2) <= c.tick) {
         ++k.sub;
         k.follow = 1;
     }
@@ -1382,6 +1384,7 @@ bool World::Impl::SpawnSt1b(Task& t, SpawnTask& s) {
             b->life = runner->scene == 3 ? 0 : 1;
             dcc48 = 0;
             ts.KillCurrent();
+            if (typingReferenceActive) return true;
         }
         SpawnBatGroup(r, variant);  // world_st1b_bats.cpp
         ts.KillCurrent();

@@ -22,6 +22,7 @@
 #include "game/menu_scroll.h"
 #include "game/sprite.h"
 #include "game/world.h"
+#include "port/render/blood_color.h"
 #include "port/render/graphics_options.h"
 
 namespace play {
@@ -32,7 +33,7 @@ struct DisplaySettings {
     int windowScale = 2;    // 1..3: that multiple of 640x480 as the windowed client size; 0: fit the usable desktop
     bool stretch = false;   // false: the 4:3 image centred with bars; true: stretched to the window
     int viewport = 0;       // 0 original, 1 16:9, 2 21:9, 3 32:9, 4 current window. Wider framing is experimental.
-    bool redBlood = true;  // local cosmetic choice: false = green, true = red
+    port::BloodColor bloodColor = port::BloodColor::Red;  // local cosmetic choice
     int crt = 0;            // 0 off, 1..3 scanline strength
     int renderScale = 2;    // internal resolution of the frame: 1..4 x 640x480 (1 = the original; default 2 = the 2x window's
                             // own pixels, at least as sharp as the earlier 960x720 default)

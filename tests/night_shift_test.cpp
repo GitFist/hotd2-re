@@ -42,6 +42,35 @@ static void CompletionGuards() {
  game::PortLeaderboardComplete(w,3,1200,2);Require(w.portLeaderboardRun.sequence==3,"boss record excludes sequential two-agent participation");
  w.player[0].state=6;w.player[1].state=5;game::PortLeaderboardBegin(w);
  Require(!w.portRunJoined[0]&&w.portRunJoined[1]&&w.portRunParticipants==1,"new boss excludes an expired previous-run out slot");
+ w.cfg.portTyping=w.cfg.typingOriginal=true;w.portRunRecorded=false;w.players=2;
+ w.portRunJoined[0]=w.portRunJoined[1]=true;w.portRunParticipants=2;
+ w.TypingController(0).addBasePoints(100);w.TypingController(1).addBasePoints(250);
+ const auto sequence=w.portLeaderboardRun.sequence;
+ game::PortLeaderboardComplete(w,1,0,5);Require(w.portLeaderboardRun.sequence==sequence,"typing scores cannot enter shooting Original board");
+ game::PortLeaderboardComplete(w,13,0,5);
+ Require(w.portLeaderboardRun.sequence==sequence+1&&w.portLeaderboardRun.table==13&&w.portLeaderboardRun.players==2&&
+         w.portLeaderboardRun.playerScores[0]==w.TypingController(0).runPoints(0)&&
+         w.portLeaderboardRun.playerScores[1]==w.TypingController(1).runPoints(0)&&
+         w.portLeaderboardRun.score==w.portLeaderboardRun.playerScores[1],"typing captures independent cumulative player scores on its own board");
+ w.portRunRecorded=false;w.cfg.typingOriginal=false;game::PortLeaderboardComplete(w,13,0,5);
+ Require(w.portLeaderboardRun.sequence==sequence+1,"typing Arcade cannot enter Original board");
+}
+static void LocalTypingRecords() {
+ play::LocalTypingLeaderboard records;
+ game::LeaderboardRunSnapshot run;run.sequence=1;run.table=13;run.score=1500000;run.difficulty=5;run.players=2;run.eligible=true;
+ Require(records.Observe(run,"TYPE NAME")&&!records.Observe(run,"TYPE NAME"),"typing records observe each completed run once");
+ ++run.sequence;Require(records.Observe(run,"TYPE NAME")&&records.Entries().size()==2,"independent equal-valued typing runs stay distinct");
+ ++run.sequence;run.table=1;Require(!records.Observe(run,"TYPE NAME"),"shooting Original cannot enter local typing board");
+ ++run.sequence;run.table=13;run.score=200;run.eligible=false;Require(!records.Observe(run,"TYPE NAME"),"debug or ineligible typing scores stay excluded");
+ const auto path=std::filesystem::temp_directory_path()/"hotd2-nightshift-typing-records-test.txt";
+ Require(records.Save(path.string()),"write isolated Typing leaderboard sidecar");
+ play::LocalTypingLeaderboard loaded;
+ Require(loaded.Load(path.string())&&loaded.Entries().size()==2&&loaded.Entries()[0].name=="TYPE NAME"&&
+         loaded.Entries()[0].score==1500000&&loaded.Entries()[0].players==2&&loaded.Entries()[0].difficulty==5,
+         "typing scores, spaces in names, stage and participation persist");
+ {std::ofstream file(path);file<<"HOTD2-TYPING-1\n\"BAD\" 123 7 2\n";}
+ Require(!loaded.Load(path.string())&&loaded.Entries().size()==2,"corrupt typing sidecar preserves loaded records");
+ std::error_code ec;std::filesystem::remove(path,ec);
 }
 static void BossReplay(const char* dir,const char* script) {
  struct Event {int frame,p;float x,y;int buttons;};std::vector<Event> events;
@@ -107,6 +136,13 @@ static void LeaderboardPresentation(const char* dir) {
  step(8);step();focused(2);Require(w.Hud().portLeaderboardTable==1&&!currentRule(1),"confirmation changes the actual board without a second red focus");
  step(0x10);step();focused(1);Require(currentRule(2),"Original remains current when keyboard focus returns to Arcade");
  step(8);step();Require(w.Hud().portLeaderboardTable==0&&values()==originalValues&&name(0)=="---"&&name(2)=="ABC","board navigation must preserve scores/stages and native initials");
+ for(int i=0;i<4;++i){step(0x20);step();}step(8);step();
+ Require(w.Hud().portLeaderboardTable==13,"Typing of the Dead appears as a selectable leaderboard category");
+ w.SetPortTypingLeaderboard({{"TYPING",12345,0,5,2}});step();
+ Require(name(0)=="TYPING","typing board reads its separate local records");
+ bool points=false,noBossArrows=true;for(const auto& t:w.Hud().menuText){if(t.x==360&&t.y==181)points=t.text=="12345";if(t.text=="<"||t.text==">")noBossArrows=false;}
+ Require(points&&noBossArrows,"typing scores display as points and cannot navigate boss time tables");
+ step(0x80);step();Require(w.Hud().portLeaderboardTable==13,"Right arrow cannot turn typing board into a boss table");
  puts("PASS leaderboard presentation: one focus, distinct current board, empty initials and unchanged records");
 }
 static void HomePresentation(const char* dir) {
@@ -118,7 +154,7 @@ static void HomePresentation(const char* dir) {
  for(const auto& panel:world.Hud().menuPanels) {
   Require(!(panel.left==352&&panel.top==122&&panel.right==624&&panel.bottom==416),"Home online area has no enclosing dark box");
   if(panel.left==24&&panel.top==195&&panel.color==0x75101315)left=true;
-  if(panel.left==366&&panel.top==166&&panel.color==0x75101315)right=true;
+  if(panel.left==366&&panel.top==280&&panel.color==0x75101315)right=true;
  }
  Require(left&&right,"Home room card and left navigation retain matching transparency");
  puts("PASS Home panel presentation with direct tabbed Options");
@@ -126,6 +162,7 @@ static void HomePresentation(const char* dir) {
 int main(int argc,char** argv) {
  if(argc<2||argc>3)return 2;
  CompletionGuards();
+ LocalTypingRecords();
  DirectOptionsAudio(argv[1]);
  LeaderboardPresentation(argv[1]);
  HomePresentation(argv[1]);

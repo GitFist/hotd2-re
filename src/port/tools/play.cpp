@@ -1,6 +1,6 @@
 // play.exe <game dir> [--audio] [--width W --height H] [--script file --screenshot out.png --frame F]
 //          [--renderer d3d11|sdlgpu] [--input auto|raw|mouse|touch] [--audio-backend sdl|xaudio2]
-//          [--no-update-check]
+//          [--blood red|green|blue|purple] [--no-update-check]
 //
 // The game from boot on the native world runtime (World::Boot, notes/agents/frontend.md): boot logos, title, attract
 // loop, START -> mode select -> game (game mode 6, notes/agents/gameplay.md) -> game over -> title. --direct starts a game
@@ -24,6 +24,7 @@
 // Physical two-device behaviour is NOT verified (pending a person with two devices).
 
 #include <algorithm>
+#include <ctime>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -72,6 +73,7 @@
 #include "port/play/lightgun_menu.h"
 #include "port/play/local_leaderboard.h"
 #include "port/play/night_shift_menu.h"
+#include "port/play/menu_game_switch.h"
 #include "port/play/model_gallery.h"
 #include "port/play/model_gallery_audio.h"
 #include "port/play/pack_preview.h"
@@ -167,6 +169,18 @@ uint32_t WorldHash(const game::World& w) {
     mix(&hud.menuCursor, sizeof(hud.menuCursor));
     mix(&hud.gameType, sizeof(hud.gameType));
     mix(&hud.paused, sizeof(hud.paused));
+    const bool typing = w.PortTypingActive();
+    mix(&typing,sizeof(typing));
+    if (typing) for (int p=0;p<2;++p) {
+        const auto stats = w.PortTypingStats(p);
+        for (uint64_t value : {stats.correctCharacters,stats.errors,stats.completedWords,stats.points,stats.lifeGauge,stats.lifeThreshold})
+            mix(&value,sizeof(value));
+        for (const auto& prompt : w.PortTypingPrompts(p)) {
+            mix(&prompt.serial,sizeof(prompt.serial)); mix(&prompt.token,sizeof(prompt.token));
+            mix(&prompt.progress,sizeof(prompt.progress)); mix(&prompt.selected,sizeof(prompt.selected));
+            mix(prompt.text.data(),prompt.text.size());
+        }
+    }
     const auto& results = hud.stageResults;
     for (int v : {int(results.active), int(results.shown), int(results.dismiss), results.chapter, results.frames, results.civilians,
                   results.lifeBonus})
@@ -195,10 +209,10 @@ const char* const kReleaseVersion = "1.5";
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026102700;
+constexpr uint32_t kBuildId = 2026102800;
 const char* const kBuildName = "2026 10 27 B";
 #else
-constexpr uint32_t kBuildId = 2026102701;
+constexpr uint32_t kBuildId = 2026102801;
 const char* const kBuildName = "2026 10 27 NS32 B";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
@@ -344,7 +358,7 @@ struct Lobby {
     enum Page { kOff, kMenu, kCreate, kWaiting, kBrowse, kCode, kP2P, kConnecting, kRejoin, kError };
     Page page = kOff;
     int cursor = 0;
-    bool unlimited = true, priv = false;  // Create Room's options
+    bool unlimited = true, priv = false, typing = false;  // Create Room's options
     bool p2p = false;                     // the Waiting / Code page came from Peer to Peer
     uint32_t joinRoom = 0;                // Browse: the chosen room (0 = by code only)
     std::string code;                     // the typed digits (Code page)
@@ -363,7 +377,7 @@ struct Lobby {
             case kMenu:
                 return canRejoin ? 5 : 4;
             case kCreate:
-                return 4;
+                return 5;
             case kP2P:
                 return 3;
             case kBrowse:
@@ -399,6 +413,7 @@ std::string RoomLabel(const port::net::LobbyRoom& r, uint32_t build) {
     std::string s = "ROOM " + std::to_string(r.id);
     s.append(s.size() < 10 ? 10 - s.size() : 1, ' ');
     s += (r.flags & port::net::kRoomPrivate) ? "PRIVATE  " : "PUBLIC   ";
+    if (r.typing) s += "TYPING  ";
     static constexpr const char* levels[] = {"VERY EASY", "EASY", "NORMAL", "HARD", "VERY HARD"};
     const int difficulty = port::net::RoomDifficulty(r.flags);
     s += difficulty >= 0 ? levels[difficulty] : "UNKNOWN";
@@ -439,8 +454,9 @@ void LobbySprites(const game::ExeImage& exe, const Lobby& l, const port::net::Se
         case Lobby::kCreate:
             row(0, std::string("UNLIMITED CONTINUES ") + (l.unlimited ? "ON" : "OFF"));
             row(1, std::string("PRIVATE ROOM ") + (l.priv ? "ON" : "OFF"));
-            row(2, "START");
-            row(3, "BACK");
+            row(2, l.typing ? "GAME: TYPING ORIGINAL" : "GAME: HOUSE OF THE DEAD 2");
+            row(3, "START");
+            row(4, "BACK");
             note(16.5f, "LEFT AND RIGHT CHANGE AN OPTION");
             break;
         case Lobby::kP2P:
@@ -539,8 +555,9 @@ game::WorldHud ModernLobbyHud(const Lobby& l, const port::net::Session& net) {
         case Lobby::kCreate:
             row(0, std::string("UNLIMITED CONTINUES   ") + (l.unlimited ? "ON" : "OFF"));
             row(1, std::string("PRIVATE ROOM   ") + (l.priv ? "ON" : "OFF"));
-            row(2, "CREATE ROOM");
-            row(3, "BACK");
+            row(2, l.typing ? "GAME: TYPING ORIGINAL" : "GAME: HOUSE OF THE DEAD 2");
+            row(3, "CREATE ROOM");
+            row(4, "BACK");
             note(16.5f, "LEFT / RIGHT CHANGE A RULE. CREATE ROOM STARTS HOSTING.");
             break;
         case Lobby::kP2P:
@@ -814,13 +831,16 @@ int main(int argc, char** argv) {
     uint32_t firstSerial = 0x10000;  // the play captures: 65551 (history-dependent)
     int credits = -1;                // -1: free play; else that many credits (the play captures: 5)
     bool direct = false;             // --direct: start a game at once (no boot / title / mode select)
+    bool typingMode = false;
     std::string configPath;          // --config: a mid-game stage start (WorldConfig + carry from world_test --save-config)
     std::string settingsOverride;    // explicit isolated settings file, also usable by screenshot comparisons
+    std::string typingReferenceOverride; // a direct shortcut can select the isolated test data without a shell launcher
     int p2mode = 6;  // --p2mode M: P2's device mode for --script (the hook's captures: 0, calibration path; world_test --p2mode)
     std::string scriptPath, screenshot, scenePath = "scenes/st1_play.scene", savePath = "hotd2re_save.bin";
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> savePatch;
     bool trace = false;  // --trace: one line per game mode / sub-state change and the world's notes (headless checks)
-    std::string bloodOverride;
+    port::BloodColor bloodOverride = port::BloodColor::Red;
+    bool bloodOverrideGiven = false;
     bool noHud = false;        // --no-hud: 3D only (clean screenshots)
     bool pace = false;         // --pace: a headless run steps at 60 Hz instead of as fast as it can (netplay tests)
     bool checkUpdates = true;  // --no-update-check: skip the launch-time release check
@@ -879,10 +899,16 @@ int main(int argc, char** argv) {
             credits = atoi(argv[++i]);
         else if (a == "--direct")
             direct = true;
+        else if (a == "--typing") {
+            typingMode = true;
+            direct = true;
+        }
         else if (a == "--config" && i + 1 < argc)
             configPath = argv[++i];  // world_test --save-config: start at that stage
         else if (a == "--settings" && i + 1 < argc)
             settingsOverride = argv[++i];
+        else if (a == "--typing-reference" && i + 1 < argc)
+            typingReferenceOverride = argv[++i];
         else if ((a == "--dlss-sdk" || a == "--fsr-sdk" || a == "--xess-sdk") && i + 1 < argc)
             dlssDirectory = argv[++i];
         else if (a == "--frame-generation" || a == "--dlss-fg" || a == "--fsr-fg") {
@@ -920,9 +946,13 @@ int main(int argc, char** argv) {
             savePath = argv[++i];  // the port's own save file (headless: none unless given)
         else if (a == "--trace")
             trace = true;
-        else if (a == "--blood" && i + 1 < argc)
-            bloodOverride = argv[++i];
-        else if (a == "--no-hud")
+        else if (a == "--blood") {
+            if (i + 1 >= argc || !port::ParseBloodColor(argv[++i], bloodOverride)) {
+                fprintf(stderr, "--blood must be red, green, blue or purple\n");
+                return 1;
+            }
+            bloodOverrideGiven = true;
+        } else if (a == "--no-hud")
             noHud = true;  // screenshots: the 3D scene only (no HUD / world 2D / bitmap screens)
         else if (a == "--no-update-check")
             checkUpdates = false;
@@ -1012,13 +1042,7 @@ int main(int argc, char** argv) {
         height = 480 * volumes.display.windowScale;
     }
     if (!volumes.assets.empty()) port::SetAssetDir(volumes.assets);  // optional asset pack (assets= line; HOTD2_ASSET_DIR wins)
-    if (!bloodOverride.empty()) {
-        if (bloodOverride != "red" && bloodOverride != "green") {
-            fprintf(stderr, "--blood must be red or green\n");
-            return 1;
-        }
-        volumes.display.redBlood = bloodOverride == "red";
-    }
+    if (bloodOverrideGiven) volumes.display.bloodColor = bloodOverride;
     static port::AssetStore assets;
     static port::ModelRenderer renderer;
     port::SceneDef def;
@@ -1028,7 +1052,25 @@ int main(int argc, char** argv) {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
-    assets.SetRedBlood(volumes.display.redBlood);
+    assets.SetBloodColor(volumes.display.bloodColor);
+    if (!typingReferenceOverride.empty()) {
+#ifdef _WIN32
+        const int referenceEnvironmentResult = _putenv_s("HOTD2_TYPING_REFERENCE",typingReferenceOverride.c_str());
+#else
+        const int referenceEnvironmentResult = setenv("HOTD2_TYPING_REFERENCE",typingReferenceOverride.c_str(),1);
+#endif
+        if (referenceEnvironmentResult != 0) {
+            std::fprintf(stderr,"Cannot select the prepared Typing data\n");
+            return 1;
+        }
+    }
+    const char* typingReferenceSetting = std::getenv("HOTD2_TYPING_REFERENCE");
+    const auto typingReferencePath = typingReferenceSetting && *typingReferenceSetting
+        ? std::filesystem::path(typingReferenceSetting) : std::filesystem::path(dir)/"typing_reference.bank";
+    if (std::filesystem::exists(typingReferencePath) && !assets.LoadTypingReference(typingReferencePath.string(), &err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
     g_subtitles.Load(assets.Exe());
     if (!port::AssetDir().empty() && screenshot.empty()) {
         // Asset pack: the front end's textures decode during the boot logos (10 s of idle): the title flythrough's
@@ -1040,7 +1082,7 @@ int main(int argc, char** argv) {
             const int modelId = exe.S16(0x00576B04 + static_cast<uint32_t>(o * 4));
             uint16_t file = 0;
             if (modelId > 0 && exe.Read(0x004E83B4 + static_cast<uint32_t>(modelId) * 2, &file, 2))
-                assets.PrefetchPolFile(exe.CStr(exe.U32(0x004D0EF4 + static_cast<uint32_t>(file) * 4)));
+                assets.PrefetchPolFile(assets.PolFileName(static_cast<uint32_t>(file)));
         }
         for (const char* f : {"scr_title.bin", "scr_etc_1.bin", "scr_common.bin", "scr_opt_moji05.bin", "common.bin"})
             assets.PrefetchTexFile(f);
@@ -1077,6 +1119,19 @@ int main(int argc, char** argv) {
         direct = true;
     }
     const std::vector<ScriptLine> script = scriptPath.empty() ? std::vector<ScriptLine>() : LoadScript(scriptPath);
+    cfg.portTyping = typingMode;
+    if (typingMode) {
+        cfg.portFeatures = true;
+        if (configPath.empty()) {
+            cfg.difficulty = int(cfg.typingOptions.difficulty);
+            cfg.livesSetting = cfg.typingOptions.startingLives;
+            if (credits < 0) {
+                cfg.creditSetting = cfg.typingOptions.continues;
+                cfg.freePlay = cfg.typingOptions.continues < 0;
+                cfg.credits = cfg.freePlay ? 0 : cfg.typingOptions.continues;
+            }
+        }
+    }
     size_t scriptPos = 0;
     // Test-only keyboard edges through the same menu/input path as real keys (frame, held key bits).
     std::vector<std::pair<int, uint32_t>> keyScript;
@@ -1134,6 +1189,12 @@ int main(int argc, char** argv) {
     // Script input of frame fr (as world_test / the hook's ApplyScript): every line up to fr applies; several lines in
     // one frame OR their button edges.
     game::WorldInput in[2];
+    std::string typingKeys[2];
+    bool typingCancel[2] = {};
+    uint8_t typingItems[2] = {};
+    uint32_t typingKeyboardIds[2] = {};
+    uint32_t typingButtons[2] = {};
+    uint8_t typingShift[2] = {};
     auto scriptFrame = [&](int fr) {
         uint8_t pressedNow[2] = {};
         while (scriptPos < script.size() && script[scriptPos].frame <= fr) {
@@ -1158,6 +1219,13 @@ int main(int argc, char** argv) {
             for (int q = 0; q < 2; ++q) world.SetInput(q, in[q]);
         }
         if (direct) {
+            if (typingMode) {
+                // Keep the native front end available after the campaign ends
+                // or the pause menu returns to the title.
+                cfg.portModernMenu = volumes.display.nightShift;
+                cfg.savePath = savePath;
+                world.Boot(cfg);
+            }
             cfg.portStageResults = screenshot.empty() || getenv("HOTD2_PLAY_MENU") || getenv("HOTD2_STAGE_RESULTS");
             return world.StartStage(cfg, &err);
         }
@@ -1216,6 +1284,9 @@ int main(int argc, char** argv) {
         g.portFeatures = (c.flags & 1) != 0;
         g.portModernMenu = (c.flags & 2) != 0;
         g.portNetworkRoom = (c.flags & 4) != 0;
+        g.portTypingRoom = (c.flags & 8) != 0;
+        g.portTyping = (c.flags & 16) != 0;
+        g.networkStartedAt = c.startedAt;
         g.applySaveSettings = g.portFeatures;
         g.portStageResults = true;
         for (int k = 0; k < 5; ++k) g.portVolumes[k] = c.portVolumes[k];
@@ -1525,8 +1596,8 @@ int main(int argc, char** argv) {
                 warmGraphics();
             d.graphics = gpu->EffectiveGraphics();
         }
-        if (d.redBlood != appliedDisplay.redBlood) {
-            assets.SetRedBlood(d.redBlood);
+        if (d.bloodColor != appliedDisplay.bloodColor) {
+            assets.SetBloodColor(d.bloodColor);
             renderer.ClearCache();  // cached model meshes retain GPU texture handles
             if (!headless && !volumes.Save(settingsPath)) fprintf(stderr, "Blood color setting could not be saved\n");
         }
@@ -1633,6 +1704,8 @@ int main(int argc, char** argv) {
         (sndBackend = plat.CreateAudio(common.audio, dir, &err)))
         sndDriver = std::make_unique<game::SoundDriver>(*sndBackend);
     if (audio && !headless && !sndDriver) fprintf(stderr, "audio: %s\n", err.empty() ? "cannot read the sound tables" : err.c_str());
+    sndTable.SetTypingReference(assets.PreparedTypingReference());
+    if (sndBackend) sndBackend->SetTypingReference(assets.PreparedTypingReference());
 
     // The menu scenery has its own sound channels: gameplay and Extras commands must never stop or replace them.
     std::unique_ptr<port::AudioOutput> attractionBackend;
@@ -1805,7 +1878,7 @@ int main(int argc, char** argv) {
         }
         if (page.TakeGameplayReset()) {
             if (world.ResetPortGameOptions()) {
-                volumes.display.redBlood = play::DisplaySettings{}.redBlood;
+                volumes.display.bloodColor = play::DisplaySettings{}.bloodColor;
                 volumes.display.showCrosshairs = true;
                 page.SetStatus("Gameplay defaults restored. Records, unlocks and device calibration are preserved.");
             } else {
@@ -1825,6 +1898,10 @@ int main(int argc, char** argv) {
     const std::string hordeRecordsPath = "hotd2re_horde_records.txt";
     if (!headless) hordeRecords.Load(hordeRecordsPath);
     world.SetPortHordeLeaderboard(hordeRecords.Entries());
+    play::LocalTypingLeaderboard typingRecords;
+    const std::string typingRecordsPath = savePath + ".typing.rankings";
+    if (!headless) typingRecords.Load(typingRecordsPath);
+    world.SetPortTypingLeaderboard(typingRecords.Entries());
     int leaderboardRequestsSeen = 0, lobbyRequestsSeen = 0, lobbyShortcut = 0;
     uint64_t rankingsRevision = 0, completedRunSequence = 0, submissionRevision = 0;
     const bool interactiveScores = !headless && script.empty() && keyScript.empty();
@@ -1917,6 +1994,8 @@ int main(int argc, char** argv) {
             c.portVolumes[3] = volumes.master;
             c.portVolumes[4] = volumes.attraction;
             c.flags = 3;
+            if (typingMode) c.flags |= 16;
+            c.startedAt = static_cast<uint32_t>(std::time(nullptr));
             c.delay = static_cast<uint8_t>(netDelay);
             game::SaveData matchSave;
             if (!matchSave.LoadNative(savePath)) matchSave.LoadOriginal(dir, assets.Exe());
@@ -2153,9 +2232,104 @@ int main(int argc, char** argv) {
             }
         }
         if (!headless) {
+            const bool typingGameplay = play::TypingGameplayKeyboard(world.PortTypingActive(),world.PortTypingReportActive(),
+                                                                      world.Hud().subState,world.Hud().stageResults.shown);
+            const bool typingInput = (world.PortTypingActive() || world.PortTypingReportActive()) && !world.Hud().paused && !world.Hud().stageResults.active && !menu.IsOpen() &&
+                                     !optionsPage.IsOpen() && !usernamePrompt.IsOpen();
+            const bool drillInput = world.PortTypingDrillActive() && !menu.IsOpen() && !optionsPage.IsOpen();
+            plat.SetTextInput(active && typingInput && world.PortTypingNameActive());
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
+                int physicalTypingPlayer = keyboardPlayer();
+                if (!netPlayerAssigned && ev.keyboardId && (ev.type == T::KeyDown || ev.type == T::KeyUp)) {
+                    if (!typingKeyboardIds[0]) typingKeyboardIds[0] = ev.keyboardId;
+                    else if (ev.keyboardId != typingKeyboardIds[0] && !typingKeyboardIds[1]) typingKeyboardIds[1] = ev.keyboardId;
+                    if (ev.keyboardId == typingKeyboardIds[1]) physicalTypingPlayer = 1;
+                }
+                if (ev.keyboardId && (ev.type == T::KeyDown || ev.type == T::KeyUp)) {
+                    if (ev.scanCode == 225 || ev.scanCode == 229) {
+                        const uint8_t bit = ev.scanCode == 225 ? 1 : 2;
+                        if (ev.type == T::KeyDown) typingShift[physicalTypingPlayer] |= bit;
+                        else typingShift[physicalTypingPlayer] &= uint8_t(~bit);
+                    }
+                    ev.shift = typingShift[physicalTypingPlayer] != 0;
+                }
+                if (active && typingInput && physicalTypingPlayer == 1 && !netPlayerAssigned &&
+                    (ev.type == T::KeyDown || ev.type == T::KeyUp) && ev.key == platform::Key::Enter) {
+                    if (ev.type == T::KeyDown && !ev.repeat)
+                        typingButtons[1] |= world.Hud().player[1].state == 5 ? 4u : 8u;
+                    continue;
+                }
                 if (ev.type == T::Quit) quit = true;
+                if(active&&drillInput&&world.PortTypingDrillPlaying()&&ev.type==T::KeyDown&&!ev.repeat&&ev.alt&&ev.scanCode==60) {
+                    world.ReturnToTypingDrillMenu();g_keys=menuPrevKeys=0;continue;
+                }
+                if(active&&drillInput&&ev.key==platform::Key::F10&&
+                    (ev.type==T::KeyDown||ev.type==T::KeyUp)) {
+                    if(ev.type==T::KeyDown&&!ev.repeat)world.PauseTypingDrill();
+                    continue;
+                }
+                if (active && (world.PortTypingActive()||drillInput||world.Hud().nightShiftPage==12) && ev.type == T::KeyDown && !ev.repeat &&
+                    ev.alt && (ev.key == platform::Key::F2 || ev.scanCode==59)) {
+                    if (netplay) netCmd |= port::net::kCmdReturnToTitle;
+                    else {if(world.Hud().nightShiftPage==12)world.ReturnToTypingDrillMenu();world.RequestTitle();}
+                    g_keys = menuPrevKeys = 0;
+                    continue;
+                }
+                if (active && (typingGameplay || (world.PortTypingActive() && world.Hud().paused)) && ev.key == platform::Key::F10 &&
+                    (ev.type == T::KeyDown || ev.type == T::KeyUp)) {
+                    if (ev.type == T::KeyDown) g_keys |= play::kEscapeKey;
+                    else g_keys &= ~play::kEscapeKey;
+                    continue;
+                }
+                if (active && (typingInput || drillInput)) {
+                    const int typingPlayer = physicalTypingPlayer;
+                    auto queueTyping = [&](const std::string& text, bool cancel=false) {
+                        if (cancel) { typingKeys[typingPlayer].clear(); typingCancel[typingPlayer] = true; }
+                        else typingKeys[typingPlayer] += text;
+                    };
+                    if (typingGameplay && ev.scanCode >= 58 && ev.scanCode <= 61) {
+                        if (ev.type == T::KeyDown && !ev.repeat) typingItems[typingPlayer] |= uint8_t(1u << (ev.scanCode - 58));
+                        continue;
+                    }
+                    if (ev.type == T::Text) {
+                        // The selected US/UK keyboard uses physical keys. SDL
+                        // text commits would duplicate those keys and follow
+                        // the OS layout instead of the game's selected layout.
+                        continue;
+                    }
+                    if(drillInput&&world.PortTypingDrillPlaying()&&ev.key==platform::Key::Escape&&
+                        (ev.type==T::KeyDown||ev.type==T::KeyUp)) {
+                        if(ev.type==T::KeyDown&&!ev.repeat)queueTyping(std::string(1,'\x1b'));
+                        g_keys&=~KeyBit(ev.key);continue;
+                    }
+                    if (ev.type == T::KeyDown && ev.key == platform::Key::Escape && world.PortTypingNameActive()) {
+                        if (!ev.repeat) queueTyping(std::string(1, '\x1b'));
+                        continue;
+                    }
+                    if ((typingGameplay || drillInput) && ev.key == platform::Key::Backspace &&
+                        (ev.type == T::KeyDown || ev.type == T::KeyUp)) {
+                        if (ev.type == T::KeyDown && !ev.repeat) queueTyping({},true);
+                        g_keys &= ~KeyBit(ev.key);
+                        continue;
+                    }
+                    if ((ev.type == T::KeyDown || ev.type == T::KeyUp) &&
+                        (game::TypingKeyCharacter(ev.scanCode, ev.shift, world.PortTypingOptions().keyboard) ||
+                         (ev.ch >= 32 && ev.ch < 127) || ev.key == platform::Key::Backspace ||
+                         (world.PortTypingNameActive() && ev.scanCode == 43))) {
+                        if (ev.type == T::KeyDown && !ev.repeat) {
+                            char typedKey = game::TypingKeyCharacter(ev.scanCode, ev.shift, world.PortTypingOptions().keyboard);
+                            if (world.PortTypingNameActive()) {
+                                if (ev.scanCode == 43) typedKey = ev.shift ? '\v' : '\t';
+                                else if (ev.key == platform::Key::Backspace) typedKey = '\b';
+                                else if (ev.shift && typedKey >= 'a' && typedKey <= 'z') typedKey -= 'a' - 'A';
+                            }
+                            if (typedKey) queueTyping(std::string(1,typedKey));
+                        }
+                        g_keys &= ~KeyBit(ev.key);
+                        continue;
+                    }
+                }
                 if (active && usernamePrompt.IsOpen() && ev.type == T::KeyDown &&
                     (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127))) {
                     const char ch = ev.shift && ev.ch == '-' ? '_' : ev.ch;
@@ -2225,6 +2399,13 @@ int main(int argc, char** argv) {
                            world.Hud().paused ? "on" : "off");
                     fflush(stdout);
                     if (!active) {
+                        typingKeys[keyboardPlayer()].clear();
+                        typingCancel[keyboardPlayer()] = true;
+                        typingShift[0] = typingShift[1] = 0;
+                        if (!netPlayerAssigned) {
+                            typingKeys[1].clear(); typingCancel[1] = true;
+                            typingItems[0] = typingItems[1] = 0;
+                        }
                         g_keys = menuPrevKeys = 0;
                         scoreDisplay.ResetSequence();
                         typed.clear();
@@ -2577,10 +2758,13 @@ int main(int argc, char** argv) {
                     // other player's input comes over the network.
                     static uint32_t prevKeys = 0;
                     const uint32_t rawKeys = p == kb ? frameKeys : 0;
-                    const bool inGame = world.GameMode() == 6 && !world.Hud().stageResults.active && (world.Hud().flags5900 & 0x18) == 0;
+                    const bool inGame = world.GameMode() == 6 && !world.Hud().stageResults.active &&
+                                        !world.PortTypingReportActive() && (world.Hud().flags5900 & 0x18) == 0;
                     const bool activePlayer = world.Hud().player[p].state == 5;
-                    const uint32_t keys = play::WorldKeyboardBits(rawKeys, inGame, activePlayer);
-                    const uint32_t keysPressed = play::WorldKeyboardBits(rawKeys & ~prevKeys, inGame, activePlayer);
+                    const bool typingGameplay = play::TypingGameplayKeyboard(world.PortTypingActive(),world.PortTypingReportActive(),
+                                                                              world.Hud().subState,world.Hud().stageResults.shown);
+                    const uint32_t keys = play::WorldKeyboardBits(rawKeys, inGame, activePlayer,typingGameplay);
+                    const uint32_t keysPressed = play::WorldKeyboardBits(rawKeys & ~prevKeys, inGame, activePlayer,typingGameplay);
                     if (p == kb) prevKeys = g_keys;
                     // The gun source resolves the aim (a raw-input relative mouse aims at the system pointer, like the
                     // original's mouse mode Input_GetMouseClientPos 0x0041EA80; only the first such player owns it).
@@ -2742,13 +2926,15 @@ int main(int argc, char** argv) {
                     c.portVolumes[3] = volumes.master;
                     c.portVolumes[4] = volumes.attraction;
                     c.flags = 7;  // port features, modern menus, persistent shared room
+                    if (lobby.typing) c.flags |= 8;
                     c.delay = static_cast<uint8_t>(netDelay);
                     c.startFrame = static_cast<uint32_t>(cfg.startFrame);
+                    c.startedAt = static_cast<uint32_t>(std::time(nullptr));
                     game::SaveData matchSave;
                     if (!matchSave.LoadNative(savePath)) matchSave.LoadOriginal(dir, assets.Exe());
                     c.save = matchSave.NativeBytes();
                     net.SetConfig(c);
-                    net.LobbyCreate(flags, matchSave.U8(game::SaveData::kDifficulty) % 5);
+                    net.LobbyCreate(flags, matchSave.U8(game::SaveData::kDifficulty) % 5, lobby.typing);
                     lobby.page = Lobby::kWaiting;
                     lobby.pageSeconds = 0;
                 };
@@ -2858,12 +3044,15 @@ int main(int argc, char** argv) {
                         if ((left || right || confirm) && lobby.cursor < 2) {
                             (lobby.cursor == 0 ? lobby.unlimited : lobby.priv) ^= true;
                             sound(0xA9);
-                        } else if (confirm && lobby.cursor == 2) {
+                        } else if ((left || right || confirm) && lobby.cursor == 2) {
+                            lobby.typing = !lobby.typing;
+                            sound(0xA9);
+                        } else if (confirm && lobby.cursor == 3) {
                             sound(0x121A9);
                             lobby.p2p = false;
                             hostRoom(static_cast<uint8_t>((lobby.unlimited ? port::net::kRoomUnlimited : 0) |
                                                           (lobby.priv ? port::net::kRoomPrivate : 0)));
-                        } else if ((confirm && lobby.cursor == 3) || back) {
+                        } else if ((confirm && lobby.cursor == 4) || back) {
                             sound(0x500A9);
                             goTo(Lobby::kMenu);
                         }
@@ -3076,6 +3265,19 @@ int main(int argc, char** argv) {
                     local.fired = local.offscreen = false;
                 }
             }
+            for (int p = 0; p < 2; ++p) if (!netplay || p == netLocal) {
+                in[p].typingText.clear(); in[p].typingCancel = false; in[p].typingItems = 0;
+                if (!menuWasOpen && !pageWasOpen && !namePromptWasOpen &&
+                    (world.PortTypingActive() || world.PortTypingReportActive() || world.PortTypingDrillActive())) {
+                    const size_t count = std::min<size_t>(32,typingKeys[p].size());
+                    in[p].typingText = typingKeys[p].substr(0,count);
+                    typingKeys[p].erase(0,count);
+                    in[p].typingCancel = typingCancel[p]; in[p].typingItems = typingItems[p];
+                    in[p].pressed |= typingButtons[p];
+                    if (count || typingCancel[p] || typingItems[p] || typingButtons[p]) netPresent[p] = true;
+                } else typingKeys[p].clear();
+                typingCancel[p] = false; typingItems[p] = 0; typingButtons[p] = 0;
+            }
             if (!netplay)
                 for (int p = 0; p < 2; ++p)
                     if (netPresent[p]) world.SetInput(p, in[p]);
@@ -3222,9 +3424,16 @@ int main(int argc, char** argv) {
             if (complete.sequence != completedRunSequence) {
                 completedRunSequence = complete.sequence;
                 if (complete.eligible && interactiveScores && !net.CatchingUp() && !net.ReplayPending()) {
+                    auto localComplete = complete;
+                    if (complete.table == port::net::kTypingLeaderboardTable && netPlayerAssigned)
+                        localComplete.score = complete.playerScores[netLocal];
+                    if (typingRecords.Observe(localComplete, volumes.username)) {
+                        typingRecords.Save(typingRecordsPath);
+                        world.SetPortTypingLeaderboard(typingRecords.Entries());
+                    }
                     port::net::LeaderboardSubmission record;
                     record.table = complete.table;
-                    record.score = complete.table < 2 && netPlayerAssigned ? complete.playerScores[netLocal] : complete.score;
+                    record.score = port::net::IsCampaignLeaderboard(complete.table) && netPlayerAssigned ? complete.playerScores[netLocal] : complete.score;
                     record.rounds = complete.rounds;
                     record.difficulty = complete.difficulty;
                     record.players = complete.players;
@@ -3245,7 +3454,10 @@ int main(int argc, char** argv) {
                     queueScore(record);
                 }
             }
-            attract.Step(dir, activeNightShift && (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && !netplay && !modelGallery.IsOpen());
+            attract.Step(dir, (activeNightShift || world.Hud().typingHome) &&
+                (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && world.Hud().nightShiftPage != 12 &&
+                !netplay && !modelGallery.IsOpen(),
+                1,world.Hud().typingHome);
             if (attractionDriver)
                 attractionAudio.Update(*attractionDriver, sndTable, attract, attract.Get() && world.Hud().nightShiftPage != 9);
             {
@@ -3268,14 +3480,14 @@ int main(int argc, char** argv) {
                         for (const auto& [modelId, mode] : s1.objects) {
                             uint16_t file = 0;
                             if (modelId > 0 && assets.Exe().Read(0x004E83B4 + static_cast<uint32_t>(modelId) * 2, &file, 2))
-                                assets.PrefetchPolFile(assets.Exe().CStr(assets.Exe().U32(0x004D0EF4 + static_cast<uint32_t>(file) * 4)));
+                                assets.PrefetchPolFile(assets.PolFileName(static_cast<uint32_t>(file)));
                         }
                     for (const char* f : {"st1_1.bin", "char_adv00.bin", "char_adv04.bin", "player1.bin", "player2.bin", "scr_load2.bin"})
                         assets.PrefetchTexFile(f);
                 }
                 // the model textures come with their pol files (op 0x50 / 0x52: pol file name table 0x004D0EF4)
                 for (const int file : renderedWorld.Hud().polFileLoads) {
-                    const std::string pol = assets.Exe().CStr(assets.Exe().U32(0x004D0EF4 + static_cast<uint32_t>(file) * 4));
+                    const std::string pol = assets.PolFileName(static_cast<uint32_t>(file));
                     if (static const bool log = getenv("HOTD2_PLAY_TIMING") != nullptr; log)
                         fprintf(stderr, "pol load frame %d: file %d %s -> tex %s\n", world.Frame(), file, pol.c_str(),
                                 assets.TextureFileFor(pol).c_str());
@@ -3343,7 +3555,7 @@ int main(int argc, char** argv) {
                 wiiRequestsSeen = req;
             }
             if (world.QuitRequested()) quit = true;
-            if (direct && world.GameMode() != 6 && world.GameMode() != 7) {  // the game-over sequence reached the title: new game
+            if (direct && !typingMode && world.GameMode() != 6 && world.GameMode() != 7) {  // the game-over sequence reached the title: new game
                 if (!startGame()) {
                     fprintf(stderr, "world: %s\n", err.c_str());
                     return 1;
@@ -3370,7 +3582,7 @@ int main(int argc, char** argv) {
         // Gate transitions even when a network wait or menu action skipped the simulation tick above.
         if (attractionDriver)
             attractionAudio.Update(*attractionDriver, sndTable, attract,
-                activeNightShift && !netplay && world.Hud().nightShiftPage != 9 &&
+                (activeNightShift || world.Hud().typingHome) && !netplay && world.Hud().nightShiftPage != 9 &&
                 (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff));
         updateSystemCursor();  // pause/resume and menus apply before presentation throttling
         // --- render ---
@@ -3454,12 +3666,24 @@ int main(int argc, char** argv) {
         std::vector<port::ModelRenderer::SpriteDraw> sprites;
         auto buildAttractBackground = [&] {
             const game::World& preview = *attract.Get();
-            vp = scene.BuildFromWorld(renderer, preview);
+            std::vector<game::WorldDraw> backgroundDraws;
+            if(attract.Typing()) {
+                backgroundDraws=preview.Draws();
+                // Keep the authored word posters and scenery, with the menu's
+                // logo replacing the demo's permanent PERFECT and life HUD.
+                std::erase_if(backgroundDraws,[](const auto& draw) {
+                    return draw.fn==0x004AC150 || draw.fn==0x004AC470 ||
+                           draw.fn==0x004AC720 || draw.fn==0x004AC5A0;
+                });
+            }
+            vp = scene.BuildFromWorld(renderer, preview,attract.Typing()?&backgroundDraws:nullptr);
             if (noHud) return;
             // Tutorial instructions, story pictures / caption effects, and dialogue belong to
             // the preview World. The live game's chapter-card animation must not leak into it.
             auto defs = WorldSprites(preview.Hud(), false);
             std::erase_if(defs, [&](const game::SpriteDef& definition) {
+                if(attract.Typing() && (definition.source==0x004871F0 || definition.source==0x004514E9 ||
+                    definition.source==0x0045151E || definition.source==0x00486AC0 || definition.source==0x00486B00))return true;
                 if (definition.id == 0x900) return true;  // original PRESS START prompt
                 // Keep the modern menu's logo and text as the only title overlay.
                 return preview.GameMode() == 3 &&
@@ -3565,6 +3789,27 @@ int main(int argc, char** argv) {
         } else if (world.Hud().stageResults.active) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
+            if (world.PortTypingActive() && uiFont.Available()) {
+                game::WorldHud resultsHud;
+                resultsHud.nightShiftPage = 0;
+                resultsHud.menuPanels.push_back({0,0,640,480,0xFF080D15});
+                resultsHud.menuPanels.push_back({36,115,604,119,0xFFBA3545});
+                resultsHud.menuText.push_back({36,72,"CHAPTER COMPLETE",1.15f,0xFFF1EBDE});
+                resultsHud.menuText.push_back({40,156,"TYPING CAMPAIGN TOTALS",.6f,0xFF99C8D1});
+                const auto stats = world.PortTypingStats();
+                char line[100];
+                std::snprintf(line,sizeof(line),"SCORE       %llu",static_cast<unsigned long long>(stats.points));
+                resultsHud.menuText.push_back({42,210,line,.68f,0xFFF1EBDE});
+                std::snprintf(line,sizeof(line),"WORDS       %llu",static_cast<unsigned long long>(stats.completedWords));
+                resultsHud.menuText.push_back({42,255,line,.68f,0xFFF1EBDE});
+                std::snprintf(line,sizeof(line),"ACCURACY    %.1f%%",stats.accuracy());
+                resultsHud.menuText.push_back({42,300,line,.68f,0xFFF1EBDE});
+                std::snprintf(line,sizeof(line),"SPEED       %.0f WPM",stats.wpm());
+                resultsHud.menuText.push_back({42,345,line,.68f,0xFFF1EBDE});
+                resultsHud.menuText.push_back({42,435,"PRESS ENTER TO CONTINUE",.55f,0xFF99C8D1});
+                play::AppendNightShiftPanels(resultsHud,sprites,viewportAspect,100);
+                uiFont.Append(resultsHud.menuText,sprites,port::ViewportXScale(viewportAspect));
+            } else {
             std::vector<game::SpriteDef> results;
             const int visibleFrames =
                 headless ? world.Hud().stageResults.frames
@@ -3572,6 +3817,7 @@ int main(int argc, char** argv) {
                                     resultsPresented ? static_cast<int>(std::min(3.0, plat.Seconds() - resultsPresentedAt) * 60) : 0);
             game::StageResultsSprites(assets.Exe(), world.Hud().stageResults, visibleFrames, results);
             sprites = scene.MakeSpriteDraws(results, 0.001f, nullptr);
+            }
         } else if (lobby.page != Lobby::kOff && activeNightShift && uiFont.Available()) {
             if (attract.Get())
                 buildAttractBackground();
@@ -3679,22 +3925,55 @@ int main(int argc, char** argv) {
                 play::AppendMenuScrollHint(optionsPage.ScrollHint(), sprites, viewportAspect);
             appendMenuCrosshairs();
         } else if (world.Hud().nightShiftPage >= 0 && lobby.page == Lobby::kOff) {
-            if (attract.Get())
+            if(world.Hud().nightShiftPage==12)
+                vp=scene.BuildFromWorld(renderer,world);
+            else if (attract.Get())
                 buildAttractBackground();
             else {
                 renderer.SetScene(assets, {});
                 vp = game::Mat4::Identity();
             }
             if (!noHud) {
-                play::AppendNightShiftPanels(world.Hud(), sprites, viewportAspect, volumes.display.menuOpacity);
+                game::WorldHud parentHud,promptHud;
+                const bool originalPrompt=play::SplitOriginalPrompt(world.Hud(),parentHud,promptHud);
+                const auto& menuHud=originalPrompt?parentHud:world.Hud();
+                play::AppendNightShiftPanels(menuHud, sprites, viewportAspect, volumes.display.menuOpacity);
                 std::vector<game::SpriteDef> menuDefs;
                 for (const auto& definition : world.Hud().sprites)
-                    if (!uiFont.Available() || (definition.id >= 0xAB1 && definition.id <= 0xAB5) ||
+                    if ((!uiFont.Available() && !originalPrompt) || (definition.id >= 0xAB1 && definition.id <= 0xAB5) ||
+                        (world.Hud().nightShiftPage == 12 && (definition.id >= 0x4000||definition.id==0x8E7||definition.id==0x8E8)) ||
                         (world.Hud().nightShiftPage == 7 && definition.id >= 0xAA8 && definition.id <= 0xAAF))
                         menuDefs.push_back(definition);
-                const auto menuSprites = scene.MakeSpriteDraws(menuDefs, .001f, nullptr);
+                auto menuSprites = scene.MakeSpriteDraws(menuDefs, .001f, nullptr);
+                if(world.Hud().nightShiftPage==12)for(auto& draw:menuSprites)draw.hud=false;
                 sprites.insert(sprites.end(), menuSprites.begin(), menuSprites.end());
-                if (uiFont.Available()) uiFont.Append(world.Hud().menuText, sprites, port::ViewportXScale(viewportAspect));
+                auto appendText=[&](const auto& lines,auto& out) {
+                    if(uiFont.Available()) {uiFont.Append(lines,out,port::ViewportXScale(viewportAspect));return;}
+                    std::vector<game::SpriteDef> defs;
+                    for(const auto& line:lines) {
+                        const size_t first=defs.size();
+                        game::MenuTextScaled(assets.Exe(),line.x,line.y-12*line.scale,line.text,0,line.scale,defs);
+                        for(size_t i=first;i<defs.size();++i) {
+                            auto& d=defs[i];d.flags|=0x700;d.depth=.005f;d.tinted=true;
+                            d.tint[0]=((line.color>>16)&255)/255.f;d.tint[1]=((line.color>>8)&255)/255.f;d.tint[2]=(line.color&255)/255.f;
+                            d.alpha=(line.color>>24)/255.f;
+                        }
+                    }
+                    const auto rendered=scene.MakeSpriteDraws(defs,.001f,nullptr);
+                    out.insert(out.end(),rendered.begin(),rendered.end());
+                };
+                if(uiFont.Available() || originalPrompt)appendText(menuHud.menuText,sprites);
+                const auto logos=scene.MakeSpriteDraws(play::MenuGameLogos(menuHud),.001f,nullptr);
+                sprites.insert(sprites.end(),logos.begin(),logos.end());
+                if(originalPrompt) {
+                    std::vector<port::ModelRenderer::SpriteDraw> panels,text;
+                    play::AppendNightShiftPanels(promptHud,panels,viewportAspect,100);
+                    for(size_t i=0;i<panels.size();++i)panels[i].depth=.00008f-float(i)*.000001f;
+                    appendText(promptHud.menuText,text);
+                    for(auto& d:text)d.depth*=.001f;
+                    sprites.insert(sprites.end(),panels.begin(),panels.end());
+                    sprites.insert(sprites.end(),text.begin(),text.end());
+                }
                 for (const auto& hint : world.Hud().menuScrollHints)
                     play::AppendMenuScrollHint(hint, sprites, viewportAspect);
                 if (world.NetworkLobby() || !world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
@@ -3703,7 +3982,8 @@ int main(int argc, char** argv) {
             vp = scene.BuildFromWorld(renderer, world);
             game::HudState hs = MakeHudState(world, in, modeAge, blink, credits < 0, scoreDisplay.Enabled());
             std::vector<game::SpriteDef> defs = noHud ? std::vector<game::SpriteDef>() : WorldSprites(world.Hud());
-            const auto hud = noHud ? std::vector<game::SpriteDef>() : HudSprites(hs, world.Hud(), volumes.display.showCrosshairs);
+            const auto hud = noHud || world.PortTypingActive() || world.PortTypingReportActive() ? std::vector<game::SpriteDef>()
+                                                              : HudSprites(hs, world.Hud(), volumes.display.showCrosshairs);
             defs.insert(defs.end(), hud.begin(), hud.end());
             if (headless && getenv("HOTD2_PLAY_AIMLOG")) {
                 // Record the actual crosshair sprites submitted to the renderer (including intermediate screenshots).
@@ -3721,10 +4001,85 @@ int main(int argc, char** argv) {
             static const bool noTexRes = getenv("HOTD2_NO_TEXRES") != nullptr;  // comparisons: every sprite file loaded
             const auto spr = scene.MakeSpriteDraws(defs, world.Hud().paused ? 0.001f : 0.8f, noTexRes ? nullptr : &world.Hud().texFiles);
             sprites.insert(sprites.end(), spr.begin(), spr.end());
+            if (!noHud && world.PortTypingActive() && !menu.IsOpen() && !optionsPage.IsOpen()) {
+                play::AppendNightShiftPanels(world.Hud(),sprites,viewportAspect,100);
+                if (uiFont.Available()) uiFont.Append(world.Hud().menuText,sprites,port::ViewportXScale(viewportAspect));
+            }
             if (!noHud && lobby.page == Lobby::kOff) {
                 for (const auto& hint : world.Hud().menuScrollHints)
                     play::AppendMenuScrollHint(hint, sprites, viewportAspect);
                 if (!world.Hud().menuScrollHints.empty()) appendMenuCrosshairs();
+            }
+        }
+        if (!noHud && !previewHidden && world.PortTypingActive() && !menu.IsOpen() && !optionsPage.IsOpen() &&
+            !usernamePrompt.IsOpen() && !world.Hud().stageResults.active && assets.SourceModel(0x129E) <= 0) {
+            game::WorldHud typingHud;
+            typingHud.nightShiftPage = 0;
+            typingHud.menuPanels.push_back({0, 0, 640, 35, 0xDB080D15});
+            typingHud.menuPanels.push_back({0, 431, 640, 480, 0xEB080D15});
+            const auto stats = world.PortTypingStats();
+            char details[160];
+            std::snprintf(details, sizeof(details), "LIVES %d    SCORE %llu    WPM %.0f    ACCURACY %.1f%%",
+                          world.Hud().player[0].lives, static_cast<unsigned long long>(stats.points), stats.wpm(), stats.accuracy());
+            typingHud.menuText.push_back({12, 8, "TYPING CAMPAIGN", .56f, 0xFFF1EBDE});
+            char perfect[96];
+            std::snprintf(perfect,sizeof(perfect),"PERFECT %u    LIFE %llu / %llu",stats.perfectStreak,
+                          static_cast<unsigned long long>(stats.lifeGauge),static_cast<unsigned long long>(stats.lifeThreshold));
+            typingHud.menuText.push_back({294, 10, perfect, .38f, 0xFFF0BF48});
+            const auto question = world.PortTypingQuestion();
+            if (!question.empty()) {
+                typingHud.menuPanels.push_back({6, 39, 634, 87, 0xF509121D});
+                typingHud.menuText.push_back({16, 44, question, .49f, 0xFFF4EFE2});
+                char time[32];
+                std::snprintf(time,sizeof(time),"TIME %.1f",world.PortTypingQuestionSeconds());
+                typingHud.menuText.push_back({16, 68, time, .36f, 0xFFF0BF48});
+            }
+            typingHud.menuText.push_back({12, 436, details, .44f, 0xFFF1EBDE});
+            typingHud.menuText.push_back({12, 460, "ESC PAUSE    BACKSPACE CANCEL WORD    F10 PAUSE    ALT+F2 TITLE", .38f, 0xFF99C8D1});
+            struct Box { float x,y,w; };
+            std::vector<Box> occupied;
+            const auto typingPrompts = world.PortTypingPrompts();
+            const bool largeWords = world.PortTypingOptions().wordSize == game::TypingWordSize::Large;
+            const float wordScale = largeWords ? .65f : .5f;
+            // Prepared source mode submits its original HUD from TypingWordHud.
+            // This system-font overlay is only the asset-free fallback.
+            for (const auto& prompt : typingPrompts) {
+                const float width = prompt.projectile ? 42.f : std::clamp(18.f + float(prompt.text.size()) * (largeWords ? 10.f : 7.7f), 72.f, 614.f);
+                float x = std::clamp(prompt.x - width * .5f, 6.f, 634.f - width);
+                const float minimumY = question.empty() ? 48.f : 94.f;
+                float y = std::clamp(prompt.y + 18.f, minimumY, 396.f);
+                for (int attempt = 0; attempt < 16; ++attempt) {
+                    bool overlaps = false;
+                    for (const auto& b : occupied)
+                        if (x < b.x+b.w+4 && x+width+4 > b.x && std::abs(y-b.y) < 30) overlaps = true;
+                    if (!overlaps) break;
+                    y += 32;
+                    if (y > 396) y = minimumY + float(attempt % 3) * 7;
+                }
+                occupied.push_back({x,y,width});
+                const uint32_t edge = prompt.projectile ? 0xFFFFAD62 : prompt.waiting || prompt.selected ? 0xFFF0BF48 : prompt.boss ? 0xFFCC6269 : 0xFF66B8CA;
+                const float anchorX = std::clamp(prompt.x, 4.f, 636.f);
+                const float anchorY = std::clamp(prompt.y, 38.f, 427.f);
+                const float joinX = std::clamp(anchorX, x+3, x+width-3);
+                typingHud.menuPanels.push_back({joinX-0.5f,std::min(anchorY,y),joinX+0.5f,std::max(anchorY,y),edge});
+                typingHud.menuPanels.push_back({std::min(anchorX,joinX),anchorY-0.5f,std::max(anchorX,joinX),anchorY+0.5f,edge});
+                typingHud.menuPanels.push_back({anchorX-2,anchorY-2,anchorX+2,anchorY+2,edge});
+                typingHud.menuPanels.push_back({x-1, y-1, x+width+1, y+27, edge});
+                typingHud.menuPanels.push_back({x, y, x+width, y+26, 0xF509121D});
+                typingHud.menuText.push_back({x+8, y+3, prompt.text, prompt.projectile ? .6f : wordScale, 0xFFF4EFE2});
+                if (prompt.progress)
+                    typingHud.menuText.push_back({x+8, y+3, prompt.text.substr(0,prompt.progress), wordScale, 0xFF69E4A5});
+            }
+            if (typingPrompts.empty())
+                typingHud.menuText.push_back({405, 9, world.Hud().player[0].lives > 0 ? "FOLLOW THE STORY" : "ENTER TO CONTINUE", .4f, 0xFF99C8D1});
+            play::AppendNightShiftPanels(typingHud, sprites, viewportAspect, 100);
+            if (uiFont.Available()) uiFont.Append(typingHud.menuText, sprites, port::ViewportXScale(viewportAspect));
+            else {
+                std::vector<game::SpriteDef> fallback;
+                for (const auto& line : typingHud.menuText)
+                    game::MenuTextScaled(assets.Exe(),line.x,line.y-12*line.scale,line.text,0,line.scale,fallback);
+                const auto draws=scene.MakeSpriteDraws(fallback,.0001f,nullptr);
+                sprites.insert(sprites.end(),draws.begin(),draws.end());
             }
         }
         if (!noHud && !modelGallery.IsOpen() && !previewHidden && world.Frame() < scoreNoticeUntil &&
@@ -3787,9 +4142,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "Temporal upscale: %s\n", displayNotice.c_str());
         }
 #endif
+        play::AppendMenuGameFade(world.Hud(),sprites);
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         const bool outputResolutionMenu = !previewHidden &&
-            (menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() ||
+            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() ||
              world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
              world.NetworkLobby() || lobby.page != Lobby::kOff);
         // Menu readability is independent of scene resolution and the saved

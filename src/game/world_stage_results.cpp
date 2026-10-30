@@ -3,6 +3,7 @@
 
 namespace game {
 void World::Impl::BeginStageResults(int bonus) {
+    if (cfg.portTyping && typingReferenceActive) return; // The original typing result actor owns this sequence.
     if (!cfg.portStageResults || gameMode != 6 || cfg.eventMode < 0 || cfg.eventMode >= 6 ||
         cfg.gameType == 2 || stageResults.shown) return;
     auto& r = stageResults;

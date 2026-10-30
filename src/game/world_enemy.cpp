@@ -12,6 +12,7 @@
 #include "game/mstack.h"
 #include "game/world_internal.h"
 #include "game/world_modes.h"
+#include "game/world_typing_original.h"
 
 namespace game {
 
@@ -82,8 +83,7 @@ Mat4 RotZYX(const int a[3]) {  // push; identity; RotZ(z); RotY(y); RotX(x)
 // 0x00453B50 (game type 1 with item 0x15, 0x009C88A8 == 1): node 2 drawn scaled (kind 0xE: (1.8, 1.8, 1), else (2, 2, 2))
 // through the enemy node draw 0x004534A0; the other nodes as usual
 void BigHeadNode(World::Impl& w, EnemyTask& e, int idx, const Mat4& m) {
-    if (!ItemFlag(w, 0)) return;
-    if (idx != 2) {
+    if (idx != 2 || (!ItemFlag(w,0) && !(TypingOriginalSharedFlags(w)&2))) {
         w.EnemyDrawNode(e, idx, m);
         return;
     }
@@ -181,10 +181,10 @@ void World::Impl::EnemyCreate(EnemyTask& e) {
     e.sub = 0;
     if (static const bool log = getenv("HOTD2_ENEMYLOG") != nullptr; log)  // debug: every enemy's kind / variant / behaviour
         fprintf(stderr, "enemy %d kind %X variant %d behaviour %d hp %d stage %d\n", frame, e.anim.kind, e.variant, e.behaviour, e.hpMax, cfg.eventMode);
-    if (runner->cfg.gameType == 1) {
+    if (runner->cfg.gameType == 1 || (TypingOriginalSharedFlags(*this)&2)) {
         // item 0x15 (0x009C88A8 == 1): the head node's hit radius (node 2 +0x78 = +0x3A4) doubled (kind 0xE: x float
         // 0x0055DD48), node draws through 0x00453B50 (the head scaled)
-        if (ItemFlag(*this, 0)) {
+        if (ItemFlag(*this, 0) || (TypingOriginalSharedFlags(*this)&2)) {
             float r = e.anim.nodes[2].radius;
             r = e.anim.kind == 0xE ? r * F32(exe, 0x0055DD48) : r + r;
             e.anim.nodes[2].radius = r;
@@ -207,6 +207,8 @@ void World::Impl::EnemyCreate(EnemyTask& e) {
 // Anim_InitEnemy 0x00410440 + Enemy_InitPose 0x00410590 / 0x004107E0, Actor_RegisterSlot 0x00409270
 void World::Impl::EnemyInitPose(EnemyTask& e) {
     EnemyAnim& a = e.anim;
+    const int originalKind=a.kind;
+    a.kind=int16_t(TypingOriginalCharacterKind(TypingOriginalSharedFlags(*this),a.kind));
     const int k = a.kind;
     if (k == 0x1E) a.scale = 0.6f;            // 0x3F19999A
     else if (k == 0x1F) a.scale = 0.7f;       // 0x3F333333
@@ -247,6 +249,10 @@ void World::Impl::EnemyInitPose(EnemyTask& e) {
         EnemyNode& n = a.nodes[d.index];
         n.used = true;
         n.model = static_cast<int32_t>(d.modelId);
+        if (a.kind!=originalKind && typingReferenceActive) {
+            const int prepared=typingReference.NativeEnemyModel(a.kind,d.index,n.model);
+            ProcessRequest({0x50,static_cast<uint32_t>(prepared)});
+        }
         n.flags = 0x21;
         const uint32_t row = table + d.index * 0x14 - 0x14;
         if (exe.InData(table) && static_cast<int32_t>(exe.U32(row)) == n.model) {
@@ -518,6 +524,7 @@ void World::Impl::TaskBlood(Task& t) {
 
 // 0x00407200(obj, node): the same blood sprite on a node at full scale (task 0x00407120; actor 0x20 hits)
 void World::Impl::SpawnNodeBlood(EnemyTask& e, int node) {
+    if (cfg.portTyping && !cfg.typingOptions.bloodEffects) return;
     BloodTask* b = NewTask<BloodTask>(WorldTramp<&Impl::TaskBlood>, 0x00407120);
     b->enemy = CurrentSerial();
     b->obj = &e;
@@ -528,6 +535,7 @@ void World::Impl::SpawnNodeBlood(EnemyTask& e, int node) {
 
 // 0x00407310(obj, node, scale): blood sprite task 0x00407230 on the node
 void World::Impl::SpawnHitBlood(EnemyTask& e, int slot, float scale) {
+    if (cfg.portTyping && !cfg.typingOptions.bloodEffects) return;
     BloodTask* b = NewTask<BloodTask>(WorldTramp<&Impl::TaskBlood>, 0x00407230);
     b->enemy = CurrentSerial();
     b->obj = &e;
@@ -678,7 +686,34 @@ void World::Impl::EnemyCollectShots(EnemyTask& e) {
                 if (horde) HordeShotDamage(*this, p, s);  // port only (world_horde.cpp)
                 const int slot = std::clamp(hitSlot[p], 0, 31);  // (skeleton 0x17 nodes 16.. are hit in stage 4)
                 SetSites({ 0 });
-                const EnemyShotResult r = EnemyApplyShot(enemyTables, s, slot, cfg.gameMode, rank, &rng);
+                // Completing a word is lethal even for an armored body node. Keep the native
+                // score, effects and death reaction path below, including kind-specific deaths.
+                const bool typed = cfg.portTyping && e.typingStrike;
+                const bool drillLeaper=typed&&cfg.eventMode==7&&cfg.gameType==2&&e.typingOriginType==0x31;
+                if (typed) {
+                    // PC actor31's flag4 post delivers a35-HP native hit;
+                    // ordinary flag1 zombie posts take the lethal word path.
+                    if(!drillLeaper)s.hp = 0;
+                    e.typingStrike = false;
+                }
+                EnemyShotResult r;
+                if(drillLeaper) {
+                    // Source 0x4381C0 -> 0x436300 -> 0x4366C0: full words
+                    // subtract35, partial keys carry1000 and take no HP.
+                    // Reuse native wound/death/effect rules with that exact
+                    // damage, independent of gun node/rank damage tables.
+                    EnemyTables wordTables;
+                    wordTables.partBit=enemyTables.partBit;
+                    wordTables.kinds.resize(size_t(s.kind)+1);
+                    auto& kind=wordTables.kinds[size_t(s.kind)];
+                    kind=enemyTables.kinds[size_t(s.kind)];
+                    std::fill(kind.baseDamage.begin(),kind.baseDamage.end(),int16_t(35));
+                    kind.rankMod.clear();
+                    r=EnemyApplyShot(wordTables,s,slot,cfg.gameMode,rank,&rng);
+                } else r=EnemyApplyShot(enemyTables, s, slot, cfg.gameMode, rank, &rng);
+                // Actor 0x31 has its own reaction callback that ignores deflects.
+                // A completed word must enter that callback's lethal branch.
+                if (typed && r.killed && r.type == EnemyHitType::Deflect) r.type = EnemyHitType::Plain;
                 e.flags34 = s.flags34;
                 e.hp = s.hp;
                 e.lostParts = s.severMask;
@@ -873,6 +908,7 @@ void World::Impl::EnemyBeh23(EnemyTask& e) {
             return;
         }
         if (e.P(2) == 0xBA) AnimBlendTo(e, 0xBA, 0, 1);
+        TypingAttackTimer(0);  // TOTD 0x00446593: authored lunge releases immediately
         EnemyPickTarget(e);
         EnemyFaceTarget(e);
         e.flags34 &= ~0x4100u;
@@ -900,6 +936,7 @@ void World::Impl::EnemyBeh23(EnemyTask& e) {
 // Enemy_PickTarget 0x00455DE0
 int World::Impl::EnemyPickTarget(EnemyTask& e) {
     e.target = -1;
+    if (!TypingAttackReady()) return 0;  // TOTD 0x004446A0
     if (attackSlot == 0) {
         if (route == 1) {
             int who = playersInGame;
@@ -1535,6 +1572,7 @@ void World::Impl::EnemyAnimate(EnemyTask& e) {
 
 // Enemy_DrawSkeleton 0x004110D0 (+ root transform 0x00410920 / 0x00410C50)
 void World::Impl::AnimDraw(EnemyTask& e) {
+    NativeModelDrawScope modelScope(*this,e.anim.kind);
     // Renderer state: nearly every caller of 0x00411090 draws between the actor light 0x0041DC70 (env block 1) and
     // 0x0041DCC0 (back to block 0); callers with their own light (0x0041DC10) or none set animLight = 0 first.
     struct LightGuard {
@@ -1703,6 +1741,7 @@ void World::Impl::AnimDraw(EnemyTask& e) {
 void World::Impl::AnimNode(EnemyTask& e, const Skeleton& s, int idx, const Mat4& parent, const Mat4& parentMv) {
     EnemyAnim& a = e.anim;
     const SkeletonNode& d = s.nodes[idx];
+    NativeModelDrawScope modelScope(*this,a.kind,d.index);
     EnemyNode& n = a.nodes[d.index & 31];
     Mat4 m = parent, mv = parentMv;
     mx::Translate(m, d.offset[0], d.offset[1], d.offset[2]);
@@ -1743,6 +1782,13 @@ void World::Impl::AnimNode(EnemyTask& e, const Skeleton& s, int idx, const Mat4&
                    mm == 0xEF6 || mm == 0xF06 || mm == 0xF83 || mm == 0x15B0;
         }
         if (!skip) {
+            // Source Meat uses the same enlarged-head / civilian-limb node
+            // draw transforms as the native Original items. Keep children on
+            // their unscaled skeleton chain and scale the callback's top only.
+            Mat4 originalDraw=mv;
+            const auto itemScale=TypingOriginalNodeScale(TypingOriginalSharedFlags(*this),a.kind,e.civilian,d.index);
+            if (e.nodeFn!=BigHeadNode) mx::Scale(originalDraw,itemScale[0],itemScale[1],itemScale[2]);
+            const Mat4& mv=originalDraw;
             const bool savedMv = drawMv;  // the callbacks draw from the model-view chain (like the original's stack top)
             drawMv = true;
             if (e.nodeFn) e.nodeFn(*this, e, d.index, mv);

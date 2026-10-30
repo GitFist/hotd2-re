@@ -66,10 +66,10 @@ SpriteRecord MakeSpriteRecord(const SpriteDef& def, uint32_t textureId, const fl
     r.y = def.y;
     r.sx = def.sx;
     r.sy = def.sy;
-    r.u0 = 0;
-    r.u1 = 1;
-    r.v0 = 0;
-    r.v1 = 1;
+    r.u0 = def.atlas ? def.uv[0] : 0;
+    r.v0 = def.atlas ? def.uv[1] : 0;
+    r.u1 = def.atlas ? def.uv[2] : 1;
+    r.v1 = def.atlas ? def.uv[3] : 1;
     if (def.flags & 0x10) {
         r.u0 = 1.0f - r.u0;
         r.u1 = 1.0f - r.u1;
@@ -129,6 +129,14 @@ void SpriteQuad(const SpriteRecord& rec, int texWidth, int texHeight, float zSca
         v.u = (k & 1) ? rec.u1 : rec.u0;
         v.v = (k & 2) ? rec.v1 : rec.v0;
     }
+}
+
+void TypingSpriteQuad(const SpriteRecord& rec, int texWidth, int texHeight, TLVertex out[4]) {
+    SpriteRecord layout = rec;
+    layout.depth = 1; // XY/UV/colour are independent of depth; avoid division at authored depth0.
+    SpriteQuad(layout, texWidth, texHeight, 0, 0, out);
+    const float z = rec.depth < 1.0f ? rec.depth * .1f : (1.0f - 1.0f / rec.depth) * .9f + .1f;
+    for (int k = 0; k < 4; ++k) { out[k].z = z; out[k].rhw = 1; }
 }
 
 int ComparePass1(uint32_t keyA, float depthA, uint32_t keyB, float depthB) {

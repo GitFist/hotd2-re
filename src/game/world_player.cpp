@@ -10,10 +10,13 @@
 
 #include "game/mstack.h"
 #include "game/world_internal.h"
+#include "game/world_typing_original.h"
 #include "game/world_modes.h"
 #include "game/world_nightshift.h"
 
 namespace game {
+
+bool TypingChapterChoiceFrame(World::Impl& world);
 
 namespace {
 
@@ -169,9 +172,12 @@ void World::Impl::PauseFrame() {
     bool toggle = false;
     if (one == paused && two == paused) {  // 0x0040E9C0
         if (!paused) {
+            const bool typingGameplayPause=cfg.portTyping && !TypingDrillGameActive(*this) && !typingResultsActive && !stageResults.shown;
             // 0x0040EAB0: game mode 6, sub-state 2, 0x009A5900 & 0x1C == 0
-            if (gameMode == 6 && subState == 2 && (flags5900 & 0x1C) == 0) {
-                if ((pressed & 8) && player[0].state == 5) {
+            if (gameMode == 6 && subState == 2 && ((flags5900 & 0x1C) == 0 || typingGameplayPause)) {
+                // Escape must also pause a typing intro before its automatic
+                // player join, or while a story card hides the shooting HUD.
+                if ((pressed & 8) && (player[0].state == 5 || typingGameplayPause)) {
                     pausePlayer = 0;
                     toggle = true;
                 } else if ((pressed & 0x80000) && player[1].state == 5) {
@@ -241,6 +247,9 @@ bool World::Impl::UseCredit(int, bool cont) {
 
 // 0x007DCCA4 (top of Evt_Run 0x0045ECC0): a player in state 5 with lives, or a non-interactive mode
 bool World::Impl::GameRunning() {
+    // PC44E000's training branch tests playing state alone. Cleanup attacks
+    // may exhaust lives after the result has latched without stopping its VM.
+    if(TypingDrillGameActive(*this))return player[0].state==5||player[1].state==5;
     if ((player[0].lives >= 1 && player[0].state == 5) || (player[1].lives >= 1 && player[1].state == 5)) return true;
     return NonInteractive();
 }
@@ -269,10 +278,27 @@ void World::Impl::PlayerTakeHit(int p, int flag, int kind) {
     // 0x004153E0: in mode 6 only players in state 1, 4 or 5 can be hit
     if (gameMode == 6 && P.state != 1 && (P.state < 4 || P.state > 5)) return;
     if (P.hitTimer != 0 || gameMode == 5) return;
+    if (cfg.portTyping && cfg.typingOriginal && TypingController(p).original().invulnerable()) return;
     // 0x009C9FD8 + p * 0x7C: infinite lives (Hod2.ini cheat) assumed off
     --P.lives;
+    TypingDrillGameDamage(*this,p);
     if (cfg.portStageResults && !stageResults.shown) ++stageResults.player[p].damage;
     rankAdj -= 2;
+    if (cfg.portTyping) {
+        {
+            // Source483C93/483CB4 records accepted damage from small threats
+            // and from an attacker other than the word currently selected.
+            const Task* attacker = ts.Current();
+            const auto* actor = attacker ? dynamic_cast<const ActorTask*>(attacker->data.get()) : nullptr;
+            auto& controller = TypingController(p);
+            controller.noteDamage(actor && (actor->typingFlags & 0x10u),
+                              !attacker || attacker->serial != controller.selectedSerial());
+        }
+        TypingAttackTimer(2);
+        // Source 0x00483C58 fails a live wave on the hit itself. Comparing lives
+        // with the starting value misses hits after an earned extra life.
+        if (typingChallenge.active && typingChallenge.state <= 1) typingChallenge.shared = 0;
+    }
     AddScore(p, -100);
     if (flag != 0) {
         P.hitShake = 1;
@@ -310,14 +336,14 @@ void World::Impl::HitShake() {
 
 // Game_UpdateRank 0x004607B0
 void World::Impl::UpdateRank() {
-    int s3 = rank + (players - rankPrevPlayers) * 4;
+    int s3 = rank + ((!cfg.portTyping || rankPrevPlayers != 0) ? (players - rankPrevPlayers) * 4 : 0);
     int s4 = s3;
     if (rankTimer % 0x708 == 0) {
         s4 = s3 + 1;
         bool two = false;
         if (playersInGame == 0) two = player[0].lives >= 4;
         else if (playersInGame == 1) two = player[1].lives >= 4;
-        else two = playersInGame == 2 && player[0].lives + player[1].lives >= 7;
+        else two = playersInGame == 2 && player[0].lives + player[1].lives >= (cfg.portTyping ? 6 : 7);
         if (two) s4 = s3 + 2;
     }
     s4 += rankAdj;
@@ -359,6 +385,7 @@ void World::Impl::SetGameMode(int m) {
 
 // 0x0045FEE0: game mode 6, sub-state table 0x005679A8
 void World::Impl::Mode6Frame() {
+    if (TypingChapterChoiceFrame(*this)) return;
     if (StageResultsFrame()) return;
     auto notPlaying = [&](int p) { return exe.U32(kStateTable + 4 + 0x14 * static_cast<uint32_t>(player[p].state)) != 0; };
     switch (subState) {
@@ -518,6 +545,7 @@ void World::Impl::TaskPlayer(Task& t) {
         PlayerContinue(t);
         return;
     case fn::kPlayerRejoin:  // 0x00413DE0: continue accepted
+        if (cfg.portTyping) TypingController(p).continueGame();
         if (cfg.portStageResults && !stageResults.shown) ++stageResults.player[p].continues;
         if (P.overlay.active != 0) {  // 0x004172E0
             P.overlay.active = 0;
@@ -672,7 +700,9 @@ void World::Impl::PlayerCb80(Task& t) {
         P.cb80 = 0x00415BD0;
         return;
     case 0x00415BD0: {  // intro: beside the car on paths 0xFD (camera 0x20) / 0xFE (camera 0x21 up to tick 0x104)
-        const int cam = c.camId, tick = c.tick;
+        // The prepared PC typing cameras30..32 correspond to native20..22;
+        // their car paths11F/120 are likewise stored in the source namespace.
+        const int cam = c.camId - (typingReferenceActive ? 0x4010 : 0), tick = c.tick;
         float x = b->pos[0], z = b->pos[2];
         int yaw = b->rot[1];
         int path = -1;
@@ -684,7 +714,8 @@ void World::Impl::PlayerCb80(Task& t) {
         if (path >= 0) {
             float pos[3] = {}, tg[3] = {};
             int roll = 0;
-            if (cameraBank.Evaluate(path, static_cast<float>(tick), pos, tg, &roll, false)) {
+            const int preparedPath = path + (typingReferenceActive ? 0x4022 : 0);
+            if (cameraBank.Evaluate(preparedPath, static_cast<float>(tick), pos, tg, &roll, false)) {
                 const int pyaw = static_cast<int>(tg[1]);
                 Mat4 m = Mat4::Identity();
                 mx::Translate(m, pos[0], pos[1], pos[2]);
@@ -893,6 +924,11 @@ void World::Impl::PlayerTrigger(Task& t) {
     PlayerTask& pt = t.As<PlayerTask>();
     const int p = pt.index;
     Player& P = player[p];
+    if (cfg.portTyping && gameMode == 6) {
+        P.pending = 0;
+        P.firedThisFrame = false;
+        return;
+    }
     if (demoFlag == 1) {
         SetSites({ attackers != 0 ? 0x00415740u : 0x0041572Eu, 0x00415757u, 0x0041576Bu });
         const DemoShot s = DemoAutoGun(rng, p, attackers != 0);
@@ -942,7 +978,7 @@ void World::Impl::PlayerTrigger(Task& t) {
                 tr.type = 0;
                 if (++P.ring > 5) P.ring = 0;
             }
-            Sound(exe.U32(0x004EC8BC + 4 * p));  // gun sound
+            if (!(cfg.portTyping && (TypingOriginalSharedFlags(*this)&32))) Sound(exe.U32(0x004EC8BC + 4 * p));
         }
     }
     // pad reload button (0x009C9028 & 0x009C9F6C[p][kind]) for input kind 0: pads are not driven
@@ -969,6 +1005,7 @@ void World::Impl::PlayerCrosshair(Task& t) {
     const int mode = input[p].kind == 1 ? input[p].deviceMode : 0;
     const bool gunMode = mode == 5 || mode == 6 || (mode==kPortWideGunMode&&cfg.portFeatures);
     P.crosshairOn = false;
+    if (cfg.portTyping) return;
     if (gameMode == 6 && ((P.inputKind != 1 && P.gun.valid != 0) || gunMode) && P.lives > 0 && canShoot != 0) {
         P.crosshairOn = true;
         if (gunMode) {  // Input_GetGunPos 0x0041E280: the latched device position

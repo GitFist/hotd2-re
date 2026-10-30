@@ -48,6 +48,19 @@ int OpWords(int op) {
 // Task
 // =====================================================================================================================
 
+uint32_t World::Impl::CivWord(uint32_t address) const {
+    uint32_t value = 0;
+    if (typingReferenceActive && (typingReference.CivilianWord(address, &value) || mem.Read(address, &value))) return value;
+    return exe.U32(address);
+}
+
+float World::Impl::CivFloat(uint32_t address) const {
+    const uint32_t bits = CivWord(address);
+    float value = 0;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 void World::Impl::TaskCivilian(Task& t) {
     CivTask& c = t.As<CivTask>();
     if (c.fn == 0x0048A3E0) {
@@ -72,7 +85,8 @@ void World::Impl::CivCreate(CivTask& c) {
     c.anim.motion[0] = 0x294;
     c.anim.kind = static_cast<int16_t>(c.record.ParamS8(0));
     EnemyInitPose(c);  // Anim_InitEnemy 0x00410440 (+ actor slot 0x00409270)
-    const uint32_t script = exe.U32(0x005702A8 + 4 * static_cast<uint32_t>(c.record.params[1]));
+    const uint32_t script = typingReferenceActive ? typingReference.CivilianScript(c.record.params[1]) :
+                            exe.U32(0x005702A8 + 4 * static_cast<uint32_t>(c.record.params[1]));
     CivRunScript(c, script);
     c.anim.drawFlags |= 4;
     c.anim.rotOrder = 1;
@@ -335,11 +349,11 @@ void World::Impl::CivUpdate(CivTask& c) {
     }
     if (k.soundTimer != 0 && cfg.gameMode != 10) {
         if (--k.soundTimer == 0) {
-            Sound(k.sound);
+            TypingSound(k.sound);
             if (k.soundList) {
-                k.sound = exe.U32(k.soundList);
-                k.soundTimer = static_cast<int32_t>(exe.U32(k.soundList + 4));
-                k.soundList = exe.U32(k.soundList + 8) == 0xFFFFFFFFu ? 0 : k.soundList + 8;
+                k.sound = CivWord(k.soundList);
+                k.soundTimer = static_cast<int32_t>(CivWord(k.soundList + 4));
+                k.soundList = CivWord(k.soundList + 8) == 0xFFFFFFFFu ? 0 : k.soundList + 8;
             }
         }
     }
@@ -422,8 +436,8 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
     CivCtl& k = c.c;
     const uint32_t entry = k.flags;
     for (int guard = 0; guard < 4096; ++guard) {
-        const int op = static_cast<int>(exe.U32(addr));
-        auto A = [&](int i) { return exe.U32(addr + 4 * i); };
+        const int op = static_cast<int>(CivWord(addr));
+        auto A = [&](int i) { return CivWord(addr + 4 * i); };
         uint32_t next = addr + 4 * OpWords(op);
         switch (op) {
         case 0:
@@ -444,11 +458,11 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
             k.path = static_cast<int32_t>(A(1));
             k.radius = BitsF(A(2));
             if (k.path > 0)
-                for (int i = 0; i < 3; ++i) k.target[i] = F32(exe, static_cast<uint32_t>(k.path) + 4 * i);
+                for (int i = 0; i < 3; ++i) k.target[i] = CivFloat(static_cast<uint32_t>(k.path) + 4 * i);
             break;
         case 6:
             k.path2 = A(1);
-            for (int i = 0; i < 3; ++i) k.target[i] = F32(exe, k.path2 + 4 * i);
+            for (int i = 0; i < 3; ++i) k.target[i] = CivFloat(k.path2 + 4 * i);
             break;
         case 7: {
             k.path = 1;
@@ -506,8 +520,8 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
             break;
         case 0x17: k.sphereMode = static_cast<uint8_t>(A(1)); break;
         case 0x18:
-            for (int i = 0; i < 3; ++i) c.pos[i] = F32(exe, A(1) + 4 * i);
-            for (int i = 0; i < 3; ++i) c.rot[i] = static_cast<int32_t>(exe.U32(A(1) + 0xC + 4 * i));
+            for (int i = 0; i < 3; ++i) c.pos[i] = CivFloat(A(1) + 4 * i);
+            for (int i = 0; i < 3; ++i) c.rot[i] = static_cast<int32_t>(CivWord(A(1) + 0xC + 4 * i));
             break;
         case 0x19: runner->camera.routeBranch = static_cast<int16_t>(A(1)); break;  // 0x009C88A4 (look table entry)
         case 0x1A:
@@ -522,7 +536,7 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
         case 0x1C: runner->flags[A(1) & 0xFF] = 1; break;
         case 0x1D:
             if ((skip2230 != 0 && (k.flags & 0x20000000)) || k.lifeTimer == 0)
-                Voice(static_cast<int16_t>(A(1)));  // Snd_PlayVoiceLine 0x00435B80
+                TypingVoice(static_cast<int16_t>(A(1)));  // source/native dialogue selector follows the active bank
             break;
         case 0x1E: k.jump = A(1); break;
         case 0x1F: k.jump = GlobalInt(0x009A2226, front.menuCursor) == 1 ? A(2) : A(1); break;  // mode-select cursor 1 = original mode
@@ -536,9 +550,9 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
             if (l == 0) {
                 k.soundList = 0;
             } else {
-                k.sound = exe.U32(l);
-                k.soundTimer = static_cast<int32_t>(exe.U32(l + 4));
-                k.soundList = exe.U32(l + 8) == 0xFFFFFFFFu ? 0 : l + 8;
+                k.sound = CivWord(l);
+                k.soundTimer = static_cast<int32_t>(CivWord(l + 4));
+                k.soundList = CivWord(l + 8) == 0xFFFFFFFFu ? 0 : l + 8;
             }
             break;
         }
@@ -560,7 +574,7 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
             const int32_t p = static_cast<int32_t>(A(1));
             if (p < 1) memcpy(k.moveTarget, playerPos, 12);
             else
-                for (int i = 0; i < 3; ++i) k.moveTarget[i] = F32(exe, static_cast<uint32_t>(p) + 4 * i);
+                for (int i = 0; i < 3; ++i) k.moveTarget[i] = CivFloat(static_cast<uint32_t>(p) + 4 * i);
             k.moveTimer = static_cast<int16_t>(A(2));
             for (int i = 0; i < 3; ++i) c.vel[i] = (k.moveTarget[i] - c.pos[i]) / static_cast<float>(k.moveTimer);
             break;
@@ -609,7 +623,7 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
             break;
         }
         addr = next;
-        if (static_cast<int>(exe.U32(addr)) > 0x2B) {
+        if (static_cast<int>(CivWord(addr)) > 0x2B) {
             k.script = addr;
             k.flags |= entry & 0x8000000;
             return true;
@@ -622,8 +636,8 @@ bool World::Impl::CivRunScript(CivTask& c, uint32_t addr) {
 uint32_t World::Impl::CivDryRun(CivTask& c, uint32_t addr) {
     CivCtl& k = c.c;
     for (int guard = 0; guard < 4096; ++guard) {
-        const int op = static_cast<int>(exe.U32(addr));
-        auto A = [&](int i) { return exe.U32(addr + 4 * i); };
+        const int op = static_cast<int>(CivWord(addr));
+        auto A = [&](int i) { return CivWord(addr + 4 * i); };
         uint32_t next = addr + 8;
         switch (op) {
         case 0:
@@ -644,12 +658,12 @@ uint32_t World::Impl::CivDryRun(CivTask& c, uint32_t addr) {
             k.path = static_cast<int32_t>(A(1));
             k.radius = BitsF(A(2));
             if (k.path > 0)
-                for (int i = 0; i < 3; ++i) k.target[i] = F32(exe, static_cast<uint32_t>(k.path) + 4 * i);
+                for (int i = 0; i < 3; ++i) k.target[i] = CivFloat(static_cast<uint32_t>(k.path) + 4 * i);
             next = addr + 12;
             break;
         case 6:
             k.path2 = A(1);
-            for (int i = 0; i < 3; ++i) k.target[i] = F32(exe, k.path2 + 4 * i);
+            for (int i = 0; i < 3; ++i) k.target[i] = CivFloat(k.path2 + 4 * i);
             break;
         case 7: {
             k.path = 1;
@@ -696,7 +710,7 @@ uint32_t World::Impl::CivDryRun(CivTask& c, uint32_t addr) {
         default: break;
         }
         addr = next;
-        if (static_cast<int>(exe.U32(addr)) > 0x2B) return addr;
+        if (static_cast<int>(CivWord(addr)) > 0x2B) return addr;
     }
     return addr;
 }
@@ -832,10 +846,10 @@ bool World::Impl::CivWait(CivTask& c) {
             blk = k.jump;
             k.jump = 0;
         }
-        f = exe.U32(blk + 4);
+        f = CivWord(blk + 4);
         k.script = blk;
         cur = CivDryRun(c, blk);
-        if (exe.U32(cur) == 0x2D) break;
+        if (CivWord(cur) == 0x2D) break;
     }
     k.loops = s0;
     k.cnt20 = s1;
@@ -1118,14 +1132,14 @@ bool World::Impl::CivHeadLook(CivTask& c) {
     case 4: {
         uint32_t w[3] = {};
         for (int i = 0; i < 3; ++i)
-            if (!mem.Read(k.lookTarget + 4 * i, &w[i])) w[i] = exe.U32(k.lookTarget + 4 * i);
+            if (!mem.Read(k.lookTarget + 4 * i, &w[i])) w[i] = CivWord(k.lookTarget + 4 * i);
         memcpy(tgt, w, 12);
         break;
     }
     case 5: {  // a point in the civilian's own frame (on a vehicle: the vehicle's frame first)
         uint32_t w[3] = {};
         for (int i = 0; i < 3; ++i)
-            if (!mem.Read(k.lookTarget + 4 * i, &w[i])) w[i] = exe.U32(k.lookTarget + 4 * i);
+            if (!mem.Read(k.lookTarget + 4 * i, &w[i])) w[i] = CivWord(k.lookTarget + 4 * i);
         float q[3];
         memcpy(q, w, 12);
         Mat4 a = Mat4::Identity();

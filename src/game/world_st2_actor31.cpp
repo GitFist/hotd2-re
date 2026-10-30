@@ -393,6 +393,7 @@ void JumpWith(World::Impl& w, Actor31Task& a, const float to[3], uint32_t table,
 // 0x0044CA40: pick the player to attack (+0x121); true when one was taken
 bool PickTarget(World::Impl& w, Actor31Task& a) {
     a.target = -1;
+    if (!w.TypingAttackReady()) return false;  // TOTD 0x0043B1D0
     if (w.attackSlot == 0) {
         if (w.route == 1) {
             int pig = w.playersInGame;
@@ -524,6 +525,7 @@ bool TryBehaviour(World::Impl& w, Actor31Task& a, int b) {
         return take();
     }
     case 0x20:
+        w.TypingAttackTimer(0);  // TOTD 0x004398DF: authored water attack releases the grace gate
         if (!PickTarget(w, a)) return false;
         if (MaterialAt(w, a.pos[0], a.pos[1] + F32(w.exe, 0x00565DE8), a.pos[2]) != 0x35) return false;
         return take();
@@ -819,6 +821,7 @@ void Beh31(World::Impl& w, Actor31Task& a) {
 
 // 2: 0x0044A450 shot: knocked back (jump path), falls, lands, recovers or dies
 void Beh2(World::Impl& w, Actor31Task& a) {
+    w.TypingAttackTimer(3);  // TOTD 0x00438C50: preserve at least two seconds after knock-back
     const int motion = static_cast<int>(w.exe.U32(Row(w, 0x005929F0, a.variant) + 0x14));
     auto bodyOff = [&](int t16, int t17, int t18) {
         const int k = a.anim.kind;
@@ -2042,6 +2045,7 @@ void Beh27(World::Impl& w, Actor31Task& a) {
 // 1: 0x0044A360 shot while walking (behaviour 7 without pose 0x20): flinch motion 0x00592A70[variant][0x004C84A8[last
 // hit slot]] (slots < 9 on the upper-body track 1), then the next behaviour (0x0044ADB0) or 0x11 when dead
 void Beh1(World::Impl& w, Actor31Task& a) {
+    w.TypingAttackTimer(3);  // TOTD 0x00438B60: preserve at least two seconds after flinch
     if (a.lastSlot > 0xF) a.lastSlot = 0xF;
     const int idx = static_cast<uint16_t>(w.exe.S16(0x004C84A8 + static_cast<uint32_t>(a.lastSlot) * 2));
     const int m = static_cast<int>(w.exe.U32(Row(w, 0x00592A70, a.variant) + static_cast<uint32_t>(idx) * 4));
@@ -2133,6 +2137,19 @@ void TaskActor31(Task& t) {
     case 19: Beh19(w, a); break;  // stage 1
     case 3: Beh3(w, a); break;
     case 4: Beh4(w, a); break;
+    case 6:
+        if (w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2) {
+            // PC439550 (native44AD60): source Drill's finish cleanup.
+            LeaveLive(w, a);
+            LeaveAttackers(w, a);
+            ReleaseTarget(w, a);
+            if (a.slot120 != -1) w.lockOn.Release(a.slot120);
+            a.flags34 &= ~1u;
+            w.EnemyDestroy(a);
+            return;
+        }
+        w.Note("actor 0x31 behaviour 6 (0x00592960) not ported");
+        break;
     case 7: Beh7(w, a); break;
     case 8: Beh8(w, a); break;
     case 11: Beh11(w, a); break;
@@ -2172,7 +2189,10 @@ void TaskActor31(Task& t) {
     w.AnimDraw(a);
     w.EnemyShadow(a);
     if (w.runner->cfg.gameType == 2) {  // training: frozen (plain draws 0x0044A2B0) until the lesson runs (0xF1, not 0xF2)
-        if (!(a.flags34 & 0x4000) && w.runner->flags[0xF1] == 1 && w.runner->flags[0xF2] == 0) {
+        // PC438738 permits Accuracy3's retreat to finish even after F2,
+        // including actors whose normal animation gate carries flag4000.
+        const bool accuracy3 = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2 && w.runner->scene == 13;
+        if (accuracy3 || (!(a.flags34 & 0x4000) && w.runner->flags[0xF1] == 1 && w.runner->flags[0xF2] == 0)) {
             ++a.anim.counter[0];
             ++a.anim.counter[1];
             a.nodeFn = Actor31Node;
@@ -2228,8 +2248,13 @@ void SpawnActor31(World::Impl& w, Task& t, const SpawnRecord& r) {
     auto d = std::make_unique<Actor31Task>();
     Actor31Task& a = *d;
     a.fn = 0x00449910;
+    w.SetTypingSpawnOrigin(a, r);
     a.record = r;
     a.flags34 = r.flags | 1;
+    if (w.typingReferenceActive && (a.flags34 & 0x40000000u)) {
+        a.flags34 &= ~0x40000000u;
+        a.typingFlags |= 0x40u;
+    }
     memcpy(a.pos, r.pos, 12);
     memcpy(a.rot, r.rot, 12);
     a.hp = a.hpMax = static_cast<int16_t>(r.state);
@@ -2237,7 +2262,10 @@ void SpawnActor31(World::Impl& w, Task& t, const SpawnRecord& r) {
     a.anim.kind = r.ParamS8(0);
     // 0x0040A8B0: hp += 0x005776B0[difficulty] (demo: 2), clamped to 1..300
     const int diff = w.gameMode == 5 ? 2 : w.cfg.difficulty;
-    int hm = a.hpMax + w.exe.S16(0x005776B0 + static_cast<uint32_t>(diff) * 4);
+    const bool pcDrill=w.cfg.portTyping&&w.cfg.eventMode==7&&w.cfg.gameType==2;
+    // PC 0x437E10 preserves the event's HP; the gun difficulty bonus is not
+    // part of this constructor. Final's100-HP leapers need three35-HP words.
+    int hm = a.hpMax + (pcDrill?0:w.exe.S16(0x005776B0 + static_cast<uint32_t>(diff) * 4));
     if (hm < 1) hm = 1;
     if (hm > 300) hm = 300;
     a.hpMax = a.hp = static_cast<int16_t>(hm);

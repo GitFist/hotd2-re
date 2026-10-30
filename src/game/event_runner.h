@@ -80,6 +80,21 @@ public:
     virtual void PlayerBonus() {}                    // op 0x2B
     virtual void StageEnd() {}                       // 0x0045ED90 (from op 0x4F at the end of a mode's scene list)
     virtual void TargetsReset() {}                   // 0x00403710 (gameplay camera command): 0x009A2BA0 / 0x009A2BA4 = 0
+    // Prepared English PC reference typing scripts. Operands remain in their authored units;
+    // the controller applies its word-bank/rank rules synchronously at the op.
+    virtual void TypingWords(int group, int selector) {}
+    virtual void TypingWordLimits(int maximum, int minimum) {}
+    virtual void TypingProps(bool enabled) {}
+    virtual void TypingSceneClear() { TypingProps(false); }
+    virtual int TypingPlayers() { return 0; }
+    virtual int TypingModeId() { return 0; }
+    virtual bool TypingChallenge(const EventOp& op) { return false; }
+    virtual void TypingCountdown(int instruction, int frames) {}
+    virtual int TypingChallengeStatus() { return 0; }
+    virtual void TypingClearActorSlots() {}
+    virtual void TypingSound(uint32_t id) { Sound(id); }
+    virtual void TypingSoundRepeat(uint32_t id, int count, int interval) { SoundRepeat(id, count, interval); }
+    virtual void TypingVoice(int id) { Voice(id); }
     // A Cam_Evaluate 0x004041E0 call when no CameraBank is attached (CameraDirector::SetCameraBank); return true
     // and fill pos/target/roll to give the camera real positions.
     virtual bool EvaluateCamera(int camId, float t, float pos[3], float target[3], int* roll) { return false; }
@@ -269,6 +284,7 @@ public:
     bool skipping = false;      // 0x009A2D74 (cutscene skip in progress)
     bool skippable = false;     // 0x009A2D7C
     int mode = 0, scene = 0, variant = 0;  // 0x009A1A08 / 0x009A2BC0 / 0x009A2BB0
+    struct TypingCheckpoint { uint32_t script=0; int mode=0,scene=0,variant=0,routeBranch=0; } typingCheckpoint;
     int section = 0, prevSection = 0;      // 0x009A2224 / 0x009C7004
     uint8_t flags[256] = {};    // 0x009C7200
     std::map<uint32_t, uint32_t> globals;

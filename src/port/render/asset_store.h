@@ -19,6 +19,8 @@
 #include "game/exe_image.h"
 #include "game/model.h"
 #include "game/texture.h"
+#include "game/typing_reference.h"
+#include "render/blood_color.h"
 
 namespace port {
 
@@ -63,6 +65,8 @@ public:
     AssetStore& operator=(const AssetStore&) = delete;
 
     bool Open(const std::filesystem::path& gameDir, std::string* error);
+    bool LoadTypingReference(const std::string& path, std::string* error);
+    std::string PolFileName(uint32_t file) const;
     // Inspect the pack used by asset lookups, including HOTD2_ASSET_DIR. This is
     // independent of a menu's saved next-launch selection; call outside the frame loop.
     TexturePackInfo ActivePackInfo() const;
@@ -91,8 +95,8 @@ public:
     int OverridesPrefetched() const { return prefetchDecodes_; }
 
     // Matches the original global blood texture override by texture ID. Rendering only.
-    void SetRedBlood(bool red) { redBlood_ = red; }
-    bool RedBlood() const { return redBlood_; }
+    void SetBloodColor(BloodColor color) { bloodColor_ = color; }
+    BloodColor GetBloodColor() const { return bloodColor_; }
 
     // Decoded (PRS or raw) contents of a file in the game directory, cached.
     const std::vector<uint8_t>& File(const std::string& relPath);
@@ -120,6 +124,9 @@ public:
     // Texture with global id id (descriptor textureId) in texture file ileIndex (index into 0x004D1410), e.g.
     // for sprites (game::SpriteTables). Null if missing.
     const RgbaImage* TextureById(int fileIndex, uint32_t id);
+    bool SourceSprite(int id, int* file, uint32_t* texture) const;
+    int SourceModel(int id) const { return typing_ ? typing_->SourceModel(id) : 0; }
+    const game::TypingReference* PreparedTypingReference() const { return typing_.get(); }
 
     // Texture file used by a pol file's materials, or empty if none.
     std::string TextureFileFor(const std::string& polName) const;
@@ -138,7 +145,8 @@ private:
     std::unique_ptr<RgbaImage> Decode(const TexRef& r);
     const RgbaImage* ResolvedTexture(const TexRef& r);
     std::map<uint32_t, TexRef> redBloodTextures_;
-    bool redBlood_ = false;
+    std::map<std::pair<BloodColor, uint32_t>, std::unique_ptr<RgbaImage>> recoloredBloodTextures_;
+    BloodColor bloodColor_ = BloodColor::Green;
     // Asset pack: <HOTD2_ASSET_DIR>/tex/<file stem>/<index>.png (any size, upright) -> flipped to the stored order.
     // Pure (file read + decode): also run by the prefetch threads.
     std::unique_ptr<RgbaImage> LoadOverride(const TexRef& r);
@@ -150,6 +158,7 @@ private:
 
     std::filesystem::path dir_;
     game::ExeImage exe_;
+    std::unique_ptr<game::TypingReference> typing_;
     std::vector<std::array<uint16_t, 16>> banks_;
     std::map<std::string, std::vector<TexRef>> byFile_;  // texture file name -> descriptors in index order
     std::map<std::string, std::vector<uint8_t>> files_;

@@ -197,7 +197,9 @@ void Actor11Next(World::Impl& w, Actor11Task& a) {
     }
     if (c.dist < 50.0f) {  // 0x0055D2AC: leap at a player
         c.state = 6;
-        if (w.players == 1) {
+        if (!w.TypingAttackReady()) {
+            c.state = 7;  // TOTD 0x00427C55: wait instead of taking a target
+        } else if (w.players == 1) {
             a.target = static_cast<int8_t>(w.playersInGame);
         } else if (w.players == 2) {
             if (w.targetTaken[0] != 0) a.target = 1;
@@ -668,6 +670,7 @@ void SpawnActor11(World::Impl& w, Task& t, const SpawnRecord& r) {
     auto d = std::make_unique<Actor11Task>();
     Actor11Task& a = *d;
     a.fn = 0x0043A1E0;
+    w.SetTypingSpawnOrigin(a, r);
     a.flags34 = r.flags | 1;  // 0x00408BC0 -> 0x00408970
     memcpy(a.pos, r.pos, 12);
     memcpy(a.rot, r.rot, 12);
@@ -1960,6 +1963,9 @@ void SpawnBarrels(World::Impl& w, const SpawnRecord& r) {
         BarrelTask* k = w.NewTask<BarrelTask>(TaskBarrel, 0x00464620);
         k->group = static_cast<int8_t>(group);
         k->slot = GroupByte(w, group, i, 4);
+        // TOTD 0x00455340: only authored item barrels (or event mode 7)
+        // receive a word post; ordinary stacked scenery stays gun-only.
+        if (k->slot != 0 || w.cfg.eventMode == 7) k->typingFlags = 0x00400018u;
         k->hp = 2;
         k->life = r.ParamS8(0);  // spawner +0x1F4
         k->area = static_cast<int8_t>(w.runner->variant);
@@ -2904,6 +2910,19 @@ bool World::Impl::SpawnRoutes(Task& t, SpawnTask& s) {
         return true;
     }
     return false;
+}
+
+bool TypingDrillFinishFrog(ActorTask& actor) {
+    const auto* world = CurrentWorld();
+    if (!world || !world->cfg.portTyping || world->cfg.eventMode != 7 || world->cfg.gameType != 2) return false;
+    auto* frog = dynamic_cast<Actor11Task*>(&actor);
+    if (!frog) return false;
+    // PC4A7493: kind1B stores its finish state in the private control block.
+    if (frog->c.state != 8) {
+        frog->c.state = 8;
+        frog->c.sub = 0;
+    }
+    return true;
 }
 
 }  // namespace game
