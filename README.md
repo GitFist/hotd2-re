@@ -2,24 +2,17 @@
 
 # HOTD2RE
 
-A native C++20 rebuild of **The House of the Dead 2** for Windows, with built-in **The Typing of the Dead** Original and Drill modes, online co-op, and modern controls and display options.
+A native Windows port of **The House of the Dead 2** and **The Typing of the Dead**, with online co-op and modern controls.
 
 **[Download 1.6 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.30-a/HOTD2RE-1.6-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
-- **Game modes:** Arcade, Original, Challenges (formerly Training), Boss, Scene Select, and Horde.
-- **The Typing of the Dead:** Original campaign and all 13 Drill courses, with authored encounters, word cards, result books and records. Use the logo card on the main menu to switch games; Typing has its own attract trailer, leaderboard and options.
-- **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
-- **Online co-op:** shared two-player lobbies for gun modes and Typing Original, with public rooms, private room codes, and reconnect support. Open **Online** for room creation, lobby browsing and Peer to Peer.
-- **Flexible controls:** mouse, touchpad, touch, in-game light-gun setup for two players, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
-- **Night Shift menus:** the full original attract cycle plays behind the menus, including the title flythrough, how-to-play demonstration, gameplay demos and story scenes. Includes Home lobby preview, Play/Practice pages, leaderboards, graphics options, pause and device setup. Classic menus remain selectable.
-- **Extras audio library:** all 38 music tracks with descriptive names and Standard/Alternate version labels on the left, effects and dialogue on the right. Browse independently while recordings play once, with Play, Pause and Reset controls for each song.
-- **Extras model viewer:** browse game models and animations, rotate and zoom the view, and preview available character sound variations.
-- **Graphics options:** fullscreen/windowed display, AA and texture filtering, render scaling, optional lighting effects, CRT, red/green/blue/purple blood and separate optional 2× textures. Supported x64 hardware can use vendor upscaling/frame generation and experimental ray shadows.
-- Graphics reset, menu opacity, Hide UI for live inspection, and saved gameplay crosshair visibility. The system mouse cursor hides during play; manual pause remains available while switching windows keeps the game and sound running.
-- Chapter results and an experimental Prototype chapter, available with **F8**.
-- Background update notifications with **Update and restart**, preserving saves, settings and installed packs, with recovery if installation is interrupted.
+- **The Typing of the Dead:** full campaign and all 13 Drill courses.
+- **HOTD2 modes:** Arcade, Original, Boss Mode, Horde and Randomizer.
+- **Online play:** two-player co-op, shared lobbies and leaderboards.
+- **Controls:** keyboard, mouse, touch, light guns and Wii Remotes.
+- **Graphics and extras:** modern display options, blood colors, music library and model viewer.
 
 ## Screenshots
 
@@ -41,11 +34,9 @@ The main-menu preview uses example online rooms.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
-The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
+The complete download includes both games. Keep the `game` and `scenes` folders beside `hotd2.exe`.
 
-The complete 1.6 ZIP also includes the prepared Typing mode data in `game/typing_reference.bank`; it does not run the original Typing executable. After an in-game update of an older installation, startup downloads the missing mode data once (**89.5 MB**), with verification, progress and Cancel. The complete ZIP needs no extra download. `--no-update-check` also skips this automatic content download.
-
-**Version 1.6** brings Typing Original and Drill into the main client, with a main-menu game switch and separate attract presentations. Typing Original setup includes difficulty, lives, continues, word size and US/UK keyboard layout. Existing 1.1 clients can use the in-game updater, with selective updates and full-download fallback handled automatically. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+The in-game updater keeps your saves and downloads any missing Typing data.
 
 ## Online play
 

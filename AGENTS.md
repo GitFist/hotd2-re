@@ -16,3 +16,7 @@
 - Publish the x64 selective-update index, its checksum, content-addressed gzip files, and the client-only full fallback ZIP plus checksum in `updates-<date-tag>`. The fallback must be `packageKind=public`, without original game data. Mark the companion release prerelease and never latest; verify all assets before making the main release latest.
 - Keep checksum verification and transactional recovery. Never silently replace an x86 installation with x64. Preserve existing historical companion releases for their remaining references.
 - Promote the versioned complete x64 ZIP in the release title/body and README. Keep its generated checksum locally; GitHub provides its asset digest, so it needs no separate main-page checksum download.
+
+# Project descriptions
+
+- Keep release notes and the README overview brief. Highlight major player-facing features; leave setup and technical details in their relevant documentation.
