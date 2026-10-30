@@ -486,12 +486,12 @@ UINT D3D12Device::TextureTable(UINT diffuse, UINT normal, UINT previousDepth) {
     textureTables_[key] = at; return at;
 }
 UINT D3D12Device::SamplerTable(const GpuState& s, bool present) {
-    const int key = (present ? 1 << 15 : 0) | s.linear | s.mipmapped << 1 | s.addrU << 2 | s.addrV << 4;
+    const int key = (present ? 1 << 15 : 0) | s.linear | s.mipmapped << 1 | s.addrU << 3 | s.addrV << 5;
     auto found = samplerTables_.find(key); if (found != samplerTables_.end()) return found->second;
     if (nextSampler_ + 3 > kSamplerSlots) { broken_ = true; return 0; }
     const UINT at = nextSampler_; nextSampler_ += 3;
     D3D12_SAMPLER_DESC d{};
-    d.Filter = s.mipmapped ? (graphics_.anisotropy > 1 ? D3D12_FILTER_ANISOTROPIC : s.linear ? D3D12_FILTER_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR) : s.linear ? D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_POINT;
+    d.Filter = s.mipmapped ? (graphics_.anisotropy > 1 ? D3D12_FILTER_ANISOTROPIC : s.linear ? D3D12_FILTER_MIN_MAG_MIP_LINEAR : s.mipmapped==2 ? D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR : D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR) : s.linear ? D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_POINT;
     if (present) d.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     d.AddressU = present ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP : Address(s.addrU); d.AddressV = present ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP : Address(s.addrV); d.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     d.MaxAnisotropy = graphics_.anisotropy; d.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS; d.MaxLOD = s.mipmapped || present ? D3D12_FLOAT32_MAX : 0.f;

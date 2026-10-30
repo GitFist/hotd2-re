@@ -34,6 +34,28 @@ def fake_pe(path, architecture="x86", label=None, dll=False):
     return path
 
 
+def fake_typing_reference(path, payload=b"synthetic container fixture"):
+    """Structurally complete v5 metadata; no original game assets."""
+    data = bytearray(b"TOTDREF1")
+    def word(value):
+        data.extend(struct.pack("<I", value))
+    def blob(value=b""):
+        word(len(value)); data.extend(value)
+    for value in (5, 1, 0, 8, 0, 0, 0, 0, 0):
+        word(value)
+    blob(payload)
+    for mode in (0, 1, 2, 3, 4, 5, 7, 9):
+        word(mode); blob(); blob(); blob()
+    word(0x02000000); blob(b"fixture program")
+    for _ in range(7):
+        word(0)  # Civilian scripts, sprites, rewards, models, sounds, native sounds, sound files.
+    for length in (732 * 2, 402 * 16, 375 * 64, 402 * 8, 128 * 2):
+        blob(bytes(length))
+    word(0)
+    path.write_bytes(data)
+    return path
+
+
 class Packaging(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hotd2-package-fixture-")
@@ -223,6 +245,14 @@ const char* const kReleaseVersion = "1.0";
                     build = "build-x64" if selected == "x64" else "build"
                     self.assertEqual(stage.call_args.kwargs["exe"], release.REPO / build / "src/port/Release/hotd2.exe")
 
+    def test_python_cli_forwards_explicit_typing_bank(self):
+        placeholder = self.root / "cli-result.zip"
+        placeholder.write_bytes(b"fixture")
+        arguments = ["package_release.py", "--kind", "complete", "--typing-reference", "build/fixture.bank"]
+        with patch.object(sys, "argv", arguments), patch.object(release, "stage_package", return_value=placeholder) as stage, patch("builtins.print"):
+            self.assertEqual(release.main(), 0)
+        self.assertEqual(stage.call_args.kwargs["typing_reference"], release.REPO / "build/fixture.bank")
+
     @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "PowerShell wrapper integration requires Windows")
     def test_powershell_wrappers_forward_paths_and_preserve_existing_outputs(self):
         output = self.root / "existing output with spaces"
@@ -242,6 +272,7 @@ const char* const kReleaseVersion = "1.0";
 
     def test_public_package_has_no_game_data_or_private_siblings(self):
         (self.exe.parent / "hotd2re_save.bin").write_bytes(b"private")
+        (self.exe.parent / "typing_reference.bank").write_bytes(b"original mode data is never copied implicitly")
         (self.exe.parent / "random-sdk-file.dll").write_bytes(b"not permitted")
         (self.source / "game").mkdir()
         (self.source / "game/Hod2.exe").write_bytes(b"original game is never copied")
@@ -250,6 +281,7 @@ const char* const kReleaseVersion = "1.0";
         with zipfile.ZipFile(archive) as contents:
             names = contents.namelist()
             self.assertNotIn("hotd2re/game/Hod2.exe", names)
+            self.assertFalse(any(name.endswith("typing_reference.bank") for name in names))
             self.assertFalse(any("save.bin" in name or "random-sdk" in name for name in names))
             self.assertIn("hotd2re/game/PUT_YOUR_GAME_FILES_HERE.txt", names)
         package = archive.parent / "hotd2re"
@@ -536,6 +568,75 @@ $payload = Expand-VerifiedFileUpdate -Root $Root -IndexPath $Index -ExpectedSha2
                     self.assertEqual(manifest["packageKind"], "complete")
                     self.assertEqual(manifest["executable"]["architecture"], architecture)
                     self.assertTrue(manifest["originalGameDataIncluded"])
+
+    def test_complete_package_includes_explicit_typing_bank_and_truthful_hash_metadata(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = fake_typing_reference(self.root / "reference.bank")
+        original = bank.read_bytes()
+        archive = self.package(kind="complete", game_dir=directory, game_manifest=metadata, typing_reference=bank)
+        with zipfile.ZipFile(archive) as contents:
+            relative = "game/typing_reference.bank"
+            self.assertEqual(contents.read("hotd2re/" + relative), original)
+            manifest = json.loads(contents.read("hotd2re/PACKAGE-MANIFEST.json"))
+            self.assertEqual(manifest["packageKind"], "complete")
+            self.assertTrue(manifest["originalGameDataIncluded"])
+            expected = dict(path=relative, format="TOTDREF1", version=5, complete=True,
+                            bytes=len(original), sha256=hashlib.sha256(original).hexdigest())
+            self.assertEqual(manifest["typingReference"], expected)
+            record = next(row for row in manifest["files"] if row["path"] == relative)
+            self.assertEqual(record, {key: expected[key] for key in ("path", "bytes", "sha256")})
+            self.assertIn(expected["sha256"] + "  " + relative,
+                          contents.read("hotd2re/SHA256SUMS.txt").decode())
+        self.assertEqual(bank.read_bytes(), original)
+        self.assertFalse((archive.parent / "file-assets").exists())
+
+    def test_public_package_refuses_explicit_typing_bank_without_reading_it(self):
+        with self.assertRaisesRegex(ValueError, "original game data.*complete packages"):
+            self.package(typing_reference=self.root / "does-not-exist.bank")
+        self.assertFalse((self.root / "new-output").exists())
+        self.assertIsNone(release.PUBLIC_MANAGED_PATH.fullmatch("game/typing_reference.bank"))
+
+    def test_typing_bank_version_completeness_bounds_and_truncation_are_checked_before_output(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = fake_typing_reference(self.root / "reference.bank")
+        original = bank.read_bytes()
+        cases = [("magic", b"NOT-REF1" + original[8:]),
+                 ("header", original[:43]), ("body", original[:-1]), ("trailing", original + b"unexpected")]
+        for name, offset, value in (("version", 8, 4), ("incomplete", 12, 0), ("issues", 16, 1), ("stages", 20, 17)):
+            changed = bytearray(original)
+            struct.pack_into("<I", changed, offset, value)
+            cases.append((name, changed))
+        for name, changed in cases:
+            with self.subTest(case=name):
+                bank.write_bytes(changed)
+                with self.assertRaises(ValueError):
+                    self.package(kind="complete", game_dir=directory, game_manifest=metadata, typing_reference=bank)
+                self.assertFalse((self.root / "new-output").exists())
+        bank.write_bytes(original)
+        with patch.object(release, "MAX_TYPING_REFERENCE_BYTES", len(original) - 1), self.assertRaisesRegex(ValueError, "reference size"):
+            self.package(kind="complete", game_dir=directory, game_manifest=metadata, typing_reference=bank)
+        self.assertFalse((self.root / "new-output").exists())
+
+    def test_typing_bank_privacy_is_checked_before_staging(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = fake_typing_reference(self.root / "reference.bank", b"/home/private-fixture/project/file.cpp\0")
+        with self.assertRaisesRegex(ValueError, "privacy check failed"):
+            self.package(kind="complete", game_dir=directory, game_manifest=metadata, typing_reference=bank)
+        self.assertFalse((self.root / "new-output").exists())
+
+    def test_typing_bank_copy_is_rehashed_before_archive_creation(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = fake_typing_reference(self.root / "reference.bank")
+        original_copy = release.shutil.copy2
+        def changed_copy(source, destination):
+            result = original_copy(source, destination)
+            if source == bank:
+                with Path(destination).open("ab") as stream:
+                    stream.write(b"changed after validation")
+            return result
+        with patch.object(release.shutil, "copy2", side_effect=changed_copy), self.assertRaisesRegex(ValueError, "changed during packaging"):
+            self.package(kind="complete", game_dir=directory, game_manifest=metadata, typing_reference=bank)
+        self.assertFalse(list((self.root / "new-output").glob("*.zip")))
 
     def test_truncated_manifest_missing_boot_data_is_refused(self):
         directory, metadata, result = self.game_manifest()

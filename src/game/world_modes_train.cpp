@@ -12,6 +12,8 @@
 
 namespace game {
 
+bool TypingDrillCoin(World::Impl&,ActorTask&,TypingTargetSpec&,bool);
+
 namespace {
 
 float F32(const ExeImage& exe, uint32_t va) {
@@ -869,6 +871,7 @@ void TaskLesson1A(Task& t) {  // 0x004991B0: one enemy or civilian at a time, in
 
 struct Lesson1B : EnemyTask {
     int16_t until = 0;  // +0x11C camera tick
+    int drillLimit = 240; // PC source 0x877064.
 };
 
 // 0x004995B0: the time left (minutes digit, the mark, two digits of hundredths)
@@ -884,6 +887,22 @@ void TaskLesson1B(Task& t) {  // 0x00499530: the time left until camera tick +0x
     World::Impl& w = *CurrentWorld();
     Lesson1B& a = t.As<Lesson1B>();
     const int fail = static_cast<int16_t>(w.GlobalInt(0x009A2234, 0) & 0xFFFF);
+    if (w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2) {
+        // PC actor 1B shares the authored spawn/shuffle, while source 6D owns
+        // the clock and failure display. The gun lesson's timer is unrelated.
+        if (w.runner->camera.tick >= a.until) {
+            ++w.typingDrillGame.reflexWaves; // source 0x834248, 0x4AA1C3.
+            if (w.liveEnemies > 0) w.runner->globals[0x009A2234] = 1;
+            w.ts.KillCurrent();
+        } else if (fail == 1 || fail == 2) w.ts.KillCurrent();
+        else {
+            const int remaining=w.runner->waitCounter;
+            if(remaining>a.drillLimit)w.runner->waitCounter=a.drillLimit;
+            const float color=std::clamp((float(w.runner->waitCounter)-10.0f)/300.0f,0.0f,1.0f);
+            for(void* target:w.actorSlots)if(target)static_cast<ActorTask*>(target)->typingFrameColor=color;
+        }
+        return;
+    }
     if (w.runner->camera.tick < a.until) {
         if (fail != 1) {
             const int limit = static_cast<uint8_t>(w.exe.U32(0x00597BDC + static_cast<uint32_t>(w.modes->lessonDiff)) & 0xFF);
@@ -959,7 +978,9 @@ bool SpawnLessonActor(World::Impl& w, Task& t, SpawnTask& s) {
         d->fn = 0x00499530;
         t.data = std::move(d);
         t.fn = TaskLesson1B;
-        if (static_cast<int16_t>(w.GlobalInt(0x009A2234, 0) & 0xFFFF) == 1) {
+        const int failed = static_cast<int16_t>(w.GlobalInt(0x009A2234, 0) & 0xFFFF);
+        const bool pcDrill = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2;
+        if (failed == 1 || (pcDrill && failed == 2)) {
             w.ts.KillCurrent();
             return true;
         }
@@ -981,6 +1002,17 @@ bool SpawnLessonActor(World::Impl& w, Task& t, SpawnTask& s) {
             memcpy(keep, x->pos, 12);
             memcpy(x->pos, y->pos, 12);
             memcpy(y->pos, keep, 12);
+        }
+        if (pcDrill) { // PC 0x4AA098: authored wave difficulty and its word length.
+            const int wave = w.typingDrillGame.reflexWaves;
+            int limit = wave < 4 ? 240 : wave < 8 ? 200 : wave < 16 ? 180 : wave < 24 ? 160 : wave < 48 ? 140 : 120;
+            const int selector = wave < 4 ? 50 : wave < 24 ? 100 : wave < 48 ? 200 : 300;
+            const int phase = wave % 8;
+            if (phase == 2 || (phase == 4 && pick == 0) || ((phase == 6 || phase == 7) && pick == 1))
+                limit += wave < 24 ? 60 : wave < 36 ? 40 : wave < 48 ? 20 : 10;
+            a.drillLimit = limit;
+            w.runner->waitCounter = limit;
+            w.TypingWords(-1,selector);
         }
         TaskLesson1B(t);
         return true;
@@ -1150,12 +1182,28 @@ void TaskBoard67(Task& t) {
     float tg[3] = {};
     int roll = 0;
     float p[3] = { k.pos[0], k.pos[1], k.pos[2] };
-    if (!w.cameraBank.Evaluate(exe.S16(0x00595778 + 2 * static_cast<uint32_t>(k.idx)), k.t, p, tg, &roll, false))
+    const bool pcDrill = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2;
+    constexpr int sourceStart[3] = {64,116,320}; // PC 0x5B2548
+    constexpr float sourceSpeed[3] = {269.0f,330.0f,240.0f}; // PC 0x5B2554
+    const float pathTime = pcDrill ? sourceStart[k.idx] + k.t : k.t;
+    if (pcDrill && pathTime > 600.0f) { w.ts.KillCurrent(); return; }
+    const int path = pcDrill ? 0x41B8 + k.idx : exe.S16(0x00595778 + 2 * static_cast<uint32_t>(k.idx));
+    if (!w.cameraBank.Evaluate(path, pathTime, p, tg, &roll, false))
         w.Note("komono 67: camera path not evaluated (0x004042D0)");
     k.pos[0] = p[0];
     k.pos[1] = p[1];
     k.pos[2] = p[2];
-    k.t = k.t + 1.0f;  // 0x004C4380
+    if (pcDrill) { // PC 0x461C3E: successful barrels accelerate the next pass.
+        const int hits = static_cast<int16_t>(w.player[w.typingPlayer].hits);
+        float divisor = 210.0f;
+        if (hits + w.typingDrillGame.barrelsPassed >= 21) {
+            if (hits < 180) {
+                const float blend = hits * (1.0f / 180.0f);
+                divisor = 200.0f * (1.0f - blend) + 130.0f * blend;
+            } else divisor = 130.0f * (1.0f - (hits - 180) * (1.0f / 819.0f));
+        }
+        k.t += sourceSpeed[k.idx] / divisor;
+    } else k.t = k.t + 1.0f;  // 0x004C4380
     k.swing += 0x180;
     k.swayX += 0x100;
     k.swayZ += 0x100;
@@ -1203,6 +1251,19 @@ void TaskBarrel67(Task& t) {
         ++k.areaCount;
         w.ts.KillCurrent();
         return;
+    }
+    const bool pcDrill = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2;
+    if (pcDrill) { // PC 0x461EC0 uses last frame's view x, before rebuilding its matrix.
+        constexpr float wordRight[3] = {30.0f,45.0f,45.0f};
+        constexpr float passedAt[3] = {40.0f,-55.0f,-55.0f};
+        if (k.viewPos[0] > -40.0f && k.viewPos[0] < wordRight[k.idx])
+            k.typingFlags = (k.typingFlags & ~0x400u) | 0x8000u;
+        else k.typingFlags = (k.typingFlags & ~0x8000u) | 0x400u;
+        if (std::fabs(k.viewPos[0] - passedAt[k.idx]) <= 1.0f) {
+            ++w.typingDrillGame.barrelsPassed;
+            Kill67(w,k);
+            return;
+        }
     }
     const uint32_t f = k.flags34;
     if (f & 8) {
@@ -1268,21 +1329,61 @@ void SpawnKomono67(World::Impl& w, const SpawnRecord& r) {
     g_board67[idx] = Board67{};
     const float s = F32(exe, 0x004C4C58);
     const int d = w.runner->cfg.playerVariant;  // 0x009C9118
-    for (int i = 0; i < 3; ++i) {
+    const bool pcDrill = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2;
+    // Source 0x4F4448 / 0x5B2238: five possible local slots per board.
+    constexpr int sourceCount[3] = {4,5,3};
+    constexpr int sourceOffsets[3][5][3] = {
+        {{10,32,-6},{-8,32,23},{7,32,53},{0,39,85},{0,0,0}},
+        {{-14,51,-38},{11,32,-12},{-10,32,18},{8,32,44},{1,39,72}},
+        {{7,44,17},{-3,44,-30},{-8,50,-68},{0,0,0},{0,0,0}}
+    };
+    for (int i = 0; i < (pcDrill ? sourceCount[idx] : 3); ++i) {
         Komono67Task* c = w.NewTask<Komono67Task>(TaskBarrel67, 0x004702E0);
         c->area = static_cast<int8_t>(w.runner->variant);
         c->idx = static_cast<int16_t>(idx);
         const uint32_t e = 0x00595780 + static_cast<uint32_t>(i + idx * 3) * 3;
-        c->pos[0] = static_cast<float>(TabS8(exe, e)) * s;
-        c->pos[1] = static_cast<float>(TabS8(exe, e + 1)) * s;
-        c->pos[2] = static_cast<float>(TabS8(exe, e + 2)) * s;
+        for (int axis=0;axis<3;++axis)
+            c->pos[axis] = pcDrill ? sourceOffsets[idx][i][axis] * 0.25f : static_cast<float>(TabS8(exe,e+axis)) * s;
         c->radius = 5.0f;
         c->flags34 = 1;
-        const bool normal = i == 1 || (d == 1 && ((idx == 1 && i == 2) || idx == 2)) || (d == 2 && i == 0) || d > 2;
+        const bool normal = !pcDrill && (i == 1 || (d == 1 && ((idx == 1 && i == 2) || idx == 2)) || (d == 2 && i == 0) || d > 2);
+        if (pcDrill) {
+            c->typingOriginType = 0x41;
+            c->typingOriginKind = 67;
+            c->typingFlags = 0x14;
+            c->typingWordStyle = 0;
+        }
         c->hp = normal ? 2 : 1;
         c->skel = normal ? 0 : 6;
         c->model = normal ? 0x19E8 : 0x1A0F;
     }
+}
+
+// Source training barrels are independent one-key actors, not generic scenery.
+bool TypingDrillProp(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    if(TypingDrillCoin(w,actor,out,complete))return true;
+    if(auto* citizen=dynamic_cast<CivTask*>(&actor)) {
+        if(!(w.cfg.portTyping&&w.cfg.eventMode==7&&w.cfg.gameType==2) || w.typingDrillGame.exercise!=4)return false;
+        if(citizen->flags34&0x04008100u)return true;
+        out.node=2;out.retain=true;out.token=0x1B0010u;
+        memcpy(out.view,citizen->viewPos,12);
+        if(complete) {
+            TypingDeliver(*citizen,2);citizen->typingStrike=false;
+            w.runner->globals[0x009A2234]=2;
+            TypingDrillGameCivilianHit(w);
+        }
+        return true;
+    }
+    auto* barrel = dynamic_cast<Komono67Task*>(&actor);
+    if (!barrel || barrel->fn != 0x004702E0 ||
+        !(w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2)) return false;
+    if (barrel->hp < 1 || (barrel->flags34 & 0x8000u)) return true;
+    out.node = 1;
+    out.projectile = true;
+    out.token = 0x674300u;
+    memcpy(out.view,barrel->viewPos,12);
+    if (complete) { TypingDeliver(*barrel,1); barrel->typingStrike = false; }
+    return true;
 }
 
 }  // namespace game

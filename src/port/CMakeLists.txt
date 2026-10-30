@@ -23,7 +23,7 @@ add_library(port_assets STATIC assets/asset_override.cpp)
 target_include_directories(port_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Optional startup release check, independent of SDL and deterministic game / net state.
-add_library(port_update STATIC update/update_check.cpp update/update_install.cpp)
+add_library(port_update STATIC update/update_check.cpp update/update_install.cpp update/typing_content.cpp)
 target_include_directories(port_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
 if(WIN32)
   # Embed the helper so existing packaging picks it up with hotd2.exe. No extra
@@ -40,10 +40,12 @@ if(WIN32)
   configure_file(update/update_scripts.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/update_scripts.h" @ONLY)
   target_include_directories(port_update PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(port_update PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(port_update PUBLIC winhttp shell32 ole32)
+  target_link_libraries(port_update PUBLIC winhttp shell32 ole32 bcrypt user32)
 endif()
 add_executable(update_check_test ${PROJECT_SOURCE_DIR}/tests/update_check_test.cpp)
 target_link_libraries(update_check_test PRIVATE port_update)
+add_executable(typing_content_test ${PROJECT_SOURCE_DIR}/tests/typing_content_test.cpp)
+target_link_libraries(typing_content_test PRIVATE port_update)
 
 # Online two-player: deterministic lockstep over UDP (net/netplay.h; notes/agents/netplay.md).
 add_library(port_net STATIC net/netplay.cpp net/leaderboard.cpp)

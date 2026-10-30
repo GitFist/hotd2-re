@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "exe_image.h"
+#include "typing_reference.h"
 
 namespace game {
 
@@ -62,9 +63,29 @@ const SeEntry* SoundTable::FindSe(uint32_t id) const {
     return nullptr;
 }
 
+const TypingReferenceSound* SoundTable::TypingSound(uint32_t id) const {
+    return typing_ ? typing_->Sound(id) : nullptr;
+}
+
 // 0x0041CFD0
 SoundRequest ResolveSound(const SoundTable& table, uint32_t id, const SoundContext& ctx) {
     SoundRequest r;
+    if (id & kTypingSoundFlag) {
+        const uint32_t sourceId = id & ~kTypingSoundFlag;
+        const bool bgm = (sourceId >> 28) == 1;
+        const uint32_t key = sourceId | (bgm && ctx.gameState == 6 && ctx.altFlag == 0 ? 0x80000000u : 0u);
+        const auto* sound = table.TypingSound(key);
+        if (!sound || sound->path.empty()) return r;
+        r.action = SoundAction::PlayFile;
+        r.path = sound->path;
+        r.loop = (sound->flags & 1) != 0;
+        r.stopLoopedSe = (sound->flags & 2) != 0;
+        r.channel = bgm ? kSndBgmChannel : (sourceId >> 28) == 2 ? kSndVoiceChannel :
+                    sourceId == 0x21A9 || sourceId == 0x121A9 ? kSndCoinChannel : kSndAutoChannel;
+        if ((sourceId >> 28) == 0 && r.channel == kSndAutoChannel) r.dupId = id;
+        r.setCurrentBgm = bgm;
+        return r;
+    }
     switch (id >> 28) {
     case 0: {
         if (id == 0) return r;

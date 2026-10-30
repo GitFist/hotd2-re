@@ -9,6 +9,7 @@
 #include "game/world_modes.h"
 #include "game/world_nightshift.h"
 #include "game/world_st6.h"
+#include "game/typing_report.h"
 
 namespace game {
 
@@ -77,7 +78,7 @@ RankEntry* Table(World::Impl& w) {
 // 0x004157F0(p): -1 unless player p (not in state 9) reaches the last entry of the game type's ranking table (game
 // types 0 / 1: score, 3: boss time, world_modes_boss.cpp); 0x007C211C (two players joined at once, 0x00414F40) blocks it
 static int RankingSlot(World::Impl& w, int p) {
-    if (RandomizerActive(w)) return -1;
+    if (w.cfg.portTyping || RandomizerActive(w)) return -1;
     if (w.players == 2) return -1;  // 0x007C211C = 1 (0x00414F40 with two players)
     if (w.modes && w.runner->cfg.gameType == 3) return BossRankCheck(w, p);
     if (w.player[p].score < Table(w)[9].score) return -1;
@@ -301,6 +302,13 @@ void TaskResults(Task& t) {
 
 bool World::Impl::SpawnEnding(Task& t, SpawnTask& s) {
     const SpawnRecord r = s.rec;
+    if (typingReferenceActive && (r.type == 0x54 || r.type == 0x55 || r.type == 0x56)) {
+        // Reference ctor table5A2230..40 maps these former shooting-game
+        // credit/result actors to4BD820, a persistent no-op task.
+        s.fn = 0x004BD820;
+        t.fn = [](Task&) {};
+        return true;
+    }
     if (r.type == 0x33 && r.state == 11) {
         auto d = st5::FromRecord<EnemyTask>(r, 0x00434260);
         st5::RegisterSlot(*this, *d);  // 0x00409270
@@ -380,6 +388,11 @@ static void ModeNext(World::Impl& w) {
 static void EndingCheck(World::Impl& w) {
     auto it = w.runner->globals.find(0x009C71C0);
     if (it != w.runner->globals.end() && it->second != 0) {
+        if (w.cfg.portTyping && w.typingReferenceActive) {
+            w.subState=9;
+            ++w.front.modeFrames;
+            return;
+        }
         if(w.runner->cfg.gameType<2)
             PortLeaderboardComplete(w,w.runner->cfg.gameType,0,6);
         if (RankingSlot(w, 0) == -1 && RankingSlot(w, 1) == -1) {
@@ -418,7 +431,7 @@ static void LetterDraw(World::Impl& w, EndingState& e, float x, float y, float z
 static void RankInsert(World::Impl& w, EndingState& e, int p) {
     RankEntry* t = Table(w);
     const int score = w.player[p].score;
-    if (score < t[9].score) {
+    if (w.cfg.portTyping || score < t[9].score) {
         e.slot[p] = -1;
         e.done[p] = 1;
         return;
@@ -612,6 +625,10 @@ void TaskLetter(Task& t) {  // 0x004825B0
 static void NameEntryFrame(World::Impl& w);
 
 static void NameEntryStart(World::Impl& w) {
+    if (w.cfg.portTyping) {
+        StartTypingReport(w,true);
+        return;
+    }
     EndingState& e = ES(w);
     w.ts.Reset();  // Mem_Init 0x004A7310 (the serial counter continues)
     w.resQueue.clear();
@@ -739,6 +756,7 @@ static void NameEntryStart(World::Impl& w) {
 
 // 0x00481400 (sub-state 10)
 static void NameEntryFrame(World::Impl& w) {
+    if (w.cfg.portTyping && w.typingReferenceActive) { TypingReportFrame(w); return; }
     EndingState& e = ES(w);
     SetCurrentWorld(&w);
     for (int p = 0; p < 2; ++p)

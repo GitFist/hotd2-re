@@ -20,6 +20,7 @@
 #include "game/mstack.h"
 #include "game/world_internal.h"
 #include "game/world_nightshift.h"
+#include "game/typing_report.h"
 
 namespace game {
 
@@ -501,6 +502,11 @@ void World::Impl::TaskFootprint(Task& t) {
 
 // Game mode 7, 0x00460960
 void World::Impl::GameOverFrame() {
+    if (cfg.portTyping && typingReferenceActive) {
+        if (subState==0) StartTypingReport(*this,false);
+        else TypingReportFrame(*this);
+        return;
+    }
     switch (subState) {
     case 0: {
         if(runner&&runner->cfg.gameType<2)

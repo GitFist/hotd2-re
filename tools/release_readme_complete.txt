@@ -5,6 +5,8 @@ START PLAYING
 2. Open the hotd2re folder and double-click hotd2.exe.
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a
+Complete download: HOTD2RE-1.6-Windows-x64.zip
 This complete package includes the required game data. No separate installation or disc is needed.
 Keep the game and scenes folders next to hotd2.exe. Launch the top-level hotd2.exe.
 Requires Windows 10/11 with Direct3D 11 support. Optional graphics features have additional
@@ -16,8 +18,8 @@ NIGHT SHIFT MENUS
 Home uses the game's moving standby preview. Play contains Arcade, Original, Boss Mode
 (time attack), Challenges, Horde and Randomizer. Practice contains Scene Select.
 Challenges is the former Training mode, with objective captions for each challenge.
-Home also offers Leaderboard, Online, Extras, Options and Exit. Host Online, Browse Lobby and
-Peer to Peer are directly accessible beside the waiting-room preview.
+Home also offers Leaderboard, Online, Extras, Options and Exit. Open Online for Create Room,
+Browse Lobby and Peer to Peer. The waiting-room preview also lets you join listed rooms.
 Options > Game Options contains game rules, sound controls and Wii Remote / Light Gun setup.
 The graphics menu's Display > Menu Style selects Night Shift or Classic for the next launch.
 Classic changes menu appearance while retaining the same supported graphics settings.
@@ -27,6 +29,17 @@ Extras includes all 38 named music tracks, effects/dialogue previews, and a mode
 Master volume has a gradual scale with quieter low levels. Attraction volume controls the
 background menu loop separately from gameplay music, gunfire and effects.
 
+THE TYPING OF THE DEAD
+Select the other game's logo card on the main menu to switch between House of the Dead 2
+and Typing of the Dead. Each has its own moving attract presentation. Typing Home offers
+Original, Drill, Leaderboard and Options. Original setup includes difficulty, lives,
+continues, word size and US/UK keyboard layout. Type the displayed words to fight.
+Drill contains all 13 courses, with authored encounters, word cards, result books and
+course records. Drill is local play. Typing Original also supports two-player online
+play through the shared lobby, with its own local/online leaderboard table.
+This complete ZIP includes the prepared Typing data and does not run the original
+Typing executable. No additional Typing download is needed.
+
 SCORE DISPLAY CODE
 At the title or main menu (Night Shift Home or Classic), press Left, Left, Right,
 Right, Right, Left, Right, Enter. A message confirms the toggle; repeat to turn it off.
@@ -35,13 +48,14 @@ close the game and does not change scoring or rankings.
 
 ONLINE TWO-PLAYER
 Both players should use this same package.
-1. Use Home > Host Online to host, or Online to open all network choices.
+1. Open Home > Online, then choose Create Room, Browse Lobby or Peer to Peer.
    With Classic menus, choose Network from mode select.
-2. The host chooses difficulty, Unlimited Continues and Private Room, then Start.
+2. The host chooses the game, Unlimited Continues and Private Room, then Start.
 3. The other player selects BROWSE LOBBY and picks the host's room.
 4. Public rooms need no code. Private rooms appear in the list but require the host's 5-digit code.
 5. Both players enter the shared lobby. The creator (player 1) chooses ARCADE, ORIGINAL,
-   SCENE SELECTION, BOSS MODE, HORDE MODE, or RANDOMIZER. Chapter and boss selections are controlled by the host.
+   SCENE SELECTION, BOSS MODE, HORDE MODE, RANDOMIZER, or TYPING ORIGINAL.
+   Chapter and boss selections are controlled by the host.
    The host can change difficulty in the shared lobby; both players use that setting.
 6. Pause > Return to Lobby brings BOTH players back to that room to choose another mode.
    The room and player slots stay connected. Leave Room (or Esc in the lobby) ends the room.
@@ -73,7 +87,8 @@ Do not copy that file to your friend. Pausing pauses the shared game.
 Switching to another window does not pause it automatically.
 
 LEADERBOARD
-Home > Leaderboard contains Arcade, Original, Horde and individual Boss Mode tables.
+Home > Leaderboard contains Arcade, Original, Horde, individual Boss Mode and Typing tables.
+Typing Home opens its own table directly; Drill course records stay in Drill.
 Source: Local shows your own records. Source: Online queries the shared service.
 Shared records are unverified, client-reported results, not anti-cheat rankings.
 Choose a public username on first launch (1-12 characters). Eligible finished runs
@@ -97,6 +112,9 @@ folder and Windows PowerShell are required. Offline/failed checks stay silent. P
 to disable this check. Scripted/headless/direct gameplay launches skip it.
 Updates reuse unchanged files and download only changed program files. A verified
 full-client fallback is available automatically; update files need no manual download.
+After updating an older installation, startup downloads the missing Typing data once
+(89.5 MB), with verification, progress and Cancel. The complete
+1.6 ZIP already includes this data. --no-update-check also skips the automatic content download.
 Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
 32-bit installations need one manual installation of the latest complete x64 package.
 Version 1.0 x64 can update through its selective path; if that fails, install manually.

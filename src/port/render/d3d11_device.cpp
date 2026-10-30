@@ -135,7 +135,7 @@ private:
     ID3D11ShaderResourceView* PostSource(int outWidth, int outHeight, int* width, int* height, bool* fsr);
     ID3D11BlendState* BlendState(bool enable, int src, int dst, bool coverage = false);
     ID3D11DepthStencilState* DepthState(int zfunc, bool zwrite);
-    ID3D11SamplerState* Sampler(bool linear, int addrU, int addrV, bool mipmapped);
+    ID3D11SamplerState* Sampler(bool linear, int addrU, int addrV, int mipmapped);
     void BindPipeline(GpuDraw::Pipeline p, int width, int height);
 
     ComPtr<ID3D11Device> device_;
@@ -676,7 +676,7 @@ void D3D11Device::DrawDepthPrepass(const GpuDrawList& list) {
         const UINT stride=sizeof(game::ModelVertex),offset=0;ctx_->IASetVertexBuffers(0,1,&vertices,&stride,&offset);
         ctx_->UpdateSubresource(constants_.Get(),0,nullptr,&list.model[draw.constants],0,0);
         ctx_->RSSetState(rasterCull_[state.cull>=1&&state.cull<=3?state.cull-1:0].Get());ctx_->OMSetDepthStencilState(DepthState(state.zfunc,true),0);
-        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped!=0);ctx_->PSSetSamplers(0,1,&sampler);
+        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped);ctx_->PSSetSamplers(0,1,&sampler);
         ID3D11ShaderResourceView* texture=draw.texture&&draw.texture<=textures_.size()?textures_[draw.texture-1].Get():nullptr;ctx_->PSSetShaderResources(0,1,&texture);
         ctx_->Draw(draw.count,draw.first);opaqueReady_=true;
     }
@@ -723,7 +723,7 @@ void D3D11Device::DrawMotion(const GpuDrawList& list) {
         ctx_->UpdateSubresource(motionCb_.Get(),0,nullptr,&constants,0,0);
         const auto& state=draw.state;ctx_->RSSetState(rasterCull_[state.cull>=1&&state.cull<=3?state.cull-1:0].Get());
         ctx_->OMSetDepthStencilState(DepthState(state.zfunc,true),0);
-        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped!=0);ctx_->PSSetSamplers(0,1,&sampler);
+        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped);ctx_->PSSetSamplers(0,1,&sampler);
         ID3D11ShaderResourceView* textures[]={draw.texture&&draw.texture<=textures_.size()?textures_[draw.texture-1].Get():nullptr,previousDepthReady_?previousDepthColor_.srv.Get():nullptr};
         ctx_->PSSetShaderResources(0,2,textures);ctx_->Draw(draw.count,draw.first);
     }
@@ -754,7 +754,7 @@ void D3D11Device::DrawReactive(const GpuDrawList& list) {
         ID3D11Buffer* constants=model?constants_.Get():spriteCb_.Get();ctx_->VSSetConstantBuffers(0,1,&constants);ctx_->PSSetConstantBuffers(0,1,&constants);
         ctx_->UpdateSubresource(constants,0,nullptr,model?static_cast<const void*>(&list.model[draw.constants]):static_cast<const void*>(&list.sprite[draw.constants]),0,0);
         const auto& state=draw.state;ctx_->RSSetState(rasterCull_[state.cull>=1&&state.cull<=3?state.cull-1:0].Get());ctx_->OMSetDepthStencilState(DepthState(state.zfunc,false),0);
-        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped!=0);ctx_->PSSetSamplers(0,1,&sampler);
+        auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped);ctx_->PSSetSamplers(0,1,&sampler);
         ID3D11ShaderResourceView* texture=draw.texture&&draw.texture<=textures_.size()?textures_[draw.texture-1].Get():nullptr;ctx_->PSSetShaderResources(0,1,&texture);ctx_->Draw(draw.count,draw.first);
     }
     ctx_->PSSetShaderResources(0,5,empty);target=rtv_.Get();ctx_->OMSetRenderTargets(1,&target,dsv_.Get());
@@ -995,12 +995,12 @@ ID3D11DepthStencilState* D3D11Device::DepthState(int zfunc, bool zwrite) {
     return s.Get();
 }
 
-ID3D11SamplerState* D3D11Device::Sampler(bool linear, int addrU, int addrV, bool mipmapped) {
-    const int key = (linear ? 1 : 0) | (addrU << 1) | (addrV << 4) | (mipmapped ? 1 << 8 : 0);
+ID3D11SamplerState* D3D11Device::Sampler(bool linear, int addrU, int addrV, int mipmapped) {
+    const int key = (linear ? 1 : 0) | (addrU << 1) | (addrV << 4) | (mipmapped << 8);
     auto& s = samplers_[key];
     if (!s) {
         D3D11_SAMPLER_DESC sd = {};
-        sd.Filter = mipmapped ? (linear ? D3D11_FILTER_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR)
+        sd.Filter = mipmapped ? (linear ? D3D11_FILTER_MIN_MAG_MIP_LINEAR : mipmapped==2 ? D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR : D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR)
                               : (linear ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_POINT);
         if (mipmapped && graphics_.anisotropy > 1) {
             sd.Filter = D3D11_FILTER_ANISOTROPIC;
@@ -1077,7 +1077,7 @@ void D3D11Device::Submit(const GpuDrawList& list) {
         ctx_->OMSetBlendState(BlendState(s.blendEnable != 0, s.srcBlend, s.dstBlend, coverage), blendFactor, 0xFFFFFFFF);
         ctx_->RSSetState(rasterCull_[(s.cull >= 1 && s.cull <= 3) ? s.cull - 1 : 0].Get());
         ctx_->OMSetDepthStencilState(DepthState(s.zfunc, s.zwrite != 0), 0);
-        ID3D11SamplerState* smp = Sampler(s.linear != 0, s.addrU, s.addrV, s.mipmapped != 0);
+        ID3D11SamplerState* smp = Sampler(s.linear != 0, s.addrU, s.addrV, s.mipmapped);
         ID3D11SamplerState* materialSamplers[]={smp,postPointSampler_.Get(),smp,postPointSampler_.Get()};
         ctx_->PSSetSamplers(0, 4, materialSamplers);
         ID3D11ShaderResourceView* srv = d.texture && d.texture <= textures_.size() ? textures_[d.texture - 1].Get() : nullptr;

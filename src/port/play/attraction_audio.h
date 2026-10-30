@@ -37,6 +37,16 @@ inline game::SoundDriver::Volumes AttractionAudioVolumes(int master,int attracti
 class AttractionAudio {
 public:
     void Update(game::SoundDriver& driver,const game::SoundTable& table,const AttractPreview& preview,bool audible) {
+        if(typing_!=preview.Typing()) {
+            // Each paused preview keeps its own remembered music/ambient mix.
+            // Only the isolated attraction driver is stopped during a switch.
+            driver.StopAll();
+            std::swap(bgm_,alternateBgm_);
+            std::swap(loops_,alternateLoops_);
+            std::swap(bgmPaused_,alternateBgmPaused_);
+            active_=false;
+            typing_=preview.Typing();
+        }
         audible=audible&&preview.Get()!=nullptr;
         const bool fresh=revision_!=preview.SoundRevision();
         if(fresh) {
@@ -87,7 +97,10 @@ private:
     }
     uint64_t revision_=std::numeric_limits<uint64_t>::max();
     bool active_=false,bgmPaused_=false;
+    bool typing_=false,alternateBgmPaused_=false;
     std::optional<game::World::SoundEvent> bgm_;
+    std::optional<game::World::SoundEvent> alternateBgm_;
     std::vector<game::World::SoundEvent> loops_;
+    std::vector<game::World::SoundEvent> alternateLoops_;
 };
 } // namespace play

@@ -123,9 +123,8 @@ void SdlAudioBackend::DestroyStream(Channel& c) {
 bool SdlAudioBackend::Open(int ch, const std::string& path, bool streamed) {
     Channel& c = ch_[ch];
     if (!master_ || c.pcm) return false;  // channel in use
-    std::ifstream f(SoundPath(dir_, path), std::ios::binary);  // the asset pack's copy first
-    if (!f) return false;
-    std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), {});
+    std::vector<uint8_t> d;
+    if (!ReadSoundBytes(dir_,path,d)) return false;
     game::WavInfo w;
     if (!game::ParseWavHeader(d.data(), d.size(), w) || w.formatTag != 1 /* WAVE_FORMAT_PCM */) return false;
     if (w.bitsPerSample != 8 && w.bitsPerSample != 16) return false;

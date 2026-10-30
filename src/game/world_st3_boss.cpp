@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "game/mstack.h"
+#include "game/typing_boss_rules.h"
 #include "game/world_internal.h"
 
 namespace game {
@@ -124,6 +125,11 @@ struct HydraState {
     int8_t level = 0;          // 0x007DC80C (attack interval row, 0..15)
     uint32_t counter = 0;      // 0x00811200 pseudo-random counter
     float card[8][5] = {};     // 0x007DC740 name card letters {x, y, z, angle (int bits), scale}
+    TypingQuizChallenge quiz;
+    enum class QuizPhase { Setup, Reveal, Answers, Cooldown, Attack };
+    QuizPhase quizPhase = QuizPhase::Setup;
+    uint32_t quizToken = 0;
+    unsigned quizFrames = 0;
 };
 
 namespace {
@@ -559,7 +565,9 @@ void TaskCard(Task& t) {
         mx::Translate(m, l[0], l[1], l[2]);
         mx::RotY(m, ang);
         mx::Scale(m, l[4], l[4], l[4]);
-        w.Draw(static_cast<int>(exe.U32(0x00589120 + 4 * static_cast<uint32_t>(i))), m, 8, -1.0f, false, -1, true);
+        const int model = w.typingReferenceActive ? w.typingReference.SourceModel(i == 0 ? 0x81E : i == 6 ? 0x1905 : 0x81F)
+                                                 : static_cast<int>(exe.U32(0x00589120 + 4 * static_cast<uint32_t>(i)));
+        w.Draw(model, m, 8, -1.0f, false, -1, true);
     };
     if (k.state == 0) {
         k.tick = 0;
@@ -624,8 +632,13 @@ void TaskCard(Task& t) {
     if (1 < k.state && k.state < 4 && 0x4F < k.tick) {  // Spr_Draw 0x0041C630 x 2
         float a = static_cast<float>(k.tick - 0x50) * F32(exe, 0x0055CB80);
         if (1.0f <= a) a = 1.0f;
-        w.hudSprites.push_back(Sprite2D(0xBC, Bits(0x43AC0000), Bits(0x42C00000), 1.0f, 1.0f, 1.0f, 0, a));
-        w.hudSprites.push_back(Sprite2D(0xCA, Bits(0x43F60000), Bits(0x42C00000), 1.0f, 1.0f, 1.0f, 0, a));
+        if (w.typingReferenceActive) {
+            w.TypingSprite(0xD1,Bits(0x43AC0000),Bits(0x42C00000),a,1,0,0x004081AD);
+            w.TypingSprite(0xDF,Bits(0x43F60000),Bits(0x42C00000),a,1,0,0x004081D7);
+        } else {
+            w.hudSprites.push_back(Sprite2D(0xBC, Bits(0x43AC0000), Bits(0x42C00000), 1.0f, 1.0f, 1.0f, 0, a));
+            w.hudSprites.push_back(Sprite2D(0xCA, Bits(0x43F60000), Bits(0x42C00000), 1.0f, 1.0f, 1.0f, 0, a));
+        }
     }
     ++k.tick;
 }
@@ -965,6 +978,139 @@ void HeadKillLock(World::Impl& w, HydraTask& a) {
     if (a.slot120 != -1) w.lockOn.Release(a.slot120);  // 0x009A5EC0[+0x120 * 8] = 0
 }
 
+char QuizInitial(std::string_view text) {
+    const auto first = text.find_first_not_of(' ');
+    if (first == std::string_view::npos) return 0;
+    const char c = text[first];
+    return c >= 'A' && c <= 'Z' ? char(c + 'a' - 'A') : c;
+}
+
+bool BeginTypingQuiz(World::Impl& w, HydraState& h) {
+    int bankCount = 0;
+    for (const auto& bank : TypingWordBanks()) if (bank.group == 3) ++bankCount;
+    if (!bankCount) return false;
+    const auto* bank = FindTypingWordBank(3, 1 + w.Rand(0x00405085) % bankCount);
+    if (!bank) return false;
+    const auto records = TypingWords(*bank);
+    if (records.size() <= 9) return false;
+    const unsigned correct = unsigned(w.Rand(0x0040508D)) % 3u;
+    std::array<uint32_t, 3> choices{};
+    std::array<char, 3> initials{};
+    for (unsigned choice = 0; choice < choices.size(); ++choice) {
+        const uint32_t first = choice == correct ? 1 : 9;
+        const uint32_t count = choice == correct ? 8 : uint32_t(records.size() - 9);
+        uint32_t selected = first;
+        const auto available = [&](uint32_t index) {
+            const char initial = QuizInitial(records[index].text);
+            return initial && std::find(initials.begin(), initials.begin() + choice, initial) == initials.begin() + choice;
+        };
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            selected = first + unsigned(w.Rand(0x004B0BBA)) % count;
+            if (available(selected)) break;
+        }
+        if (!available(selected)) {
+            for (uint32_t index = first + count; index-- > first;)
+                if (available(index)) { selected = index; break; }
+        }
+        choices[choice] = selected;
+        initials[choice] = QuizInitial(records[selected].text);
+    }
+    if (!h.quiz.begin(records, choices)) return false;
+    ++h.quizToken;
+    h.quizPhase = HydraState::QuizPhase::Reveal;
+    h.quizFrames = 120; // original question enters at -960, advancing eight units per frame
+    w.typingQuestion = h.quiz.question().text;
+    w.typingQuestionSeconds = 0;
+    w.typingHud.questionSlide = -960;
+    w.typingHud.questionVisible = false;
+    return true;
+}
+
+void ResolveTypingQuiz(World::Impl& w, HydraState& h, TypingQuizOutcome outcome, size_t answeredChoice = 3) {
+    if (outcome == TypingQuizOutcome::None) return;
+    ++h.quizToken;
+    w.typingQuestion.clear();
+    w.typingQuestionSeconds = 0;
+    h.quizPhase = HydraState::QuizPhase::Cooldown;
+    h.quizFrames = 1;
+    if (outcome == TypingQuizOutcome::Correct) {
+        h.total = static_cast<int16_t>(std::max(0, int(h.total) - int(TypingTowerCorrectDamage(h.mode == 2))));
+        w.bossBar = float(h.total) / float(TypingTowerStartingLife(h.mode == 2));
+        h.quizFrames = 600 + unsigned(w.Rand(0x0040429C)) % 51u;
+        if (h.total == 0) {
+            h.alive = 0;
+            h.phase = 2;
+            h.readyCount = 0;
+            w.TypingController(w.typingPlayer).addBasePoints(700);
+            w.AddScore(w.typingPlayer, 700);
+            for (int i = 0; i < 5; ++i) if (auto* dying = Head(w, i)) {
+                dying->ready = -1;
+                dying->behaviour = 7;
+                dying->counter1330 = 0;
+                HeadKillLock(w, *dying);
+                w.AnimBlendTo(*dying, dying->death, 8, 8);
+            }
+        }
+    }
+    if (h.phase == 1 && answeredChoice < kTypingQuizHeadIndices.size()) {
+        if (auto* head = Head(w, int(kTypingQuizHeadIndices[answeredChoice]))) {
+            head->behaviour = 6;
+            head->f1340 = 0;
+            w.AnimBlendTo(*head, head->flinch, 8, 8);
+            Roar(w, 1);
+        }
+    }
+    if (h.level < 15) ++h.level;
+}
+
+void TickTypingQuiz(World::Impl& w, HydraState& h) {
+    if (w.paused || w.runner->camera.modeCur != 2 ||
+        (w.player[0].state != 5 && w.player[1].state != 5)) return;
+    switch (h.quizPhase) {
+    case HydraState::QuizPhase::Setup:
+        BeginTypingQuiz(w, h);
+        break;
+    case HydraState::QuizPhase::Reveal: {
+        for (unsigned index : kTypingQuizHeadIndices) {
+            const auto* head = Head(w, int(index));
+            if (!head || head->behaviour != 4) return;
+        }
+        if (h.quizFrames) --h.quizFrames;
+        w.typingHud.questionSlide = -8 * int(h.quizFrames);
+        w.typingHud.questionVisible = true;
+        if (h.quizFrames) break;
+        h.quiz.revealComplete(std::clamp(w.rank, 0, w.cfg.eventMode == 0 ? 12 : w.cfg.eventMode == 1 ? 14 : 15));
+        h.quizPhase = HydraState::QuizPhase::Answers;
+        w.typingQuestionSeconds = float(h.quiz.remainingFrames()) / 60.0f;
+        break;
+    }
+    case HydraState::QuizPhase::Answers: {
+        const auto outcome = h.quiz.tick();
+        w.typingQuestionSeconds = float(h.quiz.remainingFrames()) / 60.0f;
+        ResolveTypingQuiz(w, h, outcome);
+        if (outcome == TypingQuizOutcome::Timeout) {
+            if (auto* head = Head(w, int(kTypingQuizHeadIndices[h.quiz.correctChoice()]))) {
+                head->ready = 0;
+                ++h.readyCount;
+                h.quizPhase = HydraState::QuizPhase::Attack;
+            }
+        }
+        break;
+    }
+    case HydraState::QuizPhase::Cooldown:
+        if (h.quizFrames) --h.quizFrames;
+        if (h.quizFrames) break;
+        if (auto* head = Head(w, int(kTypingQuizHeadIndices[h.quiz.correctChoice()]))) {
+            head->ready = 0;
+            ++h.readyCount;
+            h.quizPhase = HydraState::QuizPhase::Attack;
+        }
+        break;
+    case HydraState::QuizPhase::Attack:
+        break;
+    }
+}
+
 // 0x004209B0
 void TaskHead(Task& t) {
     World::Impl& w = *CurrentWorld();
@@ -976,7 +1122,7 @@ void TaskHead(Task& t) {
     h.headSerial[a.index] = t.serial;
     auto& cnt = a.anim.counter[0];
     // ---- shots (fight phase, not flinching / dying)
-    if (h.phase == 1 && a.behaviour != 7 && a.behaviour != 6 && (a.flags34 & 8)) {
+    if (!w.cfg.portTyping && h.phase == 1 && a.behaviour != 7 && a.behaviour != 6 && (a.flags34 & 8)) {
         const uint32_t f = a.flags34 & ~8u;
         a.flags34 = f;
         int p;
@@ -1008,7 +1154,8 @@ void TaskHead(Task& t) {
                 if (factor == F32(w.exe, 0x004C4C64)) factor = F32(w.exe, 0x004E30F0);
             }
             // fild (45 / n) x factor on the x87 stack, _ftol (exact in double)
-            const int dmg = static_cast<int>(static_cast<double>(45 / (w.players != 2 ? 3 : 5)) * static_cast<double>(factor));
+            int dmg = static_cast<int>(static_cast<double>(45 / (w.players != 2 ? 3 : 5)) * static_cast<double>(factor));
+            if (a.typingStrike) dmg = static_cast<int>(TypingDamage(a, static_cast<float>(dmg)));
             a.hp = static_cast<int16_t>(a.hp - dmg);
             h.total = static_cast<int16_t>(h.total - dmg);
             if (a.hp < 0) h.total = static_cast<int16_t>(h.total - a.hp);
@@ -1122,7 +1269,7 @@ void TaskHead(Task& t) {
                     HeadSwitchSide(w, a);
                 }
             }
-            if (h.mode == 2 || a.index != 2) {
+            if (w.cfg.portTyping || h.mode == 2 || a.index != 2) {
                 if (a.ready == 0 && started && w.runner->camera.modeCur == 2 && playersIn()) {
                     const int k = Ctr(w, a.attackCount - 1);
                     a.behaviour = 5;
@@ -1156,6 +1303,11 @@ void TaskHead(Task& t) {
                 if (h.level < 0) h.level = 0;
                 h.countdown = Interval(w, 0x0042127B);
                 h.attacker = a.index;
+                if (w.cfg.portTyping) {
+                    h.quiz = {};
+                    h.quizPhase = HydraState::QuizPhase::Setup;
+                    h.quizFrames = 0;
+                }
             }
             if (a.anim.ended) {
                 const int r = Ctr(w, 1);
@@ -1168,6 +1320,19 @@ void TaskHead(Task& t) {
             break;
         }
         case 6:
+            if (w.cfg.portTyping) {
+                ++cnt;
+                if (a.anim.flags[0] & 1) a.f1340 += 1.0f;
+                if (a.anim.ended) {
+                    HeadIdle(w, a);
+                    a.behaviour = 4;
+                    ZeroExtra(a);
+                    h.quiz = {};
+                    h.quizPhase = HydraState::QuizPhase::Setup;
+                    h.quizFrames = 0;
+                }
+                break;
+            }
             if (!(a.anim.flags[0] & 1)) {
                 ++cnt;
                 if (a.anim.ended) HeadIdle(w, a);
@@ -1195,7 +1360,8 @@ void TaskHead(Task& t) {
             scheduler = a.index == 2;
             break;
         }
-        if (scheduler && w.runner->camera.modeCur == 2 && playersIn()) {  // LAB_0042141B (central head)
+        if (w.cfg.portTyping && a.index == 2) TickTypingQuiz(w, h);
+        if (!w.cfg.portTyping && scheduler && w.runner->camera.modeCur == 2 && playersIn()) {  // LAB_0042141B (central head)
             --h.countdown;
             if (h.countdown < 1 && h.readyCount < 2) {
                 const int i = Ctr(w, 4);
@@ -1454,7 +1620,8 @@ void BuildSegment(World::Impl& w, HydraTask& a, int seg) {
     for (int t = w.exe.S16(e + 2); t <= w.exe.S16(e + 4); ++t) {
         float p[3] = {}, tg[3] = {};
         int roll = 0;
-        if (!w.cameraBank.Evaluate(w.exe.S16(e), static_cast<float>(t), p, tg, &roll, false))
+        const int path=w.exe.S16(e)+(w.typingReferenceActive ? 0x4022 : 0);
+        if (!w.cameraBank.Evaluate(path, static_cast<float>(t), p, tg, &roll, false))
             w.Note("stage-3 boss path camera " + std::to_string(w.exe.S16(e)) + " missing (0x00424190)");
         if (a.counter1334 >= 0 && a.counter1334 < static_cast<int>(a.path.size()))
             a.path[static_cast<size_t>(a.counter1334)] = { p[0], p[1], p[2] };
@@ -1533,7 +1700,7 @@ void Move5(World::Impl& w, HydraTask& a) {
     {
         float tg[3] = {};
         int roll = 0;
-        const int cam = exe.S16(a.camTab + static_cast<uint32_t>(seg) * 6);
+        const int cam = exe.S16(a.camTab + static_cast<uint32_t>(seg) * 6)+(w.typingReferenceActive ? 0x4010 : 0);
         if (!w.cameraBank.Evaluate(cam, static_cast<float>(tick), c0.pos, tg, &roll, false))  // Cam_Evaluate 0x004041E0
             w.Note("stage-3 boss camera " + std::to_string(cam) + " missing (0x00424250)");
     }
@@ -1792,6 +1959,7 @@ void Body5Death(World::Impl& w, HydraTask& a) {
     const uint32_t g = a.flags34 & 2;
     if (g == 0 || !(a.flags34 & 4)) w.AddScore(g == 0 ? 1 : 0, 0x5DC);
     else w.AddScore(w.Rand(0x0042336D) & 1, 0x5DC);
+    if (w.cfg.portTyping) w.TypingController(a.typingPlayer).addBasePoints(700);
     w.bossBar = 0.0f;
     a.behaviour = 0xE;
     a.cooldown133C = 0;
@@ -1843,8 +2011,8 @@ void TaskBody5(Task& t) {
         int p;
         if ((f & 2) && (f & 4)) p = w.Rand(0x004231FE) & 1;
         else p = (f & 2) == 0 ? 1 : 0;
-        bool damage = false;
-        if ((a.behaviour == 0xB || a.behaviour == 0xC) &&
+        bool damage = w.cfg.portTyping && a.typingStrike;
+        if (!damage && (a.behaviour == 0xB || a.behaviour == 0xC) &&
             (((a.flags34 & 2) && a.hitNode[0] == 0x18) || ((a.flags34 & 4) && a.hitNode[1] == 0x18))) {
             const int j1 = a.anim.nodes[a.jawA & 31].cur[2], j2 = a.anim.nodes[a.jawB & 31].cur[2];
             int d = j1 - j2;
@@ -1861,7 +2029,11 @@ void TaskBody5(Task& t) {
                 if (!ItemDamage(w, p, &factor, &boost)) factor = 1.0f;
                 if (factor == F32(exe, 0x004C4C64)) factor = F32(exe, 0x004E30F0);
             }
-            const int dmg = static_cast<int>(static_cast<double>(factor) * static_cast<double>(F32(exe, w.players == 2 ? 0x0055CB4C : 0x0055CB48)));
+            int dmg = static_cast<int>(static_cast<double>(factor) * static_cast<double>(F32(exe, w.players == 2 ? 0x0055CB4C : 0x0055CB48)));
+            if (w.cfg.portTyping && a.typingStrike) {
+                a.typingStrike = false;
+                dmg = -int(TypingTowerSwimmingWordDamage());
+            } else if (a.typingStrike) dmg = static_cast<int>(TypingDamage(a, static_cast<float>(dmg)));
             a.hp = static_cast<int16_t>(a.hp + dmg);
             w.bossBar = static_cast<float>(a.hp) * F32(exe, 0x0055CB44);
             if (w.bossBar < 0.0f) w.bossBar = 0.0f;
@@ -1886,6 +2058,7 @@ void TaskBody5(Task& t) {
             a.pos[0] = PathAt(a, a.cursor)[0];
             a.pos[2] = PathAt(a, a.cursor)[2];
             a.behaviour = 9;
+            if (w.cfg.portTyping) { w.typing.setWordSelection(0,150); w.typing2.setWordSelection(0,150); }
         }
         break;
     case 9:
@@ -1944,7 +2117,8 @@ void TaskBody5(Task& t) {
     }
     case 0xB: {
         Move5(w, a);
-        const bool done = w.players == 2 ? 2 < a.hits : (w.players < 2 && 1 < a.hits);
+        const bool done = w.typingReferenceActive ? a.hits>=1 :
+            w.players == 2 ? 2 < a.hits : (w.players < 2 && 1 < a.hits);
         if (done) {
             Roar(w, 1);
             NextPass(w, a);
@@ -1991,7 +2165,8 @@ void TaskBody5(Task& t) {
     }
     case 0xC: {
         Move5(w, a);
-        const bool done = w.players == 2 ? 2 < a.hits : (w.players < 2 && 1 < a.hits);
+        const bool done = w.typingReferenceActive ? a.hits>=1 :
+            w.players == 2 ? 2 < a.hits : (w.players < 2 && 1 < a.hits);
         if (done) {
             w.Sound(0x241AA9);
             NextPass(w, a);
@@ -2224,6 +2399,7 @@ void World::Impl::SpawnHydra(Task& t, SpawnTask& s) {
     HydraState& h = H(*this);
     const SpawnRecord r = s.rec;
     auto d = std::make_unique<HydraTask>();
+    SetTypingSpawnOrigin(*d, r);
     d->record = r;
     d->flags34 = r.flags | 1;  // 0x00408970
     memcpy(d->pos, r.pos, 12);
@@ -2246,6 +2422,12 @@ void World::Impl::SpawnHydra(Task& t, SpawnTask& s) {
         h.phase = 0;
         h.alive = 5;
         h.total = static_cast<int16_t>(h.mode != 2 ? 0xB4 : 0x96);
+        h.quiz = {};
+        h.quizPhase = HydraState::QuizPhase::Setup;
+        h.quizFrames = 0;
+        ++h.quizToken;
+        typingQuestion.clear();
+        typingQuestionSeconds = 0;
         h.level = static_cast<int8_t>(rank);  // 0x0040A8A0
         const uint32_t row = 0x005890E0 + static_cast<uint32_t>(h.level) * 4;
         const int r1 = Rand(0x0041FC9E);
@@ -2278,6 +2460,59 @@ void World::Impl::SpawnHydra(Task& t, SpawnTask& s) {
         break;
     }
     t.data = std::move(d);
+}
+
+bool TypingBoss3(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    auto* a = dynamic_cast<HydraTask*>(&actor);
+    if (!a) return false;
+    out.boss = true;
+    if (a->hp < 1 || (a->flags34 & 0x4000000u)) return true;
+    HydraState& h = H(w);
+    if (a->variant == 2) {
+        if (w.cfg.portTyping) {
+            if (h.phase != 1 || !h.quiz.acceptingAnswers()) return true;
+            const auto found = std::find(kTypingQuizHeadIndices.begin(), kTypingQuizHeadIndices.end(), unsigned(a->index));
+            if (found == kTypingQuizHeadIndices.end()) return true;
+            const size_t choice = size_t(found - kTypingQuizHeadIndices.begin());
+            out.retain = true;
+            out.token = 0x300000u + h.quizToken * 8u + unsigned(a->index);
+            out.word = &h.quiz.answers()[choice];
+            out.node = a->head;
+            memcpy(out.view, a->anim.nodes[a->head & 31].hit, 12);
+            if (complete) ResolveTypingQuiz(w, h, h.quiz.answer(choice), choice);
+            return true;
+        }
+        if (h.phase != 1 || a->behaviour == 7 || (h.mode != 2 && a->index == 2)) return true;
+        out.retain = true;
+        out.token = 0x300000u | (static_cast<uint32_t>(h.phase) << 16) | (static_cast<uint32_t>(a->index) << 8);
+        memcpy(out.view, a->anim.nodes[a->head & 31].hit, 12);
+        if (a->behaviour == 6 || (a->flags34 & 0x8100u)) return true;
+        const EnemyNode& j1 = a->anim.nodes[a->jawA & 31];
+        const EnemyNode& j2 = a->anim.nodes[a->jawB & 31];
+        int d = ((j1.cur[2] - j2.cur[2]) - a->az[a->jawB]) + a->az[a->jawA];
+        if (d < 0) d = ((j2.cur[2] - j1.cur[2]) - a->az[a->jawA]) + a->az[a->jawB];
+        const uint16_t z = static_cast<uint16_t>(a->zsum);
+        if (d <= 0x1700 || (0x1700 < z && z < 0xC000)) return true;
+        out.node = a->head;
+    } else if (a->variant == 5) {
+        if (a->behaviour < 8 || a->behaviour >= 0xE) return true;
+        out.retain = true;
+        out.token = 0x350000u | static_cast<uint32_t>(h.mode);
+        memcpy(out.view, a->anim.nodes[0x18].hit, 12);
+        if (w.cfg.portTyping) {
+            out.node = 0x18;
+            if (complete) TypingDeliver(*a, out.node);
+            return true;
+        }
+        if ((a->behaviour != 0xB && a->behaviour != 0xC) || (a->flags34 & 0x8100u)) return true;
+        const int d = std::abs(a->anim.nodes[a->jawA & 31].cur[2] - a->anim.nodes[a->jawB & 31].cur[2]);
+        if (d <= 0x1700) return true;
+        out.node = 0x18;
+    } else {
+        return true;
+    }
+    if (complete) TypingDeliver(*a, out.node);
+    return true;
 }
 
 }  // namespace game

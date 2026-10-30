@@ -32,10 +32,14 @@
 #include "game/anim.h"          // Mat4
 #include "game/menu_scroll.h"
 #include "game/stage_results.h"
+#include "game/typing_mode.h"
 #include "game/event_runner.h"  // EventRunner::Exec
 #include "game/sprite.h"        // SpriteDef
 
 namespace game {
+class TypingDrillController;
+struct TypingDrillResult;
+struct TypingDrillGameState;
 
 // The light a submission is drawn with (renderer state, no game logic): Mdl_Submit 0x004A7E50 snapshots the light
 // globals 0x007E7998.. (colour, intensity, direction; set by 0x004AA0A0 / 0x004AA070 / 0x004AA0E0) and builds the D3D
@@ -60,6 +64,8 @@ struct ModelEdit {
     };
     std::vector<Vertex> vertices;
     float diffuse = -1.0f;  // >= 0: material words 12..14 (diffuse R, G, B) of every material = this value
+    bool diffuseRgb = false;
+    float color[3] = {1, 1, 1}; // 0x004885C0: authored per-channel material tint (typing posters / glyphs).
     // 0x0040F960 seam-normal cache: normal x of inline vertex `index` = the bits of normal z of inline vertex
     // `srcIndex` of model `srcModel` (as loaded from the file), | 1 (the code writes all three cached components to x)
     struct NormalX {
@@ -79,6 +85,7 @@ struct ModelEdit {
     };
     std::vector<Uv> uvs;
     uint32_t tspOr = 0;  // OR-ed into every material's TSP word (0x0046E3A0: 0x2000, bilinear filtering)
+    bool clearSpecular = false; // PC4AEB40: material exponent word9 becomes zero for authored typing UI models.
 };
 
 // One model submission.
@@ -96,6 +103,7 @@ struct WorldDraw {
     // Skinned enemy attachment (0x00419520 / 0x00419980): the model's vertex groups are moved by these node world
     // matrices relative to `world` (the base node) before drawing; the renderer applies the deformation.
     int skinCount = 0;
+    int skinModel = 0; // optional native deformation identity when prepared geometry has a different model id
     Mat4 skin[4];
     // >= 0: models 0x1731..0x1734 carry the vertex wave of the decoration 0x0046DAB0 with this phase (game::DecorWave;
     // the original edits the loaded model, so every draw of the frame shows the frame's last edit)
@@ -188,6 +196,7 @@ struct PortHomeRoom {
     bool privateRoom = false, unlimited = true;
     uint32_t build = 0;
     int difficulty = -1;  // 0..4; older directory advertisements do not supply a difficulty
+    bool typing = false;
 };
 
 struct WorldHud {
@@ -199,6 +208,9 @@ struct WorldHud {
     std::vector<MenuScrollHint> menuScrollHints;
     int nightShiftPage = -1;  // -1 off; 0 Home, 1 Play, 2 Practice, 3 Leaderboard, 4 local username overlay, 5 Options, 6 Online, 7 Game Options, 8 Pause, 9 Extras, 10 Connected room
     int nightShiftRow = 0;
+    bool typingHome = false;
+    bool menuSwitching = false;
+    float menuSwitchFade = 0; // Smooth full-screen fade, including menus and attraction preview.
     int portLobbyRequests = 0, portLobbyAction = 0;  // existing network pages: 1 Create, 2 Browse, 3 Peer
     uint32_t portLobbyRoom = 0;  // action 4: a real waiting room selected on Home
     int portLeaderboardRequests = 0, portLeaderboardTable = 0;
@@ -324,6 +336,9 @@ struct WorldInput {
     bool fired = false;       // 0x007DC120[slot]: trigger pressed on screen this frame
     bool offscreen = false;   // 0x007DB7C8[slot]: off-screen shot (trigger off screen or reload button)
     uint32_t held = 0, pressed = 0;  // device buttons (2 reload, 4 trigger, 8 start): device record +8 / +0x10
+    std::string typingText;   // Ordered physical-key characters, applied with this simulation frame.
+    bool typingCancel = false;
+    uint8_t typingItems = 0;  // F1..F4 edges.
 };
 // The hook's scripted / raw-input conversion (src/hook/gun_state.cpp ComputeGunSlot, stretch aspect): a normalized aim
 // (0..1, origin top-left; outside = off screen) and the held buttons (1 trigger, 2 reload, 4 start; scripted d-pad 8 up,
@@ -429,6 +444,9 @@ struct WorldConfig {
     // (world_scene_select.cpp); the boot logos (SEGA, Empire) each skipped by a trigger / reload / start press
     // (world_front.cpp BootFrame).
     bool portFeatures = false;
+    bool portTyping = false;  // native typing campaign; isolated from gun-mode records
+    bool typingOriginal = true;
+    TypingRulesOptions typingOptions;
     // Port only, with portFeatures: Night Shift Home / Play / Practice / Leaderboard,
     // using the original logo and glyphs with full-row mouse/gun and keyboard input.
     // play.exe renders a separate original attract World behind this menu, with its own volume.
@@ -436,6 +454,8 @@ struct WorldConfig {
     bool portModernMenu = false;
     // A connected online room: host-owned mode selection, retained between games and during rejoin replay.
     bool portNetworkRoom = false;
+    bool portTypingRoom = false; // Initial lobby focus / directory advertisement.
+    uint32_t networkStartedAt = 0;
     bool portStageResults = false;  // chapter totals and a skippable results page; off in original-exactness tests
 };
 
@@ -448,6 +468,11 @@ struct PortGameOptions {
     int crosshair[2] = {0, 0};
     bool freePlayUnlocked = false;
     bool editable = false;
+};
+
+struct PortTypingPrompt : TypingPrompt {
+    float x = 320, y = 240;  // projected 640x480 game coordinates
+    bool waiting = false;  // a completed phrase awaits the boss's next valid opening
 };
 
 class World {
@@ -471,6 +496,15 @@ public:
     void Boot(const WorldConfig& cfg);
     // A repeatable network start, independent of the menus visited before joining. Also used for rejoin replay.
     bool StartNetworkGame(const WorldConfig& cfg, std::string* error = nullptr);
+    bool StartTypingAttract(int demoIndex, std::string* error = nullptr);
+    bool StartTypingDrill(int exercise,const TypingDrillController& profile,uint32_t seed,std::string* error=nullptr,
+                          const TypingRulesOptions* options=nullptr);
+    const TypingDrillGameState& TypingDrillGame() const;
+    TypingDrillResult TypingDrillOutcome() const;
+    const std::array<uint16_t,256>& TypingDrillKeyWeights() const;
+    bool PortTypingDrillPlaying() const;
+    void PauseTypingDrill();
+    void ReturnToTypingDrillMenu();
     bool NetworkRoom() const;
     bool NetworkLobby() const;
     void LeaveNetworkRoom();
@@ -492,7 +526,18 @@ public:
     // Port only: WorldConfig::portModernMenu after Boot (the display settings page changed it); the mode select's
     // task reads it every frame.
     void SetPortModernMenu(bool on);
+    bool PortTypingActive() const;
+    bool PortTypingNameActive() const;
+    bool PortTypingReportActive() const;
+    void PortTypingInput(const std::string& text, bool cancel = false, int player = 0);
+    std::vector<PortTypingPrompt> PortTypingPrompts(int player = 0) const;
+    TypingStats PortTypingStats(int player = 0) const;
+    bool PortTypingDrillActive() const;
+    std::string PortTypingQuestion() const;
+    float PortTypingQuestionSeconds() const;
+    TypingRulesOptions PortTypingOptions() const;
     void SetPortHordeLeaderboard(const std::vector<HordeLeaderboardEntry>& entries);
+    void SetPortTypingLeaderboard(const std::vector<SharedLeaderboardEntry>& entries);
     HordeRunSnapshot PortHordeRun() const;
     void SetPortSharedLeaderboard(int table, const std::vector<SharedLeaderboardEntry>& entries, const std::string& status);
     void SetPortLeaderboardPublishable(bool on, const std::string& status = "");  // legacy flag ignored; automatic-submission status only

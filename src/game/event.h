@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace game {
@@ -18,6 +19,11 @@ public:
     static constexpr uint32_t kCommonBase = 0x00977200;
     static constexpr uint32_t kStageBase = 0x00977400;
     void Load(uint32_t base, const std::vector<uint8_t>& file);
+    void Clear() { words_.clear(); sceneRoutes_.clear(); typingDialect_ = false; }
+    void SetTypingDialect(bool enabled) { typingDialect_ = enabled; }
+    bool TypingDialect() const { return typingDialect_; }
+    void SetSceneRoutes(int mode, std::vector<uint8_t> bytes) { sceneRoutes_[mode] = std::move(bytes); }
+    bool SceneRoute(int mode, int word, int16_t* value) const;
     bool Read(uint32_t addr, uint32_t* out) const;
 
     // comevtbl[mode][scene][variant] like Evt_GetScript (0 if a level is null).
@@ -25,6 +31,8 @@ public:
 
 private:
     std::map<uint32_t, uint32_t> words_;
+    std::map<int, std::vector<uint8_t>> sceneRoutes_;
+    bool typingDialect_ = false;
 };
 
 struct EventOp {

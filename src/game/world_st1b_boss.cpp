@@ -13,9 +13,12 @@
 
 #include "game/mstack.h"
 #include "game/shoot_camera.h"
+#include "game/typing_boss_rules.h"
 #include "game/world_internal.h"
 
 namespace game {
+
+bool StartTypingChapterChoice(World::Impl& world);
 
 namespace {
 
@@ -35,6 +38,15 @@ float Bits(uint32_t u) {
     float f;
     memcpy(&f, &u, 4);
     return f;
+}
+
+int SourceBossRank(World::Impl& w) {
+    // Source4376D0 mutates the campaign rank when a boss reads it.
+    if (w.typingReferenceActive && w.cfg.gameType!=3) {
+        if (w.cfg.eventMode==0) w.rank=std::min(w.rank,12);
+        else if (w.cfg.eventMode==1) w.rank=std::min(w.rank,14);
+    }
+    return w.rank;
 }
 
 template <class T> T* AliveTask(World::Impl& w, T* p, uint32_t serial) {
@@ -67,6 +79,9 @@ struct BossState : TaskData {
     float saved[3] = {};    // +0x13CC
     EnemyTask* mount = nullptr;  // +0x1394
     uint32_t mountSerial = 0;
+    unsigned typingWordPhase = 0;
+    float typingPathFraction = 0;
+    int typingInstructions = 0;
 };
 
 }  // namespace
@@ -84,6 +99,11 @@ struct MountTask : EnemyTask {
 namespace {
 
 BossState& Boss(Actor22Task& a) { return *static_cast<BossState*>(a.boss.get()); }
+
+int JudgmentPath(const World::Impl& w, int native) {
+    // Reference rider paths125/126/166/1A1 correspond to103/104/144/17F.
+    return w.typingReferenceActive ? 0x4000 + native + 0x22 : native;
+}
 
 // 0x00409B70(dy): view position of the body point, hit target, body point + dy, lock-on candidate
 void ViewPos(World::Impl& w, EnemyTask& e, float dy) {
@@ -118,6 +138,7 @@ void ReleaseSlots(World::Impl& w, EnemyTask& e) {
 
 // 0x0049DB90(path, t): the rider's offset on camera path `path` (y - 3) in the mount's frame
 void PathPlace(World::Impl& w, BossState& b, int path, float t) {
+    path = JudgmentPath(w, path);
     float p[3] = {}, tg[3] = {};
     int roll = 0;
     if (!w.cameraBank.Evaluate(path, t, p, tg, &roll, false)) w.Note("boss path " + std::to_string(path) + " missing");
@@ -128,6 +149,7 @@ void PathPlace(World::Impl& w, BossState& b, int path, float t) {
 
 // 0x0049DBE0(path, t): target point = camera path point in the players' frame (10 in front)
 void PathTarget(World::Impl& w, BossState& b, int path, float t) {
+    path = JudgmentPath(w, path);
     float p[3] = {}, tg[3] = {};
     int roll = 0;
     if (!w.cameraBank.Evaluate(path, t, p, tg, &roll, false)) w.Note("boss path " + std::to_string(path) + " missing");
@@ -147,7 +169,8 @@ void PickPath(World::Impl& w, BossState& b) {
     const int th = w.exe.S16(0x00570D64 + static_cast<uint32_t>(b.level) * 2);
     const int r2 = w.Rand(0x0049DCDA);
     const int idx = r2 % 10 + ((near ? 1 : 0) + (th <= r1 % 100 ? 2 : 0)) * 10;
-    const int s = w.exe.S16(0x00570D14 + static_cast<uint32_t>(idx) * 2);
+    const int s = w.typingReferenceActive ? TypingJudgmentFirstPath(idx) :
+        w.exe.S16(0x00570D14 + static_cast<uint32_t>(idx) * 2);
     const int r3 = w.Rand(0x0049DCFE) & 1;
     b.pathT = 0;
     b.path = s + r3 * 0x21;
@@ -202,6 +225,10 @@ int BossShots(World::Impl& w, Actor22Task& a, BossState& b) {
                 const float f = static_cast<float>(dmg);
                 dmg = static_cast<int>(factor == -1.0f ? f + f : f * factor);  // _ftol
             }
+            if (w.cfg.portTyping && a.typingStrike) {
+                a.typingStrike = false;
+                dmg = int(TypingJudgmentWordDamage(w.playersInGame == 2));
+            } else dmg = static_cast<int>(TypingDamage(a, static_cast<float>(dmg)));
             a.hp = static_cast<int16_t>(a.hp - dmg);
             ++b.hit1358;
             ++b.hits1364;
@@ -255,6 +282,7 @@ void BossHits2(World::Impl& w, Actor22Task& a, BossState& b) {
         w.bossActive = 0;  // 0x009CA0EA
         const int p = res == 2 ? (w.Rand(0x0049D51F) & 1) : res;
         if (p >= 0) w.AddScore(p, 0x5DC);
+        if (w.cfg.portTyping) w.TypingController(std::clamp(p,0,1)).addBasePoints(500);
         BossRecords(w);  // 0x00425F40: boss-mode (game type 3) records (world_modes_boss.cpp)
         const int r = w.Rand(0x0049D542) & 1;
         w.AnimBlendTo(a, w.exe.S16(0x00570BFC + static_cast<uint32_t>(r) * 2), 0, 3);
@@ -285,7 +313,9 @@ void BossDraw(World::Impl& w, Actor22Task& a, BossState& b) {
     w.AnimDraw(s);
     w.EnemyShadow(s);
     if (a.hp < 1) return;
-    const float v = F32(w.exe, 0x00570D84 + static_cast<uint32_t>(w.rank + b.phase * 0x10) * 4);
+    if (w.typingReferenceActive) SourceBossRank(w);
+    const float v = w.typingReferenceActive ? TypingJudgmentFirstPhaseStep() :
+        F32(w.exe, 0x00570D84 + static_cast<uint32_t>(w.rank + b.phase * 0x10) * 4);
     int idx;
     if (v > 2.5) idx = 4;
     else if (v > 2.0) idx = 3;
@@ -338,12 +368,12 @@ void TaskBar(Task& t) {
     if (v <= k.cur) {
         k.cur = v;
     } else {
-        const float c = k.cur + static_cast<float>(F64(w.exe, 0x0055D190));
+        const float c = k.cur + (w.typingReferenceActive ? .01f : static_cast<float>(F64(w.exe, 0x0055D190)));
         k.cur = c;
         if (v <= c) k.cur = v;
         k.lag = k.cur;
     }
-    const float l = k.lag - static_cast<float>(F64(w.exe, 0x0055E180));
+    const float l = k.lag - (w.typingReferenceActive ? .001f : static_cast<float>(F64(w.exe, 0x0055E180)));
     k.lag = l;
     if (l < k.cur) k.lag = k.cur;
     if (k.counter == 0 && v == 0.0f) k.counter = 1;
@@ -358,6 +388,20 @@ void TaskBar(Task& t) {
     }
     // 0x0041C800(id, x, y, depth, sx, sy, 0, flags, layer 2): the lag, the difference, the current value, the frame
     const float sy = Bits(0x3F4CCCCD);
+    if (w.typingReferenceActive) {
+        // Source423600/4237C0: the smaller typing bar is eight pixels below
+        // its supplied y. TypingSprite also makes its prepared texture resident.
+        const auto bar = [&](int id, float x, float depth, float sx, uint32_t flags) {
+            w.TypingSprite(id,x,k.y+8.0f,1,depth,flags,0x00423600);
+            w.hudSprites.back().sx = sx;
+            w.hudSprites.back().sy = sy;
+        };
+        bar(0xCA,k.x-(1.0f-2.0f*k.lag)*86.4f,Bits(0x3C185F07),(1.0f-k.lag)*10.8f,0x29);
+        bar(0xCB,k.x-(1.0f-2.0f*k.cur)*86.4f,Bits(0x3C16BB99),(k.lag-k.cur)*10.8f,0x29);
+        bar(0xC9,k.x-86.4f,Bits(0x3C15182B),k.cur*10.8f,0x29);
+        bar(0xCC,k.x,Bits(0x3C1A0275),.72f,0xA);
+        return;
+    }
     auto bar = [&](int id, float x, float depth, float sx, uint32_t flags) {
         w.hudSprites.push_back(Sprite2D(id, x, k.y, depth, sx, sy, flags | 0x700));
     };
@@ -440,15 +484,59 @@ struct CardTask : WTask {
     float savedPos[3] = {}, savedTarget[3] = {};  // c+0xC8 / c+0xD4
 };
 
+struct TypingCardRecord {
+    uint32_t nativeRecord;
+    int flag, camera, model, sprites[2];
+    float startX, targetX, targetY, titleX[2], titleY[2];
+};
+
+const TypingCardRecord* TypingCard(uint32_t record) {
+    // Verified source records58ADC0,5B32F8/3338,5B4D20/4D60,5B3750,593960.
+    // All end ticks are300, start y=-.07/z=-1, title depth1. Native records
+    // have identical scalar fields but different camera/model/sprite ids.
+    static constexpr TypingCardRecord cards[] = {
+        {0x00570EC8,2,0x40,0x18D1,{0xCF,0xDD}, .18f,.06f,.01f,{310,526},{84,84}},
+        {0x005966B8,9,0x75,0x18D5,{0xD0,0xDE},-.23f,-.52f,0,{14,264},{104,104}},
+        {0x005966F8,9,0x79,0x18D5,{0xD0,0xDE},-.23f,-.52f,0,{14,264},{104,104}},
+        {0x005972F8,30,0xC5,0x1927,{0xD2,0xE0},-.23f,-.52f,0,{14,224},{104,104}},
+        {0x00597338,30,0xCD,0x1927,{0xD2,0xE0},-.23f,-.52f,0,{14,224},{104,104}},
+        {0x00596AC0,22,0xE6,0x195E,{0xD3,0xE1},-.23f,-.52f,0,{14,264},{104,104}},
+        {0x005898C8,50,0xF4,0x19DA,{0xD4,0xE2}, .18f,.06f,.01f,{310,526},{80,84}}
+    };
+    for (const auto& card : cards) if (card.nativeRecord == record) return &card;
+    return nullptr;
+}
+
 void TaskCard(Task& t) {
     World::Impl& w = *CurrentWorld();
     CardTask& k = t.As<CardTask>();
     const ExeImage& exe = w.exe;
     const uint32_t r = k.rec;
+    const auto* source = w.typingReferenceActive ? TypingCard(r) : nullptr;
+    const int cover = source ? w.typingReference.SourceModel(0x81E) : 0x7ED;
+    const int page = source ? w.typingReference.SourceModel(0x81F) : 0x7EE;
+    const auto integer = [&](uint32_t offset) {
+        if (!source) return int(exe.S16(r+offset));
+        if (offset == 0) return source->flag;
+        if (offset == 2) return 0x4000+source->camera;
+        if (offset == 4) return 300;
+        return w.typingReference.SourceModel(source->model);
+    };
+    const auto scalar = [&](uint32_t offset) {
+        if (!source) return F32(exe,r+offset);
+        switch (offset) {
+        case 8: return source->startX;
+        case 0xC: return -.07f;
+        case 0x10: return -1.0f;
+        case 0x14: return source->targetX;
+        case 0x18: return source->targetY;
+        default: return 0.0f;
+        }
+    };
     CameraContext& c0 = w.runner->camera.ctx[0];
     auto camFromPath = [&] {  // Cam_Evaluate 0x004041E0 -> 0x009A60C0 / 0x009A60D8
         int roll = 0;
-        w.cameraBank.Evaluate(exe.S16(r + 2), static_cast<float>(k.tick), c0.pos, c0.target, &roll, false);
+        w.cameraBank.Evaluate(integer(2), static_cast<float>(k.tick), c0.pos, c0.target, &roll, false);
     };
     auto drawLetter = [&](int i) {
         Mat4 m = Mat4::Identity();  // view space (0x004A9E10 on the model-view stack)
@@ -462,24 +550,25 @@ void TaskCard(Task& t) {
     if (k.state == 0) {
         k.state = 999;  // 0x0041D5D0(0x7ED / 0x7EE): model load requests (not resident in stage 5)
         if (w.residency) {
-            w.resQueue.push_back({ 0x50, 0x7ED });
-            w.resQueue.push_back({ 0x50, 0x7EE });
+            w.resQueue.push_back({0x50,uint32_t(cover)});
+            w.resQueue.push_back({0x50,uint32_t(page)});
+            if (source) w.resQueue.push_back({0x50,uint32_t(integer(6))});
         }
     }
     if (k.state == 999) {
-        if (w.runner->flags[exe.S16(r) & 0xFF] != 0) k.state = 1;
+        if (w.runner->flags[integer(0) & 0xFF] != 0) k.state = 1;
     } else if (k.state == 1) {
         w.runner->camera.forceState6 = true;  // 0x009CA094
         memcpy(k.savedPos, c0.pos, 12);
         memcpy(k.savedTarget, c0.target, 12);
         k.tick = 1;
         for (int i = 0; i < 8; ++i) {
-            k.l[i][0] = F32(exe, r + 8);
-            k.l[i][1] = F32(exe, r + 0xC);
-            k.l[i][2] = F32(exe, r + 0x10) - static_cast<float>(i) * F32(exe, 0x004C4CC0);
+            k.l[i][0] = scalar(8);
+            k.l[i][1] = scalar(0xC);
+            k.l[i][2] = scalar(0x10) - static_cast<float>(i) * F32(exe, 0x004C4CC0);
             k.ang[i] = 0;
             k.l[i][4] = Bits(0x3CF5C28F);
-            k.model[i] = i == 0 ? 0x7ED : (i == 6 ? exe.S16(r + 6) : 0x7EE);
+            k.model[i] = i == 0 ? cover : (i == 6 ? integer(6) : page);
         }
         ++k.state;
     } else if (k.state == 2 && k.tick != 0x50) {
@@ -488,19 +577,19 @@ void TaskCard(Task& t) {
             if (i < 6 && i * 5 + 0xF <= k.tick) {
                 k.ang[i] -= i == 0 ? 0x300 : 0x200;
                 if (k.ang[i] < -0x7FFF) k.ang[i] = -0x8000;
-                if (k.ang[i] == -0x4200) k.l[i][2] = F32(exe, r + 0x10) - static_cast<float>(8 - i) * F32(exe, 0x004C4CC0);
+                if (k.ang[i] == -0x4200) k.l[i][2] = scalar(0x10) - static_cast<float>(8 - i) * F32(exe, 0x004C4CC0);
             }
             w.PageBend(k.ang[i]);  // 0x004759C0: page model 0x7EE bent by this letter's angle
             drawLetter(i);
         }
     } else if (k.state == 2 || k.state == 3) {
         k.state = 3;
-        if (k.tick == exe.S16(r + 4)) {
+        if (k.tick == integer(4)) {
             w.letterbox = 1;
             w.runner->camera.forceState6 = false;
             memcpy(c0.pos, k.savedPos, 12);
             memcpy(c0.target, k.savedTarget, 12);
-            w.modelEdits.erase(0x7EE);  // 0x0041D610(0x7ED / 0x7EE): the models are released (a reload is unbent)
+            w.modelEdits.erase(page);  // 0x0041D610(0x7ED / 0x7EE): the models are released (a reload is unbent)
             w.ts.KillCurrent();
             return;
         }
@@ -512,12 +601,12 @@ void TaskCard(Task& t) {
                     const float s = p[4] + F32(exe, 0x0055CB98);
                     p[4] = s;
                     if (s <= F32(exe, 0x0055CB9C)) {
-                        p[0] = (F32(exe, r + 0x14) - F32(exe, r + 8)) * F32(exe, 0x0055E1C0) + p[0];
-                        p[1] = (F32(exe, r + 0x18) - F32(exe, r + 0xC)) * F32(exe, 0x0055E1C0) + p[1];
+                        p[0] = (scalar(0x14) - scalar(8)) * F32(exe, 0x0055E1C0) + p[0];
+                        p[1] = (scalar(0x18) - scalar(0xC)) * F32(exe, 0x0055E1C0) + p[1];
                     } else {
                         p[4] = 0.06f;
-                        p[0] = F32(exe, r + 0x14);
-                        p[1] = F32(exe, r + 0x18);
+                        p[0] = scalar(0x14);
+                        p[1] = scalar(0x18);
                     }
                 }
             } else {
@@ -531,7 +620,9 @@ void TaskCard(Task& t) {
     if (common && 1 < k.state && k.state < 4 && 0x4F < k.tick) {  // 0x00437E4D: Spr_Draw 0x0041C630 x 2
         float a = static_cast<float>(k.tick - 0x50) * F32(exe, 0x0055CB80);
         if (1.0f <= a) a = 1.0f;
-        for (uint32_t o : { 0x20u, 0x30u })
+        if (source) {
+            for (int i=0;i<2;++i) w.TypingSprite(source->sprites[i],source->titleX[i],source->titleY[i],a,1,0,0x00424F80);
+        } else for (uint32_t o : { 0x20u, 0x30u })
             w.hudSprites.push_back(Sprite2D(static_cast<int>(exe.U32(r + o)), F32(exe, r + o + 4), F32(exe, r + o + 8), F32(exe, r + o + 0xC), 1.0f, 1.0f, 0, a));
     }
     ++k.tick;
@@ -572,10 +663,12 @@ void MountShots(World::Impl& w, MountTask& m, Actor22Task* rider) {
     }
     float dmg = 0.0f;
     for (int p = 0; p < 2; ++p) {
-        const int node = m.hitNode[p];
+        int node = m.hitNode[p];
+        // PC48AB54 maps the typing head hit onto the mount's armored node9.
+        if (w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2 && node == 2) node = 9;
         if (node != 0) {
             if (gt == 2) {
-                --m.hp;
+                if (!(w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2)) --m.hp;
             } else {
                 w.AddScore(p, 10);
                 if (m.behaviour == 1 && rider) {
@@ -608,6 +701,11 @@ void MountShots(World::Impl& w, MountTask& m, Actor22Task* rider) {
         m.flags34 &= ~bit;
     }
     if (gt != 2 && rider) Boss(*rider).damage += static_cast<int>(dmg);
+    if (w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2) {
+        // PC 0x48AC89: a word interrupts the charge, without taking HP.
+        if (m.flags34 & 0x1000u) m.flags34 &= ~0x1000u;
+        else m.sub = 6;
+    }
 }
 
 void TaskMount(Task& t);
@@ -630,7 +728,7 @@ void MountBeh0(World::Impl& w, MountTask& m) {
             ++m.anim.counter[0];
             return;
         }
-        if (c.camId == 0x2F && c.tick < 0x203) return;
+        if (c.camId == (w.typingReferenceActive ? 0x403F : 0x2F) && c.tick < 0x203) return;
         m.pos[0] = Bits(0xC484A000);
         m.pos[1] = w.ground;
         m.pos[2] = Bits(0xC3EE0000);
@@ -640,7 +738,7 @@ void MountBeh0(World::Impl& w, MountTask& m) {
         ++m.sub;
         [[fallthrough]];
     case 1:
-        if (c.camId == 0x2F && 600 < c.tick) {
+        if (c.camId == (w.typingReferenceActive ? 0x403F : 0x2F) && 600 < c.tick) {
             w.AnimBlendTo(m, 0x386, 0, 2);
             ++m.sub;
         }
@@ -662,7 +760,7 @@ void MountBeh0(World::Impl& w, MountTask& m) {
         }
         break;
     case 3:
-        if (c.camId == 0x2F && c.tick == static_cast<int32_t>(w.exe.U32(0x00576DF4))) {
+        if (c.camId == (w.typingReferenceActive ? 0x403F : 0x2F) && c.tick == static_cast<int32_t>(w.exe.U32(0x00576DF4))) {
             w.AnimSetMotion(m, 0x38D);
             m.pos[0] = Bits(0xC482599A);
             m.pos[1] = w.ground;
@@ -731,6 +829,17 @@ void MountBeh1(World::Impl& w, MountTask& m, Actor22Task* rider) {
         [[fallthrough]];
     case 1: {
         m.rot[1] = FaceYaw(m.pos[0], m.pos[2], w.playerPos[0], w.playerPos[2]);
+        if (w.typingReferenceActive) {
+            // Source48981E/489848 adds this typing-specific approach to the
+            // animation's movement. The original uses double coefficients.
+            Mat4 frame=Mat4::Identity();
+            mx::RotY(frame,m.rot[1]+0x8000);
+            const float forward[3]={0,0,-1}; float direction[3];
+            mx::Transform(frame,forward,direction);
+            const double speed=double(5-SourceBossRank(w))*.005+.1;
+            m.pos[0]=float(double(direction[0])*speed+double(m.pos[0]));
+            m.pos[2]=float(double(direction[2])*speed+double(m.pos[2]));
+        }
         const int t2 = m.anim.tick[0], m2 = m.anim.motion[0];
         if ((m2 == 0x393 && (t2 == 0x37 || t2 == 0x81 || t2 == 0xCF || t2 == 0x11A)) ||
             (m2 == 0x394 && (t2 == 0x2D || t2 == 0x67 || t2 == 0xA7 || t2 == 0xE1))) {
@@ -886,7 +995,7 @@ void MountBeh0V1(World::Impl& w, MountTask& m) {
     const CameraDirector& c = w.runner->camera;
     switch (m.sub) {
     case 0:
-        if (c.camId == 0xCE && c.tick < 0xB4) return;
+        if (c.camId == (w.typingReferenceActive ? 0x40E0 : 0xCE) && c.tick < 0xB4) return;
         m.pos[0] = Bits(0x44120000);
         m.pos[1] = Bits(0xC28DCCCD);
         m.pos[2] = Bits(0xC4924000);
@@ -933,7 +1042,8 @@ void MountBeh0V2(World::Impl& w, MountTask& m) {
     const ExeImage& exe = w.exe;
     const uint32_t ph = static_cast<uint32_t>(m.phase) * 2;
     if (m.sub == 0) {
-        m.pos[0] = F32(exe, 0x0057045C + static_cast<uint32_t>(w.runner->cfg.playerVariant) * 4);
+        m.pos[0] = w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2 ? 35.0f :
+            F32(exe, 0x0057045C + static_cast<uint32_t>(w.runner->cfg.playerVariant) * 4);
         m.pos[1] = Bits(0x41B80000);
         m.pos[2] = Bits(0xC4E5E000);
         m.rot[1] = 0x4000;
@@ -952,7 +1062,12 @@ void MountBeh0V2(World::Impl& w, MountTask& m) {
             MountDraw(w, m);
             return;
         }
-        w.SpawnBossBar(320.0f, 35.0f);  // 0x00435E50
+        if (w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2) {
+            w.rank = 2;
+            w.typing.setWordLimits(1500,100); // PC 0x48A58F -> 0x4B2830.
+            w.TypingWords(-1,100);
+            m.typingFlags = 0x30004402u;
+        } else w.SpawnBossBar(320.0f, 35.0f);  // 0x00435E50
         w.AnimSetMotion(m, exe.S16(0x005703D0 + ph));  // 0x00411930
         ++m.sub;
     }
@@ -965,9 +1080,78 @@ void MountBeh0V2(World::Impl& w, MountTask& m) {
     ++m.anim.counter[0];
 }
 
+// PC 0x48A670: Speed2 keeps the mount alive. A word makes it stagger;
+// a low grade takes its real attack path and the accepted hit ends the course.
+void MountDrill(World::Impl& w,MountTask& m) {
+    if (w.runner->flags[0xF2]) { MountDraw(w,m); return; }
+    MountShots(w,m,nullptr);
+    const ExeImage& exe=w.exe;
+    const uint32_t ph=static_cast<uint32_t>(m.phase)*2;
+    const auto row=[&] {return static_cast<uint32_t>(m.phase+m.attack131A*2)*12;};
+    const auto attack=[&] {
+        w.AnimBlendTo(m,exe.S16(0x005703E0+row()),0,5);
+        w.Sound(0x218A9);Shake(w);
+        m.flags34|=0x10000000u;
+        m.sub=2;
+    };
+    switch(m.sub) {
+    case 0:
+        m.attack131A=static_cast<int8_t>(w.Rand(0x0048A702)&1);
+        w.AnimBlendTo(m,exe.S16(0x005703D0+ph),0,5);
+        m.typingFlags&=~0x400u;
+        w.TypingAttackTimer(2);
+        m.sub=1;
+        [[fallthrough]];
+    case 1:
+        m.rot[1]=FaceYaw(m.pos[0],m.pos[2],w.playerPos[0],w.playerPos[2]);
+        if(w.typingAttackDelay==0)attack();
+        break;
+    case 2: {
+        const uint32_t e=row();const int tick=m.anim.tick[0];
+        if(tick==exe.S16(0x005703E8+e)&&!(m.flags34&0x40000000u))w.Sound(0x18A9);
+        if(tick==exe.S16(0x005703E2+e)&&!(m.flags34&0x40000000u)) {
+            uint8_t kind=0;exe.Read(0x005703EA+e,&kind,1);
+            w.PlayerTakeHit(w.typingPlayer,1,static_cast<int8_t>(kind));
+        }
+        if(m.anim.ended) {
+            m.flags34&=~0x10000000u;
+            w.AnimBlendTo(m,exe.S16(0x005703D4+ph),exe.S16(0x00570414+ph),5);
+            m.sub=3;
+        }
+        break;
+    }
+    case 6: {
+        m.typingFlags|=0x400u;
+        const int hits=++w.player[w.typingPlayer].hits;
+        w.rank=hits<=3?2:hits<=6?3:std::min(15,hits/5+3);
+        const auto& grades=w.typingDrillGame.rankCounts;
+        if(grades[2]||grades[3]||grades[4]) {attack();break;}
+        const int selector=hits<5?100:hits<35?(hits/5+1)*100:(hits/5)*100;
+        w.TypingWords(-1,selector);
+        w.AnimBlendTo(m,(w.frame&1)?0x389:0x388,0,3); // source motions947/948, exact payload aliases.
+        m.sub=7;
+        break;
+    }
+    case 7:
+        if(m.anim.tick[0]>=w.MotionTicks(m.anim.motion[0])-1) {
+            m.typingFlags&=~0x400u;
+            w.AnimBlendTo(m,(w.frame&1)?0x38F:0x38E,0,5); // source953/954.
+            m.sub=1;w.TypingAttackTimer(2);
+        }
+        break;
+    default:break;
+    }
+    m.pos[0]=std::clamp(m.pos[0],32.0f,38.0f);
+    m.pos[2]=std::clamp(m.pos[2],-1842.0f,-1836.0f);
+    MountDraw(w,m);++m.anim.counter[0];
+    m.flags34&=~8u;
+    ViewPos(w,m,6.0f);
+}
+
 // 0x00490FD0 (mount variant 2): the charge at the players; shots take its hp (0x00491420, game type 2), the health bar
 // 0x009C8E10; the attack row (0x005703E0, by phase and the random attack) in range; down at hp 0
 void MountBeh1V2(World::Impl& w, MountTask& m) {
+    if(w.cfg.portTyping && w.cfg.eventMode==7 && w.cfg.gameType==2) { MountDrill(w,m); return; }
     const ExeImage& exe = w.exe;
     const float dz = m.pos[2] - w.playerPos[2], dx = m.pos[0] - w.playerPos[0];
     if (w.runner->flags[0xF2] != 0) {
@@ -1172,7 +1356,7 @@ void BossBeh0(World::Impl& w, Actor22Task& a, BossState& b) {
         float pos[3] = {}, tg[3] = {};
         int roll = 0;
         const float t = static_cast<float>(c.tick);
-        if (w.cameraBank.Evaluate(0x103, t, pos, tg, &roll, false)) {  // 0x0049DB40 -> 0x004042D0
+        if (w.cameraBank.Evaluate(JudgmentPath(w, 0x103), t, pos, tg, &roll, false)) {  // 0x0049DB40 -> 0x004042D0
             memcpy(a.pos, pos, 12);
             for (int k = 0; k < 3; ++k) a.rot[k] = static_cast<int>(tg[k]);
         }
@@ -1251,7 +1435,8 @@ void BossBeh1(World::Impl& w, Actor22Task& a, BossState& b) {
     case 1:
         if (a.flags34 & 0x40000000) break;
         place();
-        b.pathT = F32(exe, 0x00570D84 + static_cast<uint32_t>(w.rank + b.phase * 0x10) * 4) + b.pathT;
+        b.pathT += w.typingReferenceActive ? TypingJudgmentFirstPhaseStep() :
+            F32(exe, 0x00570D84 + static_cast<uint32_t>(w.rank + b.phase * 0x10) * 4);
         if (m && m->sub == 2) {
             if (b.pathT < PathLen(w, b.path)) {
                 StepBack(w, b);
@@ -1421,7 +1606,11 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
     if (a.behaviour == 3) return;
     auto newPath = [&](uint32_t site) {
         const int r = w.Rand(site);
-        const int s = exe.S16(0x00570E24 + static_cast<uint32_t>(r % 10 + exe.S16(0x00570E04 + static_cast<uint32_t>(b.level) * 2) * 10) * 2);
+        const int group=w.typingReferenceActive ? TypingJudgmentSecondPathGroup(b.level) :
+            exe.S16(0x00570E04 + static_cast<uint32_t>(b.level)*2);
+        const int index=r%10+group*10;
+        const int s = w.typingReferenceActive ? TypingJudgmentSecondPath(index) :
+            exe.S16(0x00570E24 + static_cast<uint32_t>(index)*2);
         b.path = s;
         PathTarget(w, b, s + 0x140, static_cast<float>(b.count));
     };
@@ -1441,6 +1630,11 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
         b.count = 0;
         a.acc[1] = Bits(0x3E19999A);
         a.vel[1] = 0;
+        if (w.typingReferenceActive) {
+            a.typingFlags &= ~0x04000000u;
+            ++a.sub;
+            break; // Source4B3F2C returns before the first rise update.
+        }
         ++a.sub;
         [[fallthrough]];
     case 1: {
@@ -1465,15 +1659,20 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
             w.lockOn.AddDirect(a.lock);  // 0x00408E80
             a.slot120 = static_cast<int8_t>(a.lock->slot);
             b.count = 0;
-            a.sub = 7;
+            if (w.typingReferenceActive && w.cfg.eventMode == 0) {
+                b.typingInstructions=0;
+                a.sub=14;
+            } else a.sub = 7;
         }
         break;
     case 3: {
-        PathTarget(w, b, b.path + 0x140, static_cast<float>(b.count));
+        const float tick=w.typingReferenceActive ? TypingJudgmentAdvancePathClock(b.count,b.typingPathFraction,SourceBossRank(w)) :
+            static_cast<float>(b.count);
+        PathTarget(w, b, b.path + 0x140, tick);
         memcpy(a.pos, b.off, 12);
-        const int c = ++b.count;
+        const int c = w.typingReferenceActive ? b.count : ++b.count;
         const int len = static_cast<int32_t>(exe.U32(0x00577238 + static_cast<uint32_t>(b.path) * 4));
-        if (c != len - 5) {
+        if (c != (w.typingReferenceActive ? len : len-5)) {
             if (len < c) {
                 b.count = 0;
                 newPath(0x0049C42D);
@@ -1488,6 +1687,9 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
             w.PlayerTakeHit(1, 1, 7);
         }
         b.level += 4;
+        if (w.typingReferenceActive) {
+            b.count=0; newPath(0x0049C42D); a.sub=5;
+        }
         break;
     }
     case 4:
@@ -1505,13 +1707,22 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
         }
         break;
     case 7:
-        if (-1 < w.playersInGame && 99 < b.count++) {
+        if (-1 < w.playersInGame && (w.typingReferenceActive ? 179 : 99) < b.count++) {
             w.AnimBlendTo(a, exe.S16(0x00570BE6), 0, 3);
             if (a.flags34 & 0x100) a.flags34 &= ~0x100u;
             b.count = 0;
             a.sub = 3;
             w.Sound(0x4317A9);
         }
+        break;
+    case 14:
+        // Source4B40A4: chapter-one phase instructions precede its first
+        // approach. The rematch skips this interlude; Boss Mode skips its wait.
+        if (w.cfg.gameType != 3 && ++b.typingInstructions < 180) {
+            for (int i=0;i<4;++i) w.TypingSprite(0xB89+i,128.0f*float(i+1),334,1,.1f,0xA,0x00424D30);
+            break;
+        }
+        b.count=0; newPath(0x0049C23B); a.sub=7;
         break;
     case 8:
         w.AnimBlendTo(a, exe.S16(0x00570BEE), 0, 3);
@@ -1553,6 +1764,10 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
         break;
     default:
         break;
+    }
+    if (w.typingReferenceActive) {
+        if (a.sub==3) a.flags34 &= ~0x100u;
+        else a.flags34 |= 0x100u;
     }
     a.rot[1] = FaceYaw(a.pos[0], a.pos[2], w.playerPos[0], w.playerPos[2]);
     w.bossBar = static_cast<float>(a.hp) / static_cast<float>(a.hpMax);
@@ -1692,7 +1907,7 @@ void BossBeh0V2(World::Impl& w, Actor22Task& a, BossState& b) {
     case 1: {
         float pos[3] = {}, tg[3] = {};
         int roll = 0;
-        if (w.cameraBank.Evaluate(0x17F, static_cast<float>(c.tick), pos, tg, &roll, false)) {  // 0x0049DB40
+        if (w.cameraBank.Evaluate(JudgmentPath(w, 0x17F), static_cast<float>(c.tick), pos, tg, &roll, false)) {  // 0x0049DB40
             memcpy(a.pos, pos, 12);
             for (int k = 0; k < 3; ++k) a.rot[k] = static_cast<int>(tg[k]);
         }
@@ -1791,6 +2006,12 @@ void TaskBoss22(Task& t) {
     case 2: BossBeh2(w, a, b); break;
     case 3: BossBeh3(w, a, b); break;
     default: w.Note("boss behaviour " + std::to_string(a.behaviour) + " not ported"); break;
+    }
+    if (w.cfg.portTyping && a.behaviour >= 1 && a.behaviour <= 2 && b.typingWordPhase != unsigned(a.behaviour)) {
+        b.typingWordPhase = unsigned(a.behaviour);
+        const bool rematch=w.typingReferenceActive && w.cfg.eventMode!=0;
+        w.typing.setWordSelection(0, a.behaviour == 1 ? (rematch?700:500) : (rematch?500:400));
+        w.typing2.setWordSelection(0, a.behaviour == 1 ? (rematch?700:500) : (rematch?500:400));
     }
     w.SyncLock(a);  // lock-on readers (camera 0x00403050) read +0x100 / +0x121 live
 }
@@ -2072,6 +2293,19 @@ bool World::Impl::SpawnStageClear(Task& t, SpawnTask& s) {
 // 0x0045ED90 (op 0x4F past the mode's last scene): 0x009C71C0 = 1, hits counted again (0x009A5C48 = 0); in game mode
 // 6 (not sub-state 8) sub-state 5 (the next stage); 0x0041D350 (sounds)
 void World::Impl::StageEnd() {
+    if(cfg.portTyping&&cfg.eventMode==7&&cfg.gameType==2) {
+        // Source 6D supervises the course after the common script halts.
+        runner->globals[0x009C71C0]=1;
+        return;
+    }
+    // The PC's last chapter has no actor61 report. Its HUD/ranking getter
+    // still includes difficulty, accuracy and rescue bonuses (0x004843B0).
+    if (cfg.portTyping && typingReferenceActive && cfg.eventMode == 5) {
+        typing.finishChapter(static_cast<TypingDifficulty>(std::clamp(cfg.difficulty, 0, 4)),
+                             static_cast<uint32_t>(std::max<int>(0, rescueCount[5])));
+        if (player[1].state != 9) typing2.finishChapter(static_cast<TypingDifficulty>(std::clamp(cfg.difficulty,0,4)),
+                             static_cast<uint32_t>(std::max<int>(0,rescueCount[5])));
+    }
     runner->globals[0x009C71C0] = 1;
     runner->globals[0x009A5C48] = 0;
     if (gameMode == 6 && subState != 8) {
@@ -2085,6 +2319,7 @@ void World::Impl::StageEnd() {
 // sub-state 1 (7 after stage 6); sub-state 1 for a later stage (0x0045FFF0 -> Stage_Start 0x00460030) is the
 // mid-game start of world_st2.cpp (WorldConfig::carry), not chained inside one run
 void World::Impl::Mode6StageEnd() {
+    if(cfg.portTyping&&cfg.eventMode==7&&cfg.gameType==2) { StageFrame(); return; }
     auto notPlaying = [&](int p) { return exe.U32(0x00579CD4 + 0x14 * static_cast<uint32_t>(player[p].state)) != 0; };
     if (subState == 5) {
         stageEndCounter = 1;  // 0x007DCCCC
@@ -2095,6 +2330,7 @@ void World::Impl::Mode6StageEnd() {
                 if (!modes) Note("stage end in game type " + std::to_string(runner->cfg.gameType) + " without the persistent data");
                 else ModesStageEnd(*this);  // 0x004603B0 game types 2 / 3 (world_modes_end.cpp)
             } else {
+                if (StartTypingChapterChoice(*this)) return;
                 nextEventMode = cfg.eventMode + 1;  // 0x009A1A08 (+ 0x00413160)
                 subState = nextEventMode != 6 ? 1 : 7;
             }
@@ -2143,6 +2379,7 @@ void World::Impl::SpawnNameCard(uint32_t rec) {
 // 0x0049B0D0 for variant 1 (the spawn task becomes the actor): Actor22 setup, the name card task, behaviour 0 now
 bool World::Impl::SpawnBoss22(Task& t, const SpawnRecord& r) {
     auto d = std::make_unique<Actor22Task>();
+    SetTypingSpawnOrigin(*d, r);
     d->record = r;
     d->flags34 = r.flags | 1;  // 0x00408A20
     memcpy(d->pos, r.pos, 12);
@@ -2194,6 +2431,7 @@ bool World::Impl::SpawnBoss22(Task& t, const SpawnRecord& r) {
 // Actor 0x23 from its own record (op 0x0B, 0x00408A20; training lesson 4 spawns the variant-2 mount without a rider)
 bool SpawnMount23(World::Impl& w, Task& t, const SpawnRecord& r) {
     auto m = std::make_unique<MountTask>();
+    w.SetTypingSpawnOrigin(*m, r);
     m->lock = &w.lockTargets[w.nextLockTarget++];
     m->flags34 = r.flags | 1;  // 0x00408970
     m->flags38 = 0;
@@ -2208,6 +2446,38 @@ bool SpawnMount23(World::Impl& w, Task& t, const SpawnRecord& r) {
     t.fn = TaskMountCtor;
     TaskMountCtor(t);
     return true;
+}
+
+// A phrase remains assigned while Judgment moves or staggers; completion waits
+// for the native damage window, then enters its original shot/reaction path.
+bool TypingBoss1(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    if (auto* mount=dynamic_cast<MountTask*>(&actor)) {
+        if(w.cfg.portTyping && w.cfg.eventMode==7 && w.cfg.gameType==2 && mount->variant==2) {
+            if(mount->behaviour!=1 || (mount->typingFlags&0x400u))return true;
+            out.node=9;out.danger=true;out.retain=true;out.token=0x230002u;
+            memcpy(out.view,mount->anim.nodes[9].hit,12);
+            if(complete){TypingDeliver(*mount,9);mount->typingStrike=false;}
+        }
+        return true;
+    }
+    if (auto* a = dynamic_cast<Actor22Task*>(&actor)) {
+        if (!a->boss) return false;
+        out.boss = true;
+        if (a->hp < 1 || a->behaviour < 1 || a->behaviour > 2 || (a->flags34 & 0x4000000u)) return true;
+        BossState& b = Boss(*a);
+        out.retain = true;
+        out.token = 0x100000u | (static_cast<uint32_t>(a->behaviour) << 12) | (static_cast<uint32_t>(b.phase) << 8);
+        memcpy(out.view, a->anim.nodes[2].hit, 12);
+        const int s = a->sub;
+        const bool first = a->behaviour == 1 && (s == 1 || s == 5 || s == 7 || s == 11);
+        const bool second = a->behaviour == 2 && (s == 3 || s == 5 || s == 7 || s == 9 || s == 10);
+        if ((!first && !second) || (a->flags34 & 0x40008100u)) return true;
+        out.node = 2;
+        if (complete) TypingDeliver(*a, out.node);
+        return true;
+    }
+    // Kuarl's armored mount is not Judgment's weak point.
+    return dynamic_cast<MountTask*>(&actor) != nullptr;
 }
 
 }  // namespace game

@@ -2,20 +2,21 @@
 
 # HOTD2RE
 
-A native C++20 rebuild of **The House of the Dead 2** for Windows, featuring online co-op, additional game modes, and modern controls and display options.
+A native C++20 rebuild of **The House of the Dead 2** for Windows, with built-in **The Typing of the Dead** Original and Drill modes, online co-op, and modern controls and display options.
 
-**[Download 1.5 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.27-b/HOTD2RE-1.5-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/latest) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.6 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.30-a/HOTD2RE-1.6-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
 - **Game modes:** Arcade, Original, Challenges (formerly Training), Boss, Scene Select, and Horde.
+- **The Typing of the Dead:** Original campaign and all 13 Drill courses, with authored encounters, word cards, result books and records. Use the logo card on the main menu to switch games; Typing has its own attract trailer, leaderboard and options.
 - **Randomizer:** randomized enemies, enemy counts, weapons, items, voice lines, and character appearances.
-- **Online co-op:** two-player rooms, public lobbies, private room codes, and reconnect support.
+- **Online co-op:** shared two-player lobbies for gun modes and Typing Original, with public rooms, private room codes, and reconnect support. Open **Online** for room creation, lobby browsing and Peer to Peer.
 - **Flexible controls:** mouse, touchpad, touch, in-game light-gun setup for two players, and native Wii Remote setup with calibration and button mapping. Menus support clicking and shooting.
 - **Night Shift menus:** the full original attract cycle plays behind the menus, including the title flythrough, how-to-play demonstration, gameplay demos and story scenes. Includes Home lobby preview, Play/Practice pages, leaderboards, graphics options, pause and device setup. Classic menus remain selectable.
 - **Extras audio library:** all 38 music tracks with descriptive names and Standard/Alternate version labels on the left, effects and dialogue on the right. Browse independently while recordings play once, with Play, Pause and Reset controls for each song.
 - **Extras model viewer:** browse game models and animations, rotate and zoom the view, and preview available character sound variations.
-- **Graphics options:** fullscreen/windowed display, AA and texture filtering, render scaling, optional lighting effects, CRT, red/green blood and separate optional 2× textures. Supported x64 hardware can use vendor upscaling/frame generation and experimental ray shadows.
+- **Graphics options:** fullscreen/windowed display, AA and texture filtering, render scaling, optional lighting effects, CRT, red/green/blue/purple blood and separate optional 2× textures. Supported x64 hardware can use vendor upscaling/frame generation and experimental ray shadows.
 - Graphics reset, menu opacity, Hide UI for live inspection, and saved gameplay crosshair visibility. The system mouse cursor hides during play; manual pause remains available while switching windows keeps the game and sound running.
 - Chapter results and an experimental Prototype chapter, available with **F8**.
 - Background update notifications with **Update and restart**, preserving saves, settings and installed packs, with recovery if installation is interrupted.
@@ -36,19 +37,25 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.5-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.27-b/HOTD2RE-1.5-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.6-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.30-a/HOTD2RE-1.6-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The download includes the required game data. Keep the `game` and `scenes` folders beside `hotd2.exe`. GitHub's **Source code** archives are for building the project.
 
-**Version 1.5** restores Strength's chainsaw loop using the Dreamcast loop points and fixes enemies running away while rearming. The score display code remains: **Left, Left, Right, Right, Right, Left, Right, Enter** at the title or main menu toggles each active player's score during gameplay. It provides one complete x64 download; existing 1.1 clients can use the in-game updater. Selective updates and full-download fallback are handled automatically through a separate update feed. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
+The complete 1.6 ZIP also includes the prepared Typing mode data in `game/typing_reference.bank`; it does not run the original Typing executable. After an in-game update of an older installation, startup downloads the missing mode data once (**89.5 MB**), with verification, progress and Cancel. The complete ZIP needs no extra download. `--no-update-check` also skips this automatic content download.
+
+**Version 1.6** brings Typing Original and Drill into the main client, with a main-menu game switch and separate attract presentations. Typing Original setup includes difficulty, lives, continues, word size and US/UK keyboard layout. Existing 1.1 clients can use the in-game updater, with selective updates and full-download fallback handled automatically. Previous Night Shift improvements remain included; see the [graphics fixes and validation](docs/GRAPHICS-FIXES.md).
 
 ## Online play
 
-Use **Host Online** or **Browse Lobby** to play two-player co-op with someone on the same game version. Choose a username on first launch; eligible scores submit automatically to the online leaderboards, with offline scores queued until you reconnect.
+Open **Home > Online**, then choose **Create Room**, **Browse Lobby** or **Peer to Peer** to play with someone on the same game version. The host can choose gun modes or **Typing Original** in the shared lobby. Drill is local play.
+
+Choose a username on first launch; eligible scores submit automatically to the online leaderboards, including the Typing table, with offline scores queued until you reconnect. Typing Drill keeps its own course records.
 
 ## Controls
+
+Typing gameplay uses the keyboard to enter the displayed words. The controls below cover gunplay and shared menus. At the title or main menu, **Left, Left, Right, Right, Right, Left, Right, Enter** toggles each active player's gameplay score display.
 
 | Action | Default control |
 | --- | --- |

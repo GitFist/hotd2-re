@@ -301,7 +301,13 @@ void World::Impl::EnemyBeh3(EnemyTask& e) {
         e.flags34 = (e.flags34 & ~0x100u) | 0x10000000;
         const int r = Rand(0x00455AAA);
         const uint32_t tab = exe.U32(exe.U32(0x00592DC0 + 4 * e.anim.kind) + 4 * e.variant);
-        const int8_t pick = static_cast<int8_t>(exe.S16(tab + ((((r >> 4) % 10) + (e.lostParts & 7) * 10) * 4)) & 0xFF);
+        int8_t pick = static_cast<int8_t>(exe.S16(tab + ((((r >> 4) % 10) + (e.lostParts & 7) * 10) * 4)) & 0xFF);
+        if (cfg.portTyping && cfg.eventMode == 7 && cfg.gameType == 2) {
+            // PC44435E..4387 consumes the lottery, then selects the authored
+            // Accuracy3 attack or the kind0 attack used by Speed1.
+            if (runner->scene == 13) pick = 0;
+            else if (runner->scene == 25 && e.anim.kind == 0) pick = 3;
+        }
         e.attack131A = pick;
         ent = entry(pick);
         ++e.sub;

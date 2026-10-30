@@ -975,6 +975,12 @@ void World::Impl::EnemyBeh37(EnemyTask& e) {
     case 0: {
         const uint32_t l = static_cast<uint32_t>(e.behaviour == e.record.ParamS8(3) ? e.P(2) : e.P(1));  // 0x0045CA10
         HeldTask* k = NewTask<HeldTask>(TaskHeldInit, 0x00442740);
+        if (typingReferenceActive) {
+            // Reference behavior37 creates a word post only after chapter1;
+            // the held prop is an unscored one-key target (44A2A4..44A2DF).
+            k->typingOriginType = 0x30;
+            k->typingFlags = cfg.eventMode != 0 ? 0x08000014u : 0;
+        }
         e.held139C = k;
         k->holder = &e;
         k->holderSerial = CurrentSerial();

@@ -48,6 +48,7 @@ public:
         // this value (e.g. rain 0.5). HYPOTHESIS: opaque meshes of such items are not drawn in pass 0.
         float alpha = -1;
         bool unitSpecular = false;  // fish bodies: normalize only the specular normal
+        bool authoredMinification = false; // PC typing: MIN follows TSP, MIP remains linear (4BF1C8/4BC0A4).
         bool sortBackToFront = false;  // mutually overlapping alpha effects; retain other pass-1 slots
         // Geometry changes every frame (skinned attachments deformed on the CPU): triangulated into a per-frame dynamic
         // vertex buffer instead of the per-model cache.
@@ -214,6 +215,7 @@ private:
     std::vector<uint32_t> itemPriority_;
     std::vector<float> itemAlpha_;
     std::vector<uint8_t> itemUnitSpecular_;
+    std::vector<uint8_t> itemAuthoredMinification_;
     std::vector<uint8_t> itemSortBackToFront_;
     std::vector<uint8_t> itemCullFlip_;
     std::vector<int> itemLight_;

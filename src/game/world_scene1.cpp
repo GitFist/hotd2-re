@@ -1164,12 +1164,17 @@ EnemyTask* World::Impl::SpawnRecordEnemy(uint32_t record) {
     SpawnRecord r;
     if (!r.Read(mem, record)) return nullptr;
     const uint32_t tfn = r.type < 0x70 ? actorType[r.type] : 0;
-    if (tfn == 0x0045CD60) return SpawnVehicleEnemy(r);  // actor 0x18 (world_st3_vehicle.cpp)
+    if (tfn == 0x0045CD60) {
+        EnemyTask* enemy = SpawnVehicleEnemy(r); // actor 0x18 (world_st3_vehicle.cpp)
+        SetTypingSpawnOrigin(*enemy, r);
+        return enemy;
+    }
     if (tfn != fn::kEnemyCreate) {
         Note("civilian child of actor type " + std::to_string(r.type) + " not ported");
         return nullptr;
     }
     EnemyTask* e = NewTask<EnemyTask>(WorldTramp<&Impl::TaskEnemy>, fn::kEnemyCreate);
+    SetTypingSpawnOrigin(*e, r);
     e->lock = &lockTargets[nextLockTarget++];
     e->flags34 = r.flags | 1;  // 0x00408970
     memcpy(e->pos, r.pos, 12);
@@ -1279,6 +1284,7 @@ bool World::Impl::SpawnScene1(Task& t, SpawnTask& s) {
     if (r.type == 0x33 && r.state == 4) {  // 0x00432FF0 -> 0x00433B70, actor slot 0x00409270
         auto d = std::make_unique<Type33Task>();
         d->fn = 0x00433B70;
+        SetTypingSpawnOrigin(*d, r);
         d->record = r;
         d->flags34 = r.flags | 1;  // 0x00408A20
         memcpy(d->pos, r.pos, 12);
@@ -1310,6 +1316,7 @@ bool World::Impl::SpawnScene1(Task& t, SpawnTask& s) {
     if (r.type == 0x52) {  // 0x0043F4C0 (op 0x0C: params at +0x130C)
         auto d = std::make_unique<RatTask>();
         d->fn = 0x0043F5C0;
+        SetTypingSpawnOrigin(*d, r);
         d->flags34 = r.flags | 1;  // 0x00408970
         memcpy(d->pos, r.pos, 12);
         memcpy(d->rot, r.rot, 12);
@@ -1349,6 +1356,7 @@ bool World::Impl::SpawnScene1(Task& t, SpawnTask& s) {
     if (r.type == 0x24) {  // 0x00482CE0
         const int variant = r.ParamS8(5);
         auto d = std::make_unique<Actor24Task>();
+        SetTypingSpawnOrigin(*d, r);
         d->fn = 0x00482EE0;
         d->record = r;
         d->flags34 = r.flags | 1;  // 0x00408A20

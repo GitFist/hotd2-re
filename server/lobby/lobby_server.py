@@ -17,7 +17,7 @@ Protocol (little-endian; every datagram starts with "H2LB", version 1, type):
     3 LIST    build u32
     4 JOIN    room u32 (0 = by code only), code u32, build u32, local ip 4, local port u16
     5 LEAVE   room u32, code u32
-    6 RELAY   room u32, sender token 16 bytes, H2NP game datagram (up to 60,042 bytes)
+    6 RELAY   room u32, sender token 16 bytes, H2NP game datagram (up to 60,068 bytes)
     7 RESUME  room u32, member token 16 bytes, build u32, local ip 4, local port u16
     8 END     same as RESUME; deliberately end a resumable match (either member)
   server -> client
@@ -54,7 +54,7 @@ MAGIC = b"H2LB"
 VERSION = 1
 ROOM_TTL = 8.0
 RELAY_TTL = 30.0
-MAX_GAME_PACKET = 60064  # welcome/rejoin metadata include up to 60,000 save bytes
+MAX_GAME_PACKET = 60068  # Largest rejoin config: 60,000 save bytes + host UTC timestamp and metadata.
 RELAY_PACKETS_PER_SECOND = 240.0
 RELAY_PACKET_BURST = 480.0
 RELAY_BYTES_PER_SECOND = 256 * 1024.0
@@ -79,6 +79,7 @@ class Room:
         self.code = code
         self.build = build
         self.flags = flags
+        self.typing = False
         self.host_public = host_public  # (ip str, port)
         self.host_local = host_local
         self.joiner_public = None
@@ -252,6 +253,7 @@ class Server:
             if len(self.rooms) >= MAX_ROOMS or sum(r.host_public[0] == addr[0] for r in self.rooms.values()) >= MAX_ROOMS_PER_IP:
                 return
             room = Room(self.next_id, self.new_code(), build, flags, addr, local)
+            room.typing = len(body) >= 12 and body[11] == 1
             self.next_id += 1
             self.rooms[room.id] = room
             self.log.info("room %d created (flags %d, build %d)", room.id, flags, build)
@@ -275,6 +277,10 @@ class Server:
             out += bytes([len(rooms)])
             for r in rooms:
                 out += struct.pack("<IBI", r.id, r.flags, r.build)
+            # Optional trailing mode list. Legacy clients consume the unchanged
+            # nine-byte records; new clients label Typing rooms explicitly.
+            if len(body) >= 5 and body[4] == 1:
+                out += bytes(int(r.typing) for r in rooms)
             self.send(out, addr)
         elif t == 4 and len(body) >= 18:  # JOIN
             room_id, code, build = struct.unpack_from("<III", body, 0)

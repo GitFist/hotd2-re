@@ -125,6 +125,15 @@ bool CameraBank::Evaluate(int id, float t, float pos[3], float target[3], int* r
     return true;
 }
 
+bool CameraBank::AddPreparedFile(std::vector<uint8_t> bytes, const std::vector<int>& ids) {
+    if (ids.empty() || ids.size() > 4096) return false;
+    auto file = std::make_unique<CameraFile>();
+    if (!file->Load(std::move(bytes), static_cast<int>(ids.size()))) return false;
+    for (size_t i = 0; i < ids.size(); ++i) ids_[ids[i]] = { file.get(), static_cast<int>(i) };
+    files_.push_back(std::move(file));
+    return true;
+}
+
 void LookAngles(const float pos[3], const float target[3], int* pitch, int* yaw) {
     // 0x00403AC0 -> 0x004016B0 with the game's 24-bit FPU precision (game::DirToAngles, shoot_camera.cpp)
     DirToAngles(pos[0] - target[0], pos[1] - target[1], pos[2] - target[2], pitch, yaw);

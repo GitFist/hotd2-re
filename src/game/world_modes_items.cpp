@@ -8,6 +8,7 @@
 
 #include "game/mstack.h"
 #include "game/world_modes.h"
+#include "game/world_typing_original.h"
 
 namespace game {
 
@@ -114,7 +115,8 @@ void Take(World::Impl& w, ItemTask& k, uint32_t randSite) {  // randSite: 0x0046
     ModesState& m = *w.modes;
     const int player = Shooter(w, k.flags34);
     k.flags34 |= 0x40000000;
-    if (!RandomizerCollect(w, player, k.item) && 0 <= k.item && k.item < 33 && m.items[k.item] < 99) ++m.items[k.item];
+    if (TypingOriginalPickup(w,player,k.item)) { k.counter=1;return; }
+    if (!w.cfg.portTyping && !RandomizerCollect(w, player, k.item) && 0 <= k.item && k.item < 33 && m.items[k.item] < 99) ++m.items[k.item];
     CaptionTask* c = w.NewTask<CaptionTask>(TaskCaption, 0x00475D00);  // 0x00475E40
     c->counter = 0;
     c->sprite = w.exe.S16(0x005957E0 + static_cast<uint32_t>(k.item) * 12);
@@ -528,7 +530,7 @@ void ModesSaveItems(World::Impl& w) {
 // 0x00428400 (the final boss down) in game type 1: save flag 0x009C9F5E | 1, item 0x18 + 1 (copied to the save
 // 0x009C9F55), 0x009C9F5F = 1
 void ItemsFinalBoss(World::Impl& w) {
-    if (RandomizerActive(w)) return;
+    if (w.cfg.portTyping || RandomizerActive(w)) return;
     if (!w.modes) return;
     ModesState& m = *w.modes;
     m.save.SetU8(SaveData::kFlags, static_cast<uint8_t>(m.save.U8(SaveData::kFlags) | 1));
@@ -580,13 +582,14 @@ void TaskItemHold(Task& t) {
 // 0x0048DD60's hand-over (a civilian's carried item, game type 1): inventory 0x009C90C0[kind] + 1 (below 99), the
 // caption 0x00475E40(0x0056B0F6[kind * 4]) and the residency task 0x0048DEE0 (texture file 0x0056B0F4[kind * 4])
 void CivItemGiven(World::Impl& w, int kind) {
+    if (TypingOriginalPickup(w,w.playersInGame&1,kind)) return;
     if (RandomizerActive(w)) kind = RandomizerPickItem(w);
     if (!w.modes || kind < 0 || kind >= 33) {
         w.Note("civilian item 0x0048DD60 kind " + std::to_string(kind) + " outside game type 1 data");
         return;
     }
     ModesState& m = *w.modes;
-    if (!RandomizerCollect(w, -1, kind) && m.items[kind] < 99) ++m.items[kind];
+    if (!w.cfg.portTyping && !RandomizerCollect(w, -1, kind) && m.items[kind] < 99) ++m.items[kind];
     CaptionTask* c = w.NewTask<CaptionTask>(TaskCaption, 0x00475D00);  // 0x00475E40
     c->counter = 0;
     c->sprite = w.exe.S16(0x0056B0F6 + static_cast<uint32_t>(kind) * 4);
@@ -598,13 +601,14 @@ void CivItemGiven(World::Impl& w, int kind) {
 // game type 1: an item taken from a prop (komono 43 0x0046CEA0): the inventory 0x009C90C0[item] + 1 below 99 and the
 // caption 0x00475E40 (sprite 0x005957E0[item * 12])
 void ItemInventoryCaption(World::Impl& w, int item, int player, bool randomized) {
+    if (TypingOriginalPickup(w,player,item)) return;
     if (RandomizerActive(w) && !randomized) item = RandomizerPickItem(w);
     if (!w.modes || item < 0 || item >= 33) {
         w.Note("item " + std::to_string(item) + " taken outside game type 1 data");
         return;
     }
     ModesState& m = *w.modes;
-    if (!RandomizerCollect(w, player, item) && m.items[item] < 99) ++m.items[item];
+    if (!w.cfg.portTyping && !RandomizerCollect(w, player, item) && m.items[item] < 99) ++m.items[item];
     CaptionTask* c = w.NewTask<CaptionTask>(TaskCaption, 0x00475D00);
     c->counter = 0;
     c->sprite = w.exe.S16(0x005957E0 + static_cast<uint32_t>(item) * 12);

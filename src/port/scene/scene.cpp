@@ -102,6 +102,12 @@ void ApplyModelEdit(const game::ModelEdit& e, game::Model& m, SrcModel srcModel)
         for (game::ModelMesh& mesh : m.meshes)
             for (int k = 12; k <= 14; ++k) mesh.material.words[k] = bits;
     }
+    if (e.diffuseRgb)
+        for (game::ModelMesh& mesh : m.meshes)
+            for (int channel = 0; channel < 3; ++channel)
+                memcpy(&mesh.material.words[12 + channel], &e.color[channel], sizeof(float));
+    if(e.clearSpecular)
+        for(game::ModelMesh& mesh:m.meshes)mesh.material.words[9]=0;
     if (e.tspOr)
         for (game::ModelMesh& mesh : m.meshes) mesh.material.words[2] |= e.tspOr;
     if (!e.uvs.empty()) {
@@ -473,6 +479,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         si.priority = d.drawMode;
         si.alpha = d.alpha;
         si.unitSpecular = d.unitSpecular;
+        si.authoredMinification=world.Hud().nightShiftPage==12;
         si.sortBackToFront = d.sortBackToFront;
         si.cullFlip = d.cullFlip;
         // the pause overlay (above): scaled to the near plane, its material sphere misses the frustum test; never cull it
@@ -480,13 +487,14 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         if (d.skinCount > 0) {
             // Skinned attachment: deform a copy (game::SkinDeform, as 0x004198B0 / 0x00419980 do before drawing).
             ++skinnedDraws_;
-            auto def = skinDefs_.find(d.model);
+            const int skinModel = d.skinModel != 0 ? d.skinModel : d.model;
+            auto def = skinDefs_.find(skinModel);
             bool twin = false;
             if (def == skinDefs_.end()) {
                 // skeleton 0x4C attachments 0..5: the twin 0x004EDA52[i] takes the deformation of 0x004EDA50[i] with the
                 // normals negated (0x0041A520 / 0x0041A580: the twin sits 0x82C0 bytes further in boss6.bin)
                 for (uint32_t i = 0; i < 6 && !twin; ++i)
-                    if (assets_->Exe().S16(0x004EDA52 + i * 4) == d.model) {
+                    if (assets_->Exe().S16(0x004EDA52 + i * 4) == skinModel) {
                         def = skinDefs_.find(assets_->Exe().S16(0x004EDA50 + i * 4));
                         twin = def != skinDefs_.end();
                     }
@@ -610,7 +618,15 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     game::Mat4 shift = game::Mat4::Identity();
     shift.m[12] = cx * 0.0031250000465661287f - 1.0f;  // 0x004ED1DC
     shift.m[13] = 1.0f - cy * 0.004166666883975267f;   // 0x004ED1D8
-    projection = game::DeviceView() * game::DeviceProjection() * shift;
+    auto deviceProjection = game::DeviceProjection();
+    if (world.PortTypingActive() || world.PortTypingReportActive() || world.Hud().nightShiftPage==12) {
+        // English PC487710 ->4C18C0: the same FOV, with near .5 / far8000.
+        // The authored30.2-depth book lettering must lie in front of its
+        // seventeen-unit pages; the gun game's .8 near plane reverses them.
+        deviceProjection.m[10] = 8000.f / (8000.f - .5f);
+        deviceProjection.m[14] = -.5f * deviceProjection.m[10];
+    }
+    projection = game::DeviceView() * deviceProjection * shift;
     projection = HorPlusProjection(projection,viewportAspect_);
     return view * projection;
 }
@@ -698,14 +714,21 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
     struct Item {
         game::SpriteRecord rec;
         int file;
+        bool typing;
     };
     std::vector<Item> items;
     for (const auto& d : defs) {
-        const int file = tables.TextureFile(d.id);
+        int file = 0;
+        uint32_t tex = 0;
+        if (d.id >= 0x4000) {
+            if (!assets_->SourceSprite(d.id, &file, &tex)) continue;
+        } else {
+            file = tables.TextureFile(d.id);
+            tex = tables.TextureId(d.id);
+        }
         if (texFiles && file >= 0 && file < static_cast<int>(texFiles->size()) && (*texFiles)[static_cast<size_t>(file)] != 4)
             continue;  // Spr_Draw 0x0041C630: the sprite's texture file is not loaded (0x009C7328[file * 12] != 4)
-        const uint32_t tex = tables.TextureId(d.id);
-        items.push_back({ game::MakeSpriteRecord(d, tex, d.tinted ? d.tint : lightColor_), tables.TextureFile(d.id) });
+        items.push_back({ game::MakeSpriteRecord(d, tex, d.tinted ? d.tint : lightColor_), file, d.id >= 0x4000 });
     }
     // Submission order; ModelRenderer::DrawGame sorts them into the pass-1 list together with the translucent models.
     std::vector<ModelRenderer::SpriteDraw> out;
@@ -716,7 +739,8 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
         // z = f / (f - n) - n f / ((f - n) depth): near 0.8 gives (1.0001, -0.80008), as captured in play.
         const float zA = zNear == 0.8f ? 1.0001f : 8000.8f / (8000.8f - zNear);
         const float zB = zNear == 0.8f ? -0.80008f : -zNear * zA;
-        game::SpriteQuad(it.rec, s.texture->LogicalWidth(), s.texture->LogicalHeight(), zA, zB, s.v);  // the game's size (asset packs resize)
+        if (it.typing) game::TypingSpriteQuad(it.rec, s.texture->LogicalWidth(), s.texture->LogicalHeight(), s.v);
+        else game::SpriteQuad(it.rec, s.texture->LogicalWidth(), s.texture->LogicalHeight(), zA, zB, s.v);  // the game's size (asset packs resize)
         if(ViewportXScale(viewportAspect_)!=1.f)
             for(auto& v:s.v)v.x=CenteredViewportX(v.x,viewportAspect_);
         s.isp = game::SpriteIsp(it.rec);

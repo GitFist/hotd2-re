@@ -112,6 +112,8 @@ struct VehicleTask : EnemyTask {
     int fire = 0x1AAB;       // [5]
     int st4[24] = {};        // motions 2 / 3 / 4 data block (world_st4_vehicle.cpp)
     uint8_t drawMode = 8;    // 0x004A79F0 mode set by the motion for the vehicle's draw
+    int drillHits = 0; // PC coin globals 0x5F548C / 0x5F5488 / 0x5F5490.
+    float drillStep = .015f,drillSpeed = .3f;
 };
 
 // 0x00440770(pos block, model, scale, z): the two bow-wave models on the floor below the vehicle, along its heading
@@ -423,6 +425,7 @@ void Normalize3(float v[3]) {  // 0x004AA9C0
 }
 
 bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
+    const bool pcDrill = w.cfg.portTyping && w.cfg.eventMode==7 && w.cfg.gameType==2;
     const ExeImage& exe = w.exe;
     int* d = v.st4;
     switch (v.state) {
@@ -469,10 +472,15 @@ bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
             v.flags34 &= ~0xEu;
             v.acc[1] = Bits(0xBCDF0123);  // +0x5C
             v.state = 2;
+            if(pcDrill) {
+                v.typingOriginType=0x13;v.typingFlags=0x20000A04u;
+                v.drillHits=0;v.drillStep=.015f;v.drillSpeed=.3f;
+            }
         }
         break;
     case 2: {
         if (v.flags34 & 8) {  // shot: the push away from the aim point, the spin about the shot's axis
+            if(pcDrill)w.TypingWords(-1,v.drillHits<10?100:v.drillHits<40?200:v.drillHits<80?300:400);
             float f = w.focal / v.viewPos[2];
             if (f < 0.0f) f = f * F32(exe, 0x004C4C64);
             const int p = static_cast<int>((~v.flags34 >> 1) & 1);
@@ -526,7 +534,9 @@ bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
             v.vel[0] = sd[0];
             v.vel[1] = sd[1];
             v.vel[2] = sd[2];
-            const float vy = dy * F32(exe, 0x004D1D24) / v.radius + F32(exe, 0x004C4380);
+            // PC 0x43290E..432925 fixes every word rebound at1.2; gun
+            // hits vary their vertical impulse with the aim's local offset.
+            const float vy = pcDrill ? 1.2f : dy * F32(exe, 0x004D1D24) / v.radius + F32(exe, 0x004C4380);
             v.vel[1] = vy;
             const float n2 = (vy / v.acc[1]) * F32(exe, 0x004C4C90);
             const int dyaw2 = YawTo(w, n2 * sd[0] + v.pos[0], n2 * sd[2] + v.pos[2]) - d[4];
@@ -541,6 +551,14 @@ bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
             }
             w.Sound(0x1116A9);
             v.flags34 &= ~0xEu;
+            if(pcDrill) { // PC 0x4329FF: gradually speed the coin after successful words.
+                ++v.drillHits;
+                if(v.drillHits==10)v.drillStep=.01f;
+                else if(v.drillHits==15)v.drillStep=.008f;
+                else if(v.drillHits==20)v.drillStep=.004f;
+                else if(v.drillHits==25)v.drillStep=.002f;
+                v.drillSpeed+=v.drillStep;
+            }
         }
         if (d[0] != 0) {
             if (0x1000 < d[0]) d[0] = 0x1000;
@@ -552,17 +570,19 @@ bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
             mx::RotY(m, v.rot[1]);
             MatrixToAnglesYAxis(m, &v.rot[0], &v.rot[1], &v.rot[2]);  // 0x00401AE0
         }
-        v.pos[0] = v.vel[0] + v.pos[0];
-        v.pos[1] = v.vel[1] + v.pos[1];
-        v.pos[2] = v.vel[2] + v.pos[2];
-        v.vel[1] = v.acc[1] + v.vel[1];
+        const float speed=pcDrill ? v.drillStep+v.drillSpeed : 1.0f;
+        v.pos[0] = speed*v.vel[0] + v.pos[0];
+        v.pos[1] = speed*v.vel[1] + v.pos[1];
+        v.pos[2] = speed*v.vel[2] + v.pos[2];
+        v.vel[1] = speed*v.acc[1] + v.vel[1];
         if (v.vel[1] < F32(exe, 0x00564540)) v.vel[1] = Bits(0xBFE66666);
         if (v.pos[1] <= w.ground) {  // dropped: the lesson is failed
             w.runner->globals[0x009A2234] = 1;
             d[0xD] = 0x14;
             v.state = 4;
+            if(pcDrill)v.typingFlags=(v.typingFlags&~0x200u)|0x400u;
         }
-        if (++d[0xB] == d[0xC]) {  // the time is up: passed
+        if (++d[0xB] == d[0xC] && !pcDrill) {  // the time is up: passed
             w.runner->flags[3] = 1;  // 0x009C7203
             d[0xD] = 0x14;
             v.state = 3;
@@ -583,7 +603,7 @@ bool Motion9(World::Impl& w, VehicleTask& v) {  // false: removed
     if (!v.lock) v.lock = &w.lockTargets[w.nextLockTarget++];
     w.SyncLock(v);
     w.lockOn.Register(v.lock, w.playerPos);  // 0x00408EC0
-    TrainTimeLeft(w, d[0xC], d[0xB]);        // 0x00498C10
+    if(!pcDrill)TrainTimeLeft(w, d[0xC], d[0xB]);        // 0x00498C10
     return true;
 }
 
@@ -713,6 +733,19 @@ void TaskVehicleEnemy(Task& t) {  // 0x0045CD60 / 0x0045CD90
 
 }  // namespace
 
+// PC motion9's coin keeps its assigned word while it bounces, and receives
+// the completed strike through the same motion handler as an accepted shot.
+bool TypingDrillCoin(World::Impl& w,ActorTask& actor,TypingTargetSpec& out,bool complete) {
+    auto* coin=dynamic_cast<VehicleTask*>(&actor);
+    if(!coin || coin->motion!=0x00445050 ||
+       !(w.cfg.portTyping&&w.cfg.eventMode==7&&w.cfg.gameType==2))return false;
+    if(coin->state!=2)return true;
+    out.node=1;out.danger=true;out.retain=true;out.token=0x130009u;
+    memcpy(out.view,coin->viewPos,12);
+    if(complete){TypingDeliver(*coin,1);coin->typingStrike=false;}
+    return true;
+}
+
 // 0x0043FCA0 for other files (the stage-2 boss, world_st2c_boss.cpp)
 void World::Impl::SpawnExplosionAt(const float pos[3], const int rot[3], int type, float scale) {
     SpawnExplosion(*this, pos, rot, type, scale);
@@ -724,6 +757,7 @@ void World::Impl::SpawnVehicle(Task& t, SpawnTask& s) {
     auto d = std::make_unique<VehicleTask>();
     VehicleTask& v = *d;
     v.fn = 0x0043FE90;
+    SetTypingSpawnOrigin(v,r);
     v.record = r;
     v.flags34 = r.flags | 1;
     memcpy(v.pos, r.pos, 12);

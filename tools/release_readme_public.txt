@@ -2,6 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a
+Complete download: HOTD2RE-1.6-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation
@@ -33,6 +35,14 @@ Extras includes all 38 named music tracks, effects/dialogue previews, and a mode
 Master volume has a gradual scale with quieter low levels. Attraction volume controls the
 background menu loop separately from gameplay music, gunfire and effects.
 
+THE TYPING OF THE DEAD
+Use the other game's logo card on the main menu to switch games. Typing has its own
+moving attract presentation, Original campaign, all 13 Drill courses, leaderboard and
+options. Original setup includes difficulty, lives, continues, word size and US/UK
+keyboard layout. Type the displayed words to fight. Drill uses authored encounters,
+word cards, result books and course records, and is local play. Typing Original can
+also be selected in the shared two-player online lobby.
+
 UPDATING AN EXISTING INSTALLATION
 Close the game and extract the ENTIRE new runtime ZIP into a fresh writable folder.
 Keep its executable, all accompanying DLLs, notices and scenes together; replacing only
@@ -55,21 +65,26 @@ Keep the .hotd2-update folder if recovery needs another attempt. A writable loca
 folder and Windows PowerShell are required. --no-update-check disables the check.
 Updates reuse unchanged files and download only changed program files. A verified
 full-client fallback is available automatically; update files need no manual download.
+Client-only updates do not include the Typing data. If it is missing, startup downloads
+it once (89.5 MB), with verification, progress and Cancel. The complete 1.6 ZIP
+already includes it; the original Typing executable is not run. --no-update-check
+also skips this automatic content download.
 Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
 32-bit installations need one manual installation of the latest complete x64 package.
 Version 1.0 x64 can update through its selective path; if that fails, install manually.
 Follow the migration steps above to keep saves, settings, calibration and packs.
 
 ONLINE TWO-PLAYER
-Home has Host Online, Browse Lobby and Peer to Peer actions; Online also opens
-the network page. Classic uses mode select > Network.
-  Host Online / Create Room - choose difficulty, Unlimited Continues (or 3 continues) and Private Room.
+Open Home > Online for Create Room, Browse Lobby and Peer to Peer.
+The Home waiting-room preview also lets you join listed rooms. Classic uses mode select > Network.
+  Create Room - choose the game, Unlimited Continues (or 3 continues) and Private Room.
                  A private room shows a 5-digit code to give your friend. When someone joins,
                  both players enter the shared mode-selection lobby.
   Browse Lobby - view open rooms and choose one; a private room asks for its code.
                  Listings show advertised difficulty; older hosts can show Unknown.
   Peer to Peer - Host shows a 5-digit code; your friend picks Join and enters it. Unlisted.
-The host (player 1) chooses Arcade, Original, Scene Selection, Boss Mode, Horde Mode, or Randomizer. Pause > Return to Lobby brings both
+The host (player 1) chooses Arcade, Original, Scene Selection, Boss Mode, Horde Mode,
+Randomizer, or Typing Original. Pause > Return to Lobby brings both
 players back to the same room. Esc pauses/resumes and Enter confirms. Either player can resume a pause.
 The host can change difficulty in the shared lobby; both players use that setting.
 Chapter results stay open until a click, shot, or Enter after a three-second minimum; either player can continue.
@@ -79,7 +94,8 @@ After a disconnect the other player keeps playing. Reopen the same folder and ch
 Keep your private hotd2re_rejoin.bin ticket in that folder; do not share it.
 
 LEADERBOARD
-Home > Leaderboard shows Arcade, Original, Horde and individual Boss Mode tables.
+Home > Leaderboard shows Arcade, Original, Horde, individual Boss Mode and Typing tables.
+Typing Home opens its table directly; Drill course records stay in Drill.
 Source: Local reads your own records. Source: Online is the shared service view.
 Shared records are unverified, self-reported scores rather than anti-cheat rankings.
 Choose a public username on first launch (1-12 characters). Eligible finished runs

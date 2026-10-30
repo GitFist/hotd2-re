@@ -237,7 +237,7 @@ void SoundDriver::PlayGameSound(const SoundTable& table, uint32_t id, const Soun
     case SoundAction::PlayFile:
         if (r.stopLoopedSe) StopLoopedSe();
         PlayFile(r.path, r.loop, r.channel, r.dupId);
-        if (r.setCurrentBgm) curBgm_ = id;
+        if (r.setCurrentBgm) curBgm_ = id & ~kTypingSoundFlag;
         break;
     case SoundAction::StopBgm:
         StopSlot(slotBgm_);

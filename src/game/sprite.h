@@ -28,6 +28,10 @@ struct SpriteDef {
     bool tinted = false;
     float tint[3] = { 1, 1, 1 };
     uint32_t source = 0;  // tests: the original drawing function (game::World select screens / name entry); not drawn
+    // Authored atlas quads (the PC typing result screen) select a subrectangle
+    // while retaining the sprite's normal texture, sizing and residency rules.
+    bool atlas = false;
+    float uv[4] = {0, 0, 1, 1};
     static SpriteDef FromWords(const uint32_t w[14]);
 };
 
@@ -58,6 +62,9 @@ SpriteRecord MakeSpriteRecord(const SpriteDef& def, uint32_t textureId, const fl
 // 0x004A7AB0: triangle-strip quad. zScale / zOffset: the projection terms (0x007E7970 / 0x007E7980; the game's
 // projection gives 1.0001 / -0.80008).
 void SpriteQuad(const SpriteRecord& rec, int texWidth, int texHeight, float zScale, float zOffset, TLVertex out[4]);
+// Supplied English PC typing reference 0x004BF330: screen sprites have a
+// piecewise authored depth and rhw=1 rather than the camera's near-plane map.
+void TypingSpriteQuad(const SpriteRecord& rec, int texWidth, int texHeight, TLVertex out[4]);
 
 // Pass-1 order (comparator 0x004A8A20, used with CrtQsort): key bits 0-3 ascending, then depth descending.
 // key: the deferred-list key (record key | 0x007E78B8; 0xF for every sprite captured so far).

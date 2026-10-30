@@ -36,6 +36,7 @@ MAX_PUBLIC_FILE_BYTES = 512 * 1024 * 1024
 MAX_PUBLIC_TOTAL_BYTES = 1024 * 1024 * 1024
 MAX_FILE_INDEX_BYTES = 2 * 1024 * 1024
 MAX_FILE_ASSETS_BYTES = 512 * 1024 * 1024
+MAX_TYPING_REFERENCE_BYTES = 128 * 1024 * 1024
 PUBLIC_MANAGED_PATH = re.compile(
     r"hotd2\.exe|scenes/st1_play\.scene|README\.txt|BUILD\.txt|CREDITS\.txt|LICENSE-SDL\.txt|"
     r"LICENSE-native-code\.txt|THIRD_PARTY_NOTICES\.txt|nvngx_dlss\.dll|nvngx_dlssg\.dll|"
@@ -238,6 +239,96 @@ def privacy_check(path):
     return result
 
 
+def typing_reference_info(path):
+    """Validate the bounded v5 container, without executing original game code."""
+    path = require_file(path)
+    size = path.stat().st_size
+    if not 44 <= size <= MAX_TYPING_REFERENCE_BYTES:
+        raise ValueError("Invalid prepared Typing reference size")
+    with path.open("rb") as stream:
+        def take(length, *, skip=False):
+            if length < 0 or stream.tell() + length > size:
+                raise ValueError("Truncated prepared Typing reference")
+            if skip:
+                stream.seek(length, 1)
+                return None
+            data = stream.read(length)
+            if len(data) != length:
+                raise ValueError("Truncated prepared Typing reference")
+            return data
+
+        def word(maximum=0xFFFFFFFF):
+            value = struct.unpack("<I", take(4))[0]
+            if value > maximum:
+                raise ValueError("Invalid prepared Typing reference count or identity")
+            return value
+
+        def blob(maximum=32 * 1024 * 1024, *, exact=None):
+            length = word(maximum)
+            if exact is not None and length != exact:
+                raise ValueError("Invalid prepared Typing reference metadata length")
+            take(length, skip=True)
+            return length
+
+        if take(8) != b"TOTDREF1" or word() != 5:
+            raise ValueError("Prepared Typing reference must use TOTDREF1 version 5")
+        complete, issues = word(), word()
+        if complete != 1 or issues != 0:
+            raise ValueError("Prepared Typing reference conversion is incomplete")
+        stages, cameras, mappings, motions = word(16), word(64), word(16384), word(4096)
+        resources, palettes = word(2048), word(256)
+        blob()
+        modes = set()
+        for _ in range(stages):
+            mode = word(15)
+            if mode in modes:
+                raise ValueError("Duplicate prepared Typing reference stage")
+            modes.add(mode)
+            blob(); blob()
+            if blob() % 8:
+                raise ValueError("Invalid prepared Typing reference routes")
+        if not {0, 1, 2, 3, 4, 5, 7, 9}.issubset(modes):
+            raise ValueError("Prepared Typing reference is missing campaign or practice stages")
+        for _ in range(cameras):
+            take(word(4096) * 4, skip=True)
+            blob()
+        take(mappings * 8, skip=True)
+        for _ in range(motions):
+            word(32767); word(65535); blob()
+        for _ in range(resources):
+            word(1); word()
+            if not blob(128):
+                raise ValueError("Empty prepared Typing reference resource name")
+            blob()
+            models = word(4096)
+            take(models * 4, skip=True)
+            textures = blob()
+            if textures % 16:
+                raise ValueError("Invalid prepared Typing reference texture metadata")
+            blob(exact=textures // 16)
+            blob(exact=models)
+        take(palettes * 32, skip=True)
+        if word() != 0x02000000 or not blob(1024 * 1024):
+            raise ValueError("Invalid prepared Typing reference civilian programs")
+        take(word(256) * 4, skip=True)
+        take(word(16384) * 8, skip=True)  # Sprites.
+        take(word(32) * 24, skip=True)  # Rewards.
+        take(word(16384) * 8, skip=True)  # Models.
+        for _ in range(word(8192)):
+            word(); word(3); blob()
+        take(word(8192) * 8, skip=True)  # Native sound identities.
+        for _ in range(word(2048)):
+            blob(); blob()
+        for length in (732 * 2, 402 * 16, 375 * 64, 402 * 8, 128 * 2):
+            blob(exact=length)
+        take(word(32768) * 16, skip=True)  # Enemy model bindings.
+        if stream.tell() != size:
+            raise ValueError("Unexpected bytes after prepared Typing reference")
+    privacy_check(path)
+    return dict(path="game/typing_reference.bank", format="TOTDREF1", version=5,
+                complete=True, bytes=size, sha256=sha256(path))
+
+
 def write_manifest(package_dir, metadata):
     def files():
         return sorted(path for path in package_dir.rglob("*") if path.is_file())
@@ -330,10 +421,12 @@ def write_file_assets(package_dir, out, info):
         stream.write(f"{hashlib.sha256(encoded).hexdigest()}  {name}\n")
 
 
-def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, game_manifest=None):
+def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, game_manifest=None, typing_reference=None):
     source_dir, exe, out = source_dir.resolve(strict=True), exe.resolve(strict=True), out.resolve()
     if out.exists():
         raise ValueError("Output already exists. Choose a fresh -Out directory; existing files are never removed")
+    if typing_reference is not None and kind != "complete":
+        raise ValueError("Prepared Typing reference is original game data and is allowed only in complete packages")
     info = executable_info(exe, source_dir, architecture)
     notices = require_file(source_dir / "THIRD_PARTY_NOTICES.txt")
     scene = require_file(source_dir / "scenes/st1_play.scene")
@@ -341,7 +434,7 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     licenses = [(sdl_license(source_dir, exe), "LICENSE-SDL.txt"), (notices, "THIRD_PARTY_NOTICES.txt")]
     if (source_dir / "LICENSE").is_file():
         licenses.append((require_file(source_dir / "LICENSE"), "LICENSE-native-code.txt"))
-    game, game_metadata = [], None
+    game, game_metadata, typing_metadata = [], None, None
     if kind == "complete":
         if game_dir is None:
             raise ValueError("Complete-local packaging requires explicit -GameDir")
@@ -351,6 +444,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         game_manifest = game_manifest or game_dir.parent / "original/game-manifest.json"
         game = verified_game_entries(game_dir, game_manifest)
         game_metadata = dict(files=len(game), extractionManifestSha256=sha256(game_manifest))
+        if typing_reference is not None:
+            typing_metadata = typing_reference_info(typing_reference)
     elif kind != "public":
         raise ValueError("Unknown package kind")
     revision = source_revision(source_dir)
@@ -376,6 +471,11 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         shutil.copy2(original, destination)
         if destination.stat().st_size != size or sha256(destination) != digest:
             raise ValueError(f"Copied game file failed verification: {relative}")
+    if typing_metadata is not None:
+        destination = package_dir / typing_metadata["path"]
+        shutil.copy2(typing_reference, destination)
+        if destination.stat().st_size != typing_metadata["bytes"] or sha256(destination) != typing_metadata["sha256"]:
+            raise ValueError("Prepared Typing reference changed during packaging")
     (package_dir / "game").mkdir(exist_ok=True)
     if kind == "public":
         (package_dir / "game/PUT_YOUR_GAME_FILES_HERE.txt").write_text("Copy your own House of the Dead 2 installation here: Hod2.exe and its data folders.\n", encoding="ascii")
@@ -388,6 +488,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     metadata = dict(format=1, packageKind=kind, originalGameDataIncluded=kind == "complete", executable=info,
                     sourceAtPackaging=revision, optionalRuntimeDlls=[name for _, name in runtime if name.endswith(".dll")],
                     thirdPartyBuildPathExceptions=runtime_exceptions, game=game_metadata)
+    if typing_metadata is not None:
+        metadata["typingReference"] = typing_metadata
     write_manifest(package_dir, metadata)
     privacy_check(package_dir)
     if kind == "public":
@@ -415,6 +517,7 @@ def main():
     parser.add_argument("--source-root", type=Path, default=REPO)
     parser.add_argument("--game-dir", type=Path)
     parser.add_argument("--game-manifest", type=Path)
+    parser.add_argument("--typing-reference", type=Path, help="complete packages only: complete prepared TOTDREF1 v5 bank")
     args = parser.parse_args()
     default_build = "build-x64" if args.architecture == "x64" else "build"
     exe = args.exe or REPO / default_build / "src/port/Release/hotd2.exe"
@@ -422,7 +525,8 @@ def main():
     resolve = lambda path: path if path is None or path.is_absolute() else REPO / path
     try:
         archive = stage_package(kind=args.kind, architecture=args.architecture, exe=resolve(exe), source_dir=resolve(args.source_root),
-                                out=resolve(out), game_dir=resolve(args.game_dir), game_manifest=resolve(args.game_manifest))
+                                out=resolve(out), game_dir=resolve(args.game_dir), game_manifest=resolve(args.game_manifest),
+                                typing_reference=resolve(args.typing_reference))
         print(f"Package: {archive.name} ({archive.stat().st_size} bytes); SHA256 manifest written")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:

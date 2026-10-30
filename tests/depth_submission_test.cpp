@@ -68,5 +68,17 @@ int main() {
     Require(gpu.list.opaqueDrawCount==0,"HUD sprites entered the opaque model prepass");
     Require(gpu.list.draws.size()==2&&!gpu.list.draws[0].state.linear&&gpu.list.draws[1].state.linear,"UI atlas filtering altered original sprite state");
     for(const auto& d:gpu.list.draws)Require(!d.state.mipmapped,"UI atlas enabled mipmaps on the native HUD");
+    game::Model nearMesh;nearMesh.meshes={Card(-.75f,true,1)};
+    const float sphere[]={10,0,-.75f,.1f};
+    std::memcpy(nearMesh.meshes[0].material.words+4,sphere,sizeof(sphere));
+    for(auto& strip:nearMesh.meshes[0].strips)for(auto& vertex:strip.vertices){vertex.pos[0]=10+vertex.pos[0]*.00025f;vertex.pos[1]*=.00025f;}
+    port::ModelRenderer::SceneItem nearItem;nearItem.model=&nearMesh;nearItem.cullable=false;
+    renderer.SetScene(assets,{nearItem});
+    renderer.DrawGame(640,480,projection.m,&light,nullptr,view.m,nullptr,nullptr,projection.m);
+    Require(gpu.list.draws.size()==1,"native .8 near-intersection culling behavior changed");
+    auto typingProjection=game::DeviceProjection();typingProjection.m[10]=8000.f/7999.5f;typingProjection.m[14]=-.5f*typingProjection.m[10];
+    typingProjection=game::DeviceView()*typingProjection;
+    renderer.DrawGame(640,480,typingProjection.m,&light,nullptr,view.m,nullptr,nullptr,typingProjection.m);
+    Require(gpu.list.draws.empty(),"typing .5 near plane incorrectly retained the native .8 side-culling exemption");
     std::puts("PASS opaque prefix, known smoke eligibility, Off/reset readiness, precise depth metadata, orthographic exclusion and UI-only sprite filtering");
 }

@@ -189,7 +189,9 @@ void World::Impl::TaskTitle(Task& t) {
         Draw(0x1730, m, 8, -1.0f, false, -1, true);
     }
     hudTitleSerial = CurrentSerial();  // stage name / chapter sprites 0x00436AD0 / 0x00499F00: HUD (game::ChapterCard)
-    if ((a.sub > 0 && a.timer < 0xA0 && (pressed & 2)) || (pressed & 0x20000)) a.timer = 1;
+    if (cfg.portTyping) {
+        if (a.sub > 0 && a.timer < 0xA0 && (pressed & 0x80008u)) a.timer = 1;
+    } else if ((a.sub > 0 && a.timer < 0xA0 && (pressed & 2)) || (pressed & 0x20000)) a.timer = 1;
     if (--a.timer < 1) {
         // 0x0041D710(0x18C + stage) / 0x0041D970: title resources released (not modelled)
         runner->flags[0xF8] = 1;  // 0x009C72F8
@@ -203,7 +205,10 @@ void World::Impl::TaskTitle(Task& t) {
 void World::Impl::TaskCar(Task& t) {
     CarTask& c = t.As<CarTask>();
     if (runner->flags[0xE0] == 1) ts.KillCurrent();
-    const int camId = runner->camera.camId, tick = runner->camera.tick;
+    // Source4849AC uses cameras30..32 and paths11F..121. Prepared event
+    // cameras have their own namespace; raw native20..22 never match them.
+    const int camId = runner->camera.camId - (typingReferenceActive ? 0x4010 : 0), tick = runner->camera.tick;
+    auto pathId = [&](int native) { return native + (typingReferenceActive ? 0x4022 : 0); };
     if (getenv("WORLD_TRACE_SPAWN")) fprintf(stderr, "%d car cam %X tick %d\n", frame, camId, tick);
     int path = -1;
     if (camId == 0x20) {
@@ -213,7 +218,7 @@ void World::Impl::TaskCar(Task& t) {
         else path = 0xFE;
     } else if (camId == 0x22) {
         int ang[3] = { c.rot[0], c.rot[1], c.rot[2] };
-        EvalPath(cameraBank, 0xFE, 350.0f, c.pos, ang);  // 0x43AF0000
+        EvalPath(cameraBank, pathId(0xFE), 350.0f, c.pos, ang);  // 0x43AF0000
         c.rot[0] = ang[0];
         c.rot[1] = ang[1];
         c.rot[2] = ang[2];
@@ -221,7 +226,7 @@ void World::Impl::TaskCar(Task& t) {
         const float t2 = (tick < 0 || tick > 0x31) ? 150.0f : static_cast<float>(tick) + F32(exe, 0x004C43B0);
         float p2[3];
         int a2[3] = {};
-        EvalPath(cameraBank, 0xFF, t2, p2, a2);
+        EvalPath(cameraBank, pathId(0xFF), t2, p2, a2);
         c.doorYaw = a2[1] - 0x4000;
         if (players == 2) c.twoPlayers = 1;
     }
@@ -230,7 +235,7 @@ void World::Impl::TaskCar(Task& t) {
         int lim = static_cast<int>(exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4));
         if (tick <= lim) lim = tick;
         int ang[3] = { c.rot[0], c.rot[1], c.rot[2] };
-        EvalPath(cameraBank, path, static_cast<float>(lim), c.pos, ang);
+        EvalPath(cameraBank, pathId(path), static_cast<float>(lim), c.pos, ang);
         c.rot[0] = ang[0];
         c.rot[1] = ang[1];
         c.rot[2] = ang[2];
@@ -320,7 +325,7 @@ void World::Impl::TaskCarLight(Task& t) {
         return;
     }
     if (runner->flags[0xE0] == 1) ts.KillCurrent();
-    if (runner->camera.camId == 0x21 && skip2230 != 0) ts.KillCurrent();
+    if (runner->camera.camId == (typingReferenceActive ? 0x4031 : 0x21) && skip2230 != 0) ts.KillCurrent();
 }
 
 // Actor 0x22 (0x0049B0D0 -> 0x0049B260 = behaviour table 0x00598000[+0x1310]): the intro characters (skeleton 0x45,
@@ -345,10 +350,11 @@ void World::Impl::TaskActor22(Task& t) {
         return;
     }
     const CameraDirector& c = runner->camera;
+    const int introCamera = c.camId - (typingReferenceActive ? 0x4010 : 0);
     const float tick = static_cast<float>(c.tick);
     auto place = [&](int path) {  // 0x0049DB40
         int ang[3] = { a.rot[0], a.rot[1], a.rot[2] };
-        EvalPath(cameraBank, path, tick, a.pos, ang);
+        EvalPath(cameraBank, path + (typingReferenceActive ? 0x4022 : 0), tick, a.pos, ang);
         memcpy(a.rot, ang, 12);
     };
     auto draw = [&] {
@@ -409,14 +415,14 @@ void World::Impl::TaskActor22(Task& t) {
             if (a.actorSlot >= 0 && a.actorSlot < 14) actorSlots[a.actorSlot] = nullptr;
             ts.KillCurrent();
         }
-        if (c.camId == 0x22) {
+        if (introCamera == 0x22) {
             place(0x102);
             if (tick == F32(exe, 0x00570A5C)) {
                 a.mouthMode = 0;
                 Sound(0x004317A9);
             }
             if (tick == F32(exe, 0x004C49C8)) AnimBlendTo(a, 0x412, 0, 3);
-        } else if (c.camId == 0x21) {
+        } else if (introCamera == 0x21) {
             place(0x101);
             if (tick == F32(exe, 0x00570F20)) AnimBlendTo(a, exe.S16(0x00570BE2), 0, 8);
             if (tick == F32(exe, 0x005691CC)) {
@@ -875,6 +881,7 @@ struct BloodPoolTask : WTask {  // 0x00407E30 / 0x00408100 / 0x00408220 (block 0
 // 0x00407DA0 (game mode 6): blood pool under a corpse: grows 120 frames (0x00407E30), stays 30 (0x00408100), fades 40
 // (0x00408220)
 void World::Impl::SpawnBloodPool(EnemyTask& e) {
+    if (cfg.portTyping && !cfg.typingOptions.bloodEffects) return;
     if (gameMode != 6) return;
     BloodPoolTask* b = NewTask<BloodPoolTask>(WorldTramp<&Impl::TaskBloodPool>, 0x00407E30);
     float y = e.pos[1];
@@ -892,6 +899,7 @@ void World::Impl::SpawnBloodPool(EnemyTask& e) {
 
 // 0x00408370(block {x, y, z, -, yaw}, scale) (game mode 6): blood pool at y + 0.05
 void World::Impl::SpawnBloodPoolAt(const float pos[3], int yaw, float scale) {
+    if (cfg.portTyping && !cfg.typingOptions.bloodEffects) return;
     if (gameMode != 6) return;
     BloodPoolTask* b = NewTask<BloodPoolTask>(WorldTramp<&Impl::TaskBloodPool>, 0x00407E30);
     b->pos[0] = pos[0];

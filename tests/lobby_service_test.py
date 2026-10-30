@@ -108,6 +108,25 @@ class LobbyServiceTest(unittest.TestCase):
                     self.assertEqual(listed, expected)
                     self.assertIsNone(room.joiner_public, 'reading metadata must not join a room')
 
+    def test_optional_typing_metadata_preserves_legacy_list_bytes(self):
+        gun=self.create(flags=lobby.F_UNLIMITED|(2<<5))
+        typing_host=("127.0.0.2",30003)
+        flags=lobby.F_RELAY|lobby.F_REJOIN|(3<<5)
+        body=struct.pack("<IB",gun.build,flags)+lobby.pack_endpoint(typing_host)+b"\1"
+        self.request(1,body,typing_host)
+        typing=next(room for room in self.server.rooms.values() if room.host_public==typing_host)
+        self.assertFalse(gun.typing);self.assertTrue(typing.typing)
+        old_code=typing.code
+        self.request(1,body,typing_host)
+        self.assertEqual(len(self.server.rooms),2);self.assertEqual(typing.code,old_code)
+        self.assertTrue(typing.typing,"CREATE retry lost Typing mode metadata")
+        base=self.server.header(102)+b"\2"+struct.pack("<IBI",gun.id,gun.flags,gun.build)+struct.pack("<IBI",typing.id,flags,typing.build)
+        self.request(3,struct.pack("<I",gun.build),self.guest)
+        self.assertEqual(self.sent[-1][0],base,"legacy LIST record layout changed")
+        self.request(3,struct.pack("<I",gun.build)+b"\1",self.guest)
+        self.assertEqual(self.sent[-1][0],base+b"\0\1","extended LIST did not append one mode byte per room")
+        self.assertIsNone(gun.joiner_public);self.assertIsNone(typing.joiner_public)
+
     def test_difficulty_metadata_does_not_change_private_join_or_relay_rules(self):
         for difficulty_code in range(6):
             with self.subTest(difficulty_code=difficulty_code):

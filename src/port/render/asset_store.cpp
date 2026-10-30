@@ -16,6 +16,43 @@
 namespace port {
 
 namespace {
+void RecolorBlood(RgbaImage& image, BloodColor color) {
+    // Rotate the red artwork's hue, preserving each texel's value, saturation and
+    // alpha. Neutral highlights and other non-red details keep their original RGB.
+    // Recolor transparent RGB too so filtered edges cannot pick up a red fringe.
+    for (size_t p = 0; p < image.pixels.size(); p += 4) {
+        const int r = image.pixels[p], g = image.pixels[p + 1], b = image.pixels[p + 2];
+        if (r <= g || r <= b) continue;
+        if (color == BloodColor::Blue) {
+            // Exact 240-degree hue rotation without rounding.
+            image.pixels[p] = static_cast<uint8_t>(g);
+            image.pixels[p + 1] = static_cast<uint8_t>(b);
+            image.pixels[p + 2] = static_cast<uint8_t>(r);
+        } else {
+            const int low = std::min(g, b), chroma = r - low;
+            // A 280-degree rotation maps red to purple. Since red is dominant,
+            // the rotated hue lies in sectors 3..5 (cyan/blue through magenta/red).
+            const float hue = (g - b) / static_cast<float>(chroma) + 14.0f / 3.0f;
+            auto channel = [&](float factor) {
+                return static_cast<uint8_t>(std::clamp(low + static_cast<int>(chroma * factor + .5f), low, r));
+            };
+            if (hue < 4.0f) {
+                image.pixels[p] = static_cast<uint8_t>(low);
+                image.pixels[p + 1] = channel(4.0f - hue);
+                image.pixels[p + 2] = static_cast<uint8_t>(r);
+            } else if (hue < 5.0f) {
+                image.pixels[p] = channel(hue - 4.0f);
+                image.pixels[p + 1] = static_cast<uint8_t>(low);
+                image.pixels[p + 2] = static_cast<uint8_t>(r);
+            } else {
+                image.pixels[p] = static_cast<uint8_t>(r);
+                image.pixels[p + 1] = static_cast<uint8_t>(low);
+                image.pixels[p + 2] = channel(6.0f - hue);
+            }
+        }
+    }
+}
+
 std::string TrimPackValue(std::string value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return {};
@@ -243,8 +280,17 @@ TexturePackInfo AssetStore::ActivePackInfo() const {
 const std::vector<uint8_t>& AssetStore::File(const std::string& relPath) {
     auto it = files_.find(relPath);
     if (it != files_.end()) return it->second;
-    std::ifstream f(dir_ / relPath, std::ios::binary);
-    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)), {});
+    std::vector<uint8_t> raw;
+    if (typing_) for (const auto& resource : typing_->Resources()) {
+        if ((resource.kind == 0 ? "pol/" : "tex/") + resource.name == relPath) {
+            raw = resource.bytes;
+            break;
+        }
+    }
+    if (raw.empty()) {
+        std::ifstream f(dir_ / relPath, std::ios::binary);
+        raw.assign(std::istreambuf_iterator<char>(f), {});
+    }
     std::vector<uint8_t> out = raw;
     if (raw.size() >= 8) {
         uint32_t want;
@@ -272,6 +318,19 @@ std::vector<game::Model> AssetStore::LoadPolFile(const std::string& name, int* f
 }
 
 bool AssetStore::ModelById(uint32_t id, game::Model& out, std::string* polName) {
+    if (typing_) {
+        const int file = typing_->ModelFile(int(id));
+        const auto* resource = file < 0 ? nullptr : typing_->Resource(uint32_t(file), 0);
+        if (resource) {
+            const auto entry = std::find(resource->models.begin(), resource->models.end(), int(id));
+            const auto& data = File("pol/" + resource->name);
+            const auto headers = game::ReadPolHeader(data.data(), data.size());
+            const size_t index = size_t(entry-resource->models.begin());
+            if (index >= headers.size()) return false;
+            if (polName) *polName = resource->name;
+            return game::ParseModel(data.data(), data.size(), headers[index], out);
+        }
+    }
     uint16_t file = 0;
     if (!exe_.Read(0x004E83B4 + id * 2, &file, 2)) return false;
     const std::string name = exe_.CStr(exe_.U32(0x004D0EF4 + file * 4));
@@ -349,7 +408,7 @@ const RgbaImage* AssetStore::NormalRoughness(const std::string& polName, uint32_
     const auto file = byFile_.find(texName);
     if (file == byFile_.end() || ref >= file->second.size()) return nullptr;
     const TexRef* r = &file->second[ref];
-    if (redBlood_) {
+    if (bloodColor_ != BloodColor::Green) {
         const auto blood = redBloodTextures_.find(r->desc.id);
         if (blood != redBloodTextures_.end()) r = &blood->second;
     }
@@ -396,18 +455,25 @@ const RgbaImage* AssetStore::TextureById(int fileIndex, uint32_t id) {
 
 const RgbaImage* AssetStore::ResolvedTexture(const TexRef& original) {
     const TexRef* r = &original;
-    if (redBlood_) {
+    const auto blood = redBloodTextures_.find(original.desc.id);
+    if (bloodColor_ != BloodColor::Green) {
         // 0x0041CD70 loads the selected blood file before models: its shared global
         // texture IDs replace sprays, pools and wounds from every model file.
-        auto blood = redBloodTextures_.find(original.desc.id);
         if (blood != redBloodTextures_.end()) r = &blood->second;
     }
     const TexKey key(r->fileName, static_cast<uint32_t>(r->texIndex));
-    auto it = textures_.find(key);
-    if (it != textures_.end()) return it->second.get();
-    auto& slot = textures_[key];
-    slot = Decode(*r); // uses the selected color's optional PNG override too
-    return slot.get();
+    auto [it, inserted] = textures_.try_emplace(key);
+    if (inserted) it->second = Decode(*r); // uses the selected color's optional PNG override too
+    const auto* source = it->second.get();
+    if (!source || blood == redBloodTextures_.end() ||
+        (bloodColor_ != BloodColor::Blue && bloodColor_ != BloodColor::Purple)) return source;
+
+    auto& variant = recoloredBloodTextures_[{bloodColor_, original.desc.id}];
+    if (!variant) {
+        variant = std::make_unique<RgbaImage>(*source);
+        RecolorBlood(*variant, bloodColor_);
+    }
+    return variant.get();
 }
 
 std::unique_ptr<RgbaImage> AssetStore::LoadOverride(const TexRef& r) {
@@ -464,6 +530,7 @@ void AssetStore::ClearCache() {
     for (auto& worker : workers_) worker.join();
     workers_.clear();
     queued_.clear(); inFlight_.clear(); ready_.clear();
+    recoloredBloodTextures_.clear();
     textures_.clear(); normalRoughness_.clear(); normalRoughnessMode_=-1; files_.clear();
     refinementSelectionRead_=false;refinementModels_.clear();
     stop_ = false;
@@ -579,16 +646,19 @@ std::unique_ptr<RgbaImage> AssetStore::Decode(const TexRef& r) {
             return o;
         }
     }
-    if (!std::filesystem::exists(dir_ / "tex" / r.fileName)) return nullptr;
+    const auto* typingResource = typing_ ? typing_->Resource(uint32_t(r.fileIndex), 1) : nullptr;
+    if (!typingResource && !std::filesystem::exists(dir_ / "tex" / r.fileName)) return nullptr;
     const std::vector<uint8_t>& data = File("tex/" + r.fileName);
     uint16_t palette[16] = {};
     const uint16_t* pal = nullptr;
     if (game::LayoutOf(r.desc) == game::TexLayout::Pal4Twiddled) {
         // common.bin is loaded by Res_LoadCommon without a bank (-> bank 0).
-        int bank = r.fileIndex == 1 ? -1 : game::GetPaletteBank(exe_, r.fileIndex, r.texIndex);
+        int bank = typingResource ? typingResource->texturePalettes.at(size_t(r.texIndex)) :
+                   r.fileIndex == 1 ? -1 : game::GetPaletteBank(exe_, r.fileIndex, r.texIndex);
         if (bank < 0 || bank > 0x3F) bank = 0;
+        const auto& palettes = typingResource ? typing_->Palettes() : banks_;
         for (int k = 0; k < 16; ++k)
-            palette[k] = game::ConvertPaletteEntry(bank < static_cast<int>(banks_.size()) ? banks_[bank][k] : 0,
+            palette[k] = game::ConvertPaletteEntry(bank < static_cast<int>(palettes.size()) ? palettes[bank][k] : 0,
                                                    game::PixelFormatOf(r.desc));
         pal = palette;
     }
@@ -600,6 +670,33 @@ std::unique_ptr<RgbaImage> AssetStore::Decode(const TexRef& r) {
     img->pixels.resize(texels.size() * 4);
     if (!game::TexelsToRgba(texels.data(), texels.size(), game::PixelFormatOf(r.desc), img->pixels.data())) return nullptr;
     return img;
+}
+
+bool AssetStore::LoadTypingReference(const std::string& path, std::string* error) {
+    auto reference = std::make_unique<game::TypingReference>();
+    if (!reference->Load(path, error)) return false;
+    for (const auto& resource : reference->Resources()) {
+        if (resource.kind != 1) continue;
+        auto& descriptors = byFile_[resource.name];
+        descriptors.clear();
+        for (size_t i = 0; i < resource.textures.size(); ++i)
+            descriptors.push_back({int(resource.file), resource.name, resource.textures[i], int(i)});
+    }
+    typing_ = std::move(reference);
+    return true;
+}
+
+bool AssetStore::SourceSprite(int id, int* file, uint32_t* texture) const {
+    const auto* sprite = typing_ ? typing_->SourceSprite(id) : nullptr;
+    if (!sprite || !file || !texture) return false;
+    *file = static_cast<int>(sprite->file);
+    *texture = sprite->texture;
+    return true;
+}
+
+std::string AssetStore::PolFileName(uint32_t file) const {
+    if (typing_) if (const auto* resource = typing_->Resource(file, 0)) return resource->name;
+    return exe_.CStr(exe_.U32(0x004D0EF4 + file*4));
 }
 
 }  // namespace port

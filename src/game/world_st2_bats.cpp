@@ -83,6 +83,7 @@ struct BatTask : EnemyTask {
     int duration = 0;          // +0x248
     int counter = 0;           // +0x24C
     int f250 = 0, f254 = 0;    // +0x250 / +0x254
+    int typingAge = 0;        // TOTD +0x268: the first 30 ticks hide the word
     int landed = 0;            // +0x26C
     float t = 0, dt = 0;       // +0x270 / +0x274
     float radius290 = 0;       // +0x290
@@ -896,6 +897,8 @@ void TaskBat(Task& t) {
         BatDeath(w, a);
         return;
     }
+    // TOTD 0x00433390: the bat becomes a word target on its 30th task tick.
+    if (w.cfg.portTyping && ++a.typingAge == 30) a.typingFlags &= ~0x400u;
     if (a.state != 6 && (a.flags34 & 8) &&
         (a.kind != 0 || F32(w.exe, 0x005646D8) <= static_cast<float>(CtxTick(w)))) {
         HitFlashTask* h = w.NewTask<HitFlashTask>(TaskHitFlash, 0x00430BD0);  // 0x00430C50(+0x40): view position
@@ -1002,6 +1005,11 @@ void SpawnBat(World::Impl& w, const SpawnRecord& r) {
     BatTask* a = w.NewTask<BatTask>(TaskBat, 0x004460C0);
     a->flags34 = 1;
     a->hp = 1;
+    if (w.cfg.portTyping) {
+        // TOTD 0x00433030 posts its own flags; event type 0x43 has no default.
+        a->typingFlags = 0x414u;
+        a->typingWordStyle = 1;
+    }
     a->idx = state - 1;
     a->kind = variant;
     memcpy(a->pos, r.pos, 12);

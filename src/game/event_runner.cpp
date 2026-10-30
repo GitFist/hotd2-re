@@ -707,14 +707,24 @@ void EventRunner::PerPlayer(uint32_t op) {
 
 // 0x0045F000
 void EventRunner::NextVariant() {
+    auto routeWord = [&](int word, int16_t& value) {
+        if (mem_.TypingDialect()) return mem_.SceneRoute(mode, word, &value);
+        if (!exe_) return false;
+        value = exe_->S16(exe_->U32(0x00597890 + 4 * mode) + word * 2);
+        return true;
+    };
     ++variant;
     uint32_t s = mem_.Script(mode, scene, variant);
     if (s == 0xFFFFFFFFu) {
-        if (!exe_) { Fail("op 0x4F needs the exe scene table 0x00597890"); halted = true; return; }
-        const uint32_t table = exe_->U32(0x00597890 + 4 * mode);
-        const int kind = exe_->S16(table + scene * 8);
-        if (kind == 0) scene = exe_->S16(table + scene * 8 + 2);
-        else if (kind == 1) scene = exe_->S16(table + (camera.routeBranch + scene * 4) * 2 + 2);
+        int16_t kind = 0, next = 0;
+        if (!routeWord(scene * 4, kind)) { Fail("op 0x4F has no scene routing table"); halted = true; return; }
+        if (kind == 0) {
+            if (!routeWord(scene * 4 + 1, next)) { Fail("scene destination outside routing table"); return; }
+            scene = next;
+        } else if (kind == 1) {
+            if (!routeWord(camera.routeBranch + scene * 4 + 1, next)) { Fail("route branch outside routing table"); return; }
+            scene = next;
+        }
         else if (kind == 2) scene = scene + 1;
         variant = 1;
     }
@@ -724,9 +734,14 @@ void EventRunner::NextVariant() {
     if (sceneList == 0xFFFFFFFFu) {  // end of the mode's scenes: 0x0045ED90, then comevtbl[7][0][0]
         host_.StageEnd();
         if (cfg.gameType == 2) scene = static_cast<int>(globals[0x009A2BBC]);
-        else if (exe_) scene = exe_->S16(exe_->U32(0x00597890 + 4 * mode) + scene * 8 - 6);
-        script = mem_.Script(7, 0, 0);
-        if (!script) { halted = true; Fail("comevtbl[7][0][0] is not loaded"); }
+        else {
+            int16_t next = 0;
+            if (routeWord(scene * 4 - 3, next)) scene = next;
+        }
+        // The English PC typing reference uses common mode 9 for this halt;
+        // the gun game uses mode 7. Both are data, not executable callbacks.
+        script = mem_.Script(mem_.TypingDialect() ? 9 : 7, 0, 0);
+        if (!script) { halted = true; Fail("common stage-end script is not loaded"); }
         return;
     }
     script = mem_.Script(mode, scene, variant);
@@ -735,6 +750,7 @@ void EventRunner::NextVariant() {
 
 // Evt_Init 0x0045EBC0 + camera task init 0x00402260 (created in this order by the stage task 0x00460710).
 void EventRunner::Start(int mode_, int scene_, const Config& c) {
+    typingCheckpoint={};
     cfg = c;
     mode = mode_;
     scene = scene_;
@@ -890,7 +906,9 @@ void EventRunner::Exec(uint32_t op) {
         else { skippable = false; skipping = false; }
         script += 8;
         return;
-    case 0x2D: host_.Voice(static_cast<int16_t>(a1)); script += 8; return;
+    case 0x2D:
+        if (mem_.TypingDialect()) host_.TypingVoice(static_cast<int16_t>(a1)); else host_.Voice(static_cast<int16_t>(a1));
+        script += 8; return;
     case 0x2E: if (skipping) host_.Sound(0x80000002u); script += 4; return;
     case 0x2F: globals[0x009A5C48] = static_cast<uint32_t>(static_cast<int16_t>(a1)); script += 8; return;
     case 0x30: {  // 0x0045F7F0
@@ -922,11 +940,21 @@ void EventRunner::Exec(uint32_t op) {
     case 0x35: camera.rollEnable = s1; script += 8; return;
     case 0x36: globals[0x009C70F4] = a1; camera.eyeMode = s1; script += 8; return;
     case 0x37: camera.railForce = s1; script += 8; return;
-    case 0x38: host_.Sound(a1); script += 8; return;
-    case 0x39: host_.SoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3))); script += 16; return;
-    case 0x3A: if (!skipping) host_.Sound(a1); script += 8; return;
+    case 0x38:
+        if (mem_.TypingDialect()) host_.TypingSound(a1); else host_.Sound(a1);
+        script += 8; return;
+    case 0x39:
+        if (mem_.TypingDialect()) host_.TypingSoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3)));
+        else host_.SoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3)));
+        script += 16; return;
+    case 0x3A:
+        if (!skipping) { if (mem_.TypingDialect()) host_.TypingSound(a1); else host_.Sound(a1); }
+        script += 8; return;
     case 0x3B:
-        if (!skipping) host_.SoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3)));
+        if (!skipping) {
+            if (mem_.TypingDialect()) host_.TypingSoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3)));
+            else host_.SoundRepeat(a1, static_cast<int16_t>(W(2)), static_cast<int16_t>(W(3)));
+        }
         script += 16;
         return;
     case 0x3D: script += 16; return;
@@ -966,10 +994,23 @@ void EventRunner::Exec(uint32_t op) {
         return;
     case 0x43:  // 0x0045FBC0
         if (!yield) { yield = true; return; }
-        if (host_.Count7006() <= s1 && running && camera.settled) { yield = false; script += 8; }
+        if (host_.Count7006() <= s1 && running && camera.settled) {
+            if (mem_.TypingDialect() && host_.Count7006() == 0) host_.TypingSceneClear();
+            yield = false; script += 8;
+        }
         return;
     case 0x44:  // 0x0045FC10
         if (!yield) { yield = true; return; }
+        if (mem_.TypingDialect()) {
+            // English PC reference 0x0044EE70 has no extra gun-engine wait
+            // counter. 0x00811D9C is its explicit one-shot override flag.
+            if ((host_.LiveEnemies() <= s1 && running && camera.settled) || globals[0x00811D9C] == 1) {
+                if (host_.LiveEnemies() == 0) host_.TypingSceneClear();
+                globals[0x00811D9C] = 0;
+                yield = false; script += 8;
+            }
+            return;
+        }
         if (host_.LiveEnemies() <= s1 && running && camera.settled && enemyWaitFrames > 0) {
             enemyWaitFrames = 0;
             yield = false;
@@ -1019,8 +1060,76 @@ void EventRunner::Exec(uint32_t op) {
     case 0x5D: script += 12; return;  // SS_SndLoadPack (debug stub on PC)
     case 0x5E: script += 8; return;   // SS_SndFreePack (debug stub on PC)
     case 0x5F: host_.Bgm(a1, W(2), W(3), W(4)); script += 20; return;
+    case 0x60: {
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        EventOp challenge;
+        if (!DecodeEvent(mem_, script, challenge) || !host_.TypingChallenge(challenge)) {
+            Fail("unsupported prepared typing challenge configuration"); return;
+        }
+        script += challenge.length;
+        return;
+    }
+    case 0x62:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        host_.TypingCountdown(s1, static_cast<int32_t>(W(2)));
+        script += 12;
+        return;
+    case 0x63:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        if (!yield) { yield = true; return; }
+        if (host_.TypingChallengeStatus() == s1) { yield = false; script += 8; }
+        return;
+    case 0x61: case 0x64: case 0x65:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        if (op == 0x61 || host_.TypingPlayers() == (op == 0x64 ? 1 : 2))
+            host_.TypingWords(s1, static_cast<int32_t>(W(2)));
+        script += 12;
+        return;
+    case 0x66:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        host_.TypingProps(s1 == 1);
+        script += 8;
+        return;
+    case 0x67:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        host_.TypingClearActorSlots();
+        script += 4;
+        return;
+    case 0x68:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        host_.TypingWordLimits(s1, static_cast<int32_t>(W(2)));
+        script += 12;
+        return;
+    case 0x6B:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        if (!yield) { yield = true; return; }
+        // Original handler 0x0044F2D0 waits on the live-enemy count and the
+        // frame's GameRunning value; it intentionally does not wait for camera
+        // settling (unlike the ordinary enemy-clear command above).
+        if (host_.LiveEnemies() <= s1 && running) { yield = false; script += 8; }
+        return;
+    case 0x70:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        script+=4;
+        typingCheckpoint={script,mode,scene,variant,camera.routeBranch};
+        return;
+    case 0x71:
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        if(typingCheckpoint.script) {
+            script=typingCheckpoint.script;
+            mode=typingCheckpoint.mode;scene=typingCheckpoint.scene;variant=typingCheckpoint.variant;
+            camera.routeBranch=typingCheckpoint.routeBranch;
+        } else script+=4;
+        return;
+    case 0x73: {
+        if (!mem_.TypingDialect()) { Fail("typing opcode in a native gun script"); return; }
+        const int modeId = host_.TypingModeId();
+        const bool jump = s1 < 100 ? s1 != modeId : s1 - 100 == modeId;
+        script = jump ? W(2) : script + 12;
+        return;
+    }
     default:
-        Fail("opcode out of range");
+        Fail(op >= 0x60 && op < 117 ? std::string("unsupported prepared typing opcode ") + EventOpName(op) : "opcode out of range");
         return;
     }
 }

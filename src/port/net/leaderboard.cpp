@@ -55,9 +55,9 @@ std::vector<uint8_t> Header(uint8_t kind,uint32_t request) {
     std::vector<uint8_t> p{'H','2','R','K',2,kind}; Put32(p,request); return p;
 }
 bool Valid(const LeaderboardSubmission& e) {
-    if (e.table<0 || e.table>12 || e.name.empty() || e.name.size()>kLeaderboardMaxNameLength || !e.score || e.score>2000000000 ||
-        e.players<1 || e.players>2 || e.difficulty>(e.table<2?6:4) ||
-        (e.table!=2 && e.rounds) || (e.table==2 && !e.rounds) || (e.table>=3 && (e.players!=1 || e.score>1296000))) return false;
+    if (e.table<0 || e.table>kTypingLeaderboardTable || e.name.empty() || e.name.size()>kLeaderboardMaxNameLength || !e.score || e.score>2000000000 ||
+        e.players<1 || e.players>2 || e.difficulty>(IsCampaignLeaderboard(e.table)?6:4) ||
+        (e.table!=2 && e.rounds) || (e.table==2 && !e.rounds) || (IsTimeLeaderboard(e.table) && (e.players!=1 || e.score>1296000))) return false;
     bool nonblank=false;
     for (char c:e.name) { if (!std::strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-",c) || !c) return false; nonblank|=c!=' '; }
     return nonblank;
@@ -183,7 +183,7 @@ void LeaderboardClient::Query(int table) {
     auto& i=*impl_;
     if (i.operation==2) return; // keep the in-flight result's acknowledgement
     i.table=table;i.entries.clear();i.Start(1);
-    if (table<0 || table>12 || !i.resolution) i.Finish("RANKING SERVICE NOT CONFIGURED");
+    if (table<0 || table>kTypingLeaderboardTable || !i.resolution) i.Finish("RANKING SERVICE NOT CONFIGURED");
 }
 bool LeaderboardClient::Submit(const LeaderboardSubmission& entry,std::string* error) {
     auto& i=*impl_;

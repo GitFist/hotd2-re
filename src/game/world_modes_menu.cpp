@@ -38,7 +38,7 @@ void ModesState::Load(World::Impl& w) {
 // Game_Save 0x004011F0: the callers copy their runtime values into the block first (0x00425F40 grades / items, the
 // options screen its settings, the name entry its table): here every runtime copy is written back, then the port's file
 void ModesState::Store(World::Impl& w) {
-    if (RandomizerActive(w)) return;  // randomized rewards/records never replace Original-mode progress
+    if (w.cfg.portTyping || RandomizerActive(w)) return;  // Alternate campaigns never replace shooting records or unlocks.
     for (int t = 0; t < SaveData::kTables; ++t)  // 0x0041C5C0
         for (int i = 0; i < 10; ++i) save.SetEntry(t, i, tables[t][i]);
     for (int i = 0; i < 10; ++i) {
@@ -79,6 +79,10 @@ int ModesCredits(World::Impl& w, int entry) {
 // 0x00496960, a confirmed entry other than arcade / exit (the caller freed the screens: 0x0049ED70, 0x0049DFD0)
 bool ModesMenuConfirm(World::Impl& w, int e) {
     if (e < 1 || e > 6) return false;
+    if (e <= 3 || e == 6) {
+        w.cfg.portTyping = false;
+        w.ResetTyping();
+    }
     if (e == 5 && w.cfg.portFeatures) {
         // Both menu themes open the port's complete tabbed settings directly.
         // Keep the original mode-12 handlers for exactness, without exposing a second options screen in the port.

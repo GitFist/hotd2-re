@@ -20,6 +20,9 @@
 namespace game {
 
 class ExeImage;
+class TypingReference;
+struct TypingReferenceSound;
+constexpr uint32_t kTypingSoundFlag = 0x40000000u;
 
 struct SeEntry {
     uint32_t id = 0;
@@ -45,6 +48,8 @@ public:
     static constexpr int kBgmCountB = 20;                // table B runs into the voice table
 
     bool Load(const ExeImage& exe);
+    void SetTypingReference(const TypingReference* reference) { typing_ = reference; }
+    const TypingReferenceSound* TypingSound(uint32_t id) const;
 
     const std::vector<SeEntry>& Se() const { return se_; }
     const std::vector<VoiceEntry>& Voices() const { return voices_; }
@@ -60,6 +65,7 @@ private:
     std::vector<VoiceEntry> voices_;
     std::vector<std::string> bgmA_, bgmB_;
     std::vector<uint32_t> loopIds_, loopOffIds_;
+    const TypingReference* typing_ = nullptr;
 };
 
 // Game state that Snd_PlayGameSound reads.

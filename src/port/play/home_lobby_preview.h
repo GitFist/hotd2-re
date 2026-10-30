@@ -17,7 +17,7 @@ inline std::vector<game::PortHomeRoom> HomeLobbyRooms(const std::vector<port::ne
         if(!room.id || room.build!=build || (room.flags&port::net::kRoomUnlisted))continue;
         if(std::any_of(out.begin(),out.end(),[&](const auto& r){return r.id==room.id;}))continue;
         out.push_back({room.id,(room.flags&port::net::kRoomPrivate)!=0,(room.flags&port::net::kRoomUnlimited)!=0,
-                       room.build,port::net::RoomDifficulty(room.flags)});
+                       room.build,port::net::RoomDifficulty(room.flags),room.typing});
         if(out.size()==2)break;
     }
     return out;

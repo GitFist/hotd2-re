@@ -5,6 +5,8 @@
 // objects (state 18: 0x00494F70 -> carried object type 2, world_st4_held.cpp).
 // Verification: notes/agents/stage4b.md (world_test --stage-start 44107 on build\scene_capture_auto_st4.txt).
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -12,10 +14,15 @@
 #include <memory>
 
 #include "game/mstack.h"
+#include "game/typing_boss_rules.h"
 #include "game/world_held.h"
 #include "game/world_internal.h"
 
 namespace game {
+
+void TypingStrengthPostersHud(World::Impl&, uint32_t owner, uint32_t generation,
+                             const std::array<TypingWordRecord, 4>& words, unsigned line,
+                             bool available, int deadline, int bossState);
 
 namespace {
 
@@ -85,6 +92,12 @@ struct Boss4Task : EnemyTask {
     int16_t endCam = 0, endTick = 0;   // params s16 0x40 / 0x42: removed at this camera tick
     bool lightNoted = false;
     int dbgState = -1, dbgPhase = -1;  // HOTD2_BOSS4_DEBUG
+    std::array<TypingWordRecord, 4> story{};
+    uint32_t storyToken = 0;
+    uint32_t storyPresentationGeneration = 0;
+    TypingStrengthReveal storyReveal;
+    int storyDeadline = -1;
+    bool storyStarted = false;
 };
 
 void NoPostRoot(World::Impl&, EnemyTask&) {}  // 0x00420810
@@ -356,7 +369,9 @@ void Shots(World::Impl& w, Boss4Task& b) {
         if (node <= 0) continue;
         const EnemyNode& n = b.anim.nodes[node & 31];
         float pt[3];
-        if (n.mesh == -1) {
+        if (b.typingStrike) {
+            mx::Transform(w.cam.inverse, n.hit, pt);
+        } else if (n.mesh == -1) {
             const float o[3] = { 0, 0, 0 };
             float A[3] = {}, B[3] = {};
             const int r = LineSphere(n.radius, n.hit, o, w.player[p].ray.dir, A, B);
@@ -397,9 +412,17 @@ void Shots(World::Impl& w, Boss4Task& b) {
                 float factor = 1.0f, boost = 0.0f;
                 if (ItemDamage(w, p, &factor, &boost)) d = factor == -1.0f ? d + d : d * static_cast<double>(factor);
                 if (!(d <= static_cast<double>(F32(w.exe, 0x0055E1B4)))) d = F32(w.exe, 0x0055E1B4);
+                if (b.typingStrike) {
+                    const float floor = std::max(0.0f, std::floor(c.thr));
+                    d = std::min(TypingDamage(b, static_cast<float>(d)), std::max(0.0f, static_cast<float>(b.hp) - floor));
+                }
                 b.hp = static_cast<int16_t>(static_cast<int>(static_cast<double>(b.hp) - d));
             } else {
                 if (!(dmg <= F32(w.exe, 0x0055E1B4))) dmg = F32(w.exe, 0x0055E1B4);
+                if (b.typingStrike) {
+                    const float floor = std::max(0.0f, std::floor(c.thr));
+                    dmg = std::min(TypingDamage(b, dmg), std::max(0.0f, static_cast<float>(b.hp) - floor));
+                }
                 b.hp = static_cast<int16_t>(static_cast<int>(static_cast<float>(b.hp) - dmg));
             }
             if (b.hp < 1) {
@@ -755,6 +778,59 @@ void ViewPos(World::Impl& w, EnemyTask& e, float dy) {
     w.lockOn.Register(e.lock, w.playerPos);  // 0x00408EC0
 }
 
+// The typing fight follows the source camera, moving the boss along a trailing
+// sample. Expiry narrows that gap; the swing waits for its facing and range.
+bool TypingStrengthCamera(World::Impl& w, Boss4Task& b) {
+    Boss4Ctl& c = b.c;
+    const bool first = c.camPath == 0x40DB || c.camPath == 0xB9;
+    const bool second = c.camPath == 0x40DC || c.camPath == 0xC1;
+    if (!w.cfg.portTyping || b.hp < 1 || (!first && !second)) return false;
+    CameraDirector& cd = w.runner->camera;
+    CameraContext& camera = cd.ctx[0];
+    if (c.state != 16 && !(b.flags34 & 0x10000000u) && b.storyDeadline == 0) {
+        b.flags34 |= 0x10000000u;
+        b.storyDeadline = -1;
+    }
+    const bool approaching = (b.flags34 & 0x10000000u) != 0;
+    if (approaching) {
+        if (b.storyDeadline != -1) b.flags34 &= ~0x10000000u;
+        c.c74 = 16;
+        c.f84 = 70.0f;
+        const auto relativeYaw = static_cast<uint16_t>(camera.yaw - b.rot[1]);
+        if (TypingStrengthSwingWindow(relativeYaw, PlayerDist(w, b))) {
+            b.flags34 &= ~0x10000000u;
+            c.state = 16;
+            c.sub = 0;
+            PickTarget(w, b.target);
+            b.storyDeadline = int(TypingStrengthTimeFrames(b.story[b.storyReveal.line()].measure, w.rank)) + 40;
+        }
+    }
+    if (c.state != 4) return true;
+    float trailing[3] = {}, target[3] = {};
+    int roll = 0;
+    const float sample = TypingStrengthTrailingCameraTick(c.camT, approaching);
+    if (!w.cameraBank.Evaluate(c.camPath, sample, trailing, target, &roll, false)) {
+        w.Note("typing Strength trailing camera path missing");
+        return true;
+    }
+    const float dx = b.pos[0] - trailing[0], dz = b.pos[2] - trailing[2];
+    if (std::sqrt(dx * dx + dz * dz) < 5.0f) {
+        TurnToPlayers(w, b, 0x300);
+        b.pos[0] = trailing[0];
+        b.pos[2] = trailing[2];
+    } else TurnTo(w, b, dx, dz, 0x800);
+    const bool flinchingWithoutTimer = (b.flags34 & 0x40000000u) && b.storyDeadline == -1;
+    c.camT = TypingStrengthNextCameraTick(c.camT, second, flinchingWithoutTimer);
+    if (!flinchingWithoutTimer) c.phase = second ? 17 : 8;
+    if (!w.cameraBank.Evaluate(c.camPath, c.camT, camera.pos, target, &roll, false)) return true;
+    w.playerPos[0] = cd.playerPos[0] = camera.pos[0];
+    w.playerPos[2] = cd.playerPos[2] = camera.pos[2];
+    target[1] = std::min(target[1], 59.0f);
+    ContextLookAngles(camera, target, 0);
+    cd.tick = static_cast<int>(c.camT);
+    return true;
+}
+
 // 0x00493090: a requested sweep starts (row 0x00570538: s16 start, s16 end, f32 step, s16 camera path) and holds the
 // gameplay camera (0x009CA094); each frame context 0 follows the path and turns towards the lock-on look-at
 void CameraSweep(World::Impl& w, Boss4Task& b) {
@@ -764,16 +840,35 @@ void CameraSweep(World::Impl& w, Boss4Task& b) {
         const int row = c.camNext;
         if (row != 5 && row != 7 && row != 0xB && row != 0x10) c.flags &= ~0x80u;
         c.camNext = -1;
-        const uint32_t r = 0x00570538 + static_cast<uint32_t>(row) * 0xC;
-        c.camT = static_cast<float>(w.exe.S16(r));
-        c.camEnd = static_cast<float>(w.exe.S16(r + 2));
-        c.camStep = F32(w.exe, r + 4);
-        c.camPath = w.exe.S16(r + 8);
-        cd.railTick = w.exe.S16(r);      // 0x009C70AC
-        cd.railEnd = w.exe.S16(r + 2);   // 0x009C70B0
+        if (w.cfg.portTyping && w.typingReferenceActive && row >= 0 && row < 22) {
+            struct Sweep { int from, to; float step; int path; };
+            static constexpr Sweep source[] = {
+                {0,220,.7f,0x40DB},{231,350,.55f,0x40DB},{361,560,.73f,0x40DB},
+                {571,680,.55f,0x40DB},{721,750,.4f,0x40DB},{751,860,.4f,0x40DB},
+                {881,1020,.5f,0x40DB},{1031,1175,.6f,0x40DB},{1211,1310,.6f,0x40DB},
+                {0,100,.5f,0x40DC},{111,200,.5f,0x40DC},{211,388,.6f,0x40DC},
+                {451,590,.5f,0x40DC},{601,670,.4f,0x40DC},{681,850,.75f,0x40DC},
+                {861,1030,.6f,0x40DC},{1041,1180,.6f,0x40DC},{1221,1310,.5f,0x40DC},
+                {861,880,.5f,0x40DB},{1176,1210,.6f,0x40DB},
+                {389,440,.45f,0x40DC},{1181,1220,.45f,0x40DC}};
+            const auto& sweep = source[row];
+            c.camT = float(sweep.from);
+            c.camEnd = float(sweep.to);
+            c.camStep = sweep.step;
+            c.camPath = static_cast<int16_t>(sweep.path);
+        } else {
+            const uint32_t r = 0x00570538 + static_cast<uint32_t>(row) * 0xC;
+            c.camT = static_cast<float>(w.exe.S16(r));
+            c.camEnd = static_cast<float>(w.exe.S16(r + 2));
+            c.camStep = F32(w.exe, r + 4);
+            c.camPath = w.exe.S16(r + 8);
+        }
+        cd.railTick = static_cast<int>(c.camT);      // 0x009C70AC
+        cd.railEnd = static_cast<int>(c.camEnd);   // 0x009C70B0
         cd.forceState6 = true;           // 0x009CA094
     }
     if (c.camStep == 0.0f) return;
+    if (TypingStrengthCamera(w, b)) return;
     CameraContext& c0 = cd.ctx[0];
     cd.railTickF = c.camT;  // 0x009C70BC
     float tg[3] = {};
@@ -866,6 +961,11 @@ void EngineSound(World::Impl& w, Boss4Task& b) {
 // distance at which it starts (+0x84); phases 3 / 13: state 0x12 (throw) at 180
 void PickAttack(World::Impl& w, Boss4Task& b) {
     Boss4Ctl& c = b.c;
+    if (w.cfg.portTyping) {
+        c.c74 = 0x10;
+        c.f84 = 70.0f;
+        return;
+    }
     if (c.phase == 3 || c.phase == 0xD) {
         c.c74 = 0x12;
         c.f84 = Bits(0x43340000);
@@ -978,6 +1078,14 @@ void StIntro(World::Impl& w, Boss4Task& b, bool second) {
 // 0x00493DC0 (state 4): pick the attack (0x00493F30), walk / stand by phase, turn to the players; within +0x84: state +0x74
 void St4(World::Impl& w, Boss4Task& b) {
     Boss4Ctl& c = b.c;
+    if (w.cfg.portTyping) {
+        if (c.sub == 0) {
+            PickAttack(w, b);
+            if (b.anim.motion[0] != 0x6D) w.AnimBlendTo(b, 0x6D, 0, 10);
+            ++c.sub;
+        }
+        return;
+    }
     if (c.sub == 0) {
         PickAttack(w, b);
         auto blend = [&](int m, int n) {
@@ -1281,7 +1389,9 @@ void StAttack(World::Impl& w, Boss4Task& b, int motion, int t0, int t1, int lock
     }
     const int tick = b.anim.tick[0];
     if (t0 < tick && tick < t1) {
-        if (w.route == 2) {
+        if (w.cfg.portTyping) {
+            if (w.players == 2) b.rot[1] += b.target == 0 ? -0x60 : 0x60;
+        } else if (w.route == 2) {
             if (route1) {
                 if (b.target == 1) b.rot[1] += 0xC0;
             } else {
@@ -1291,7 +1401,7 @@ void StAttack(World::Impl& w, Boss4Task& b, int motion, int t0, int t1, int lock
             b.rot[1] += 0x60;
         }
     }
-    if (tick == lock) {
+    if (tick == lock && !w.cfg.portTyping) {
         b.flags34 |= 0x2000;
     } else if (tick == hit) {
         if (!(c.flags & 8)) {
@@ -1299,7 +1409,7 @@ void StAttack(World::Impl& w, Boss4Task& b, int motion, int t0, int t1, int lock
             b.flags34 &= ~0x2000u;
         }
     } else if (tick == Ticks(w, b) - 1) {
-        c.state = 5;
+        c.state = w.cfg.portTyping ? 4 : 5;
         c.sub = 0;
         b.flags34 &= 0xEFFFDFFFu;
     }
@@ -1399,6 +1509,20 @@ void St19(World::Impl& w, Boss4Task& b) {
 // 0x00495340 (state 20): flinch (0x6F / 0x73 by the old state), then back to it (or by the old state to 4 / 5 / 7)
 void St20(World::Impl& w, Boss4Task& b) {
     Boss4Ctl& c = b.c;
+    if (w.cfg.portTyping) {
+        if (c.sub == 0) {
+            c.radius = 6.0f;
+            w.AnimBlendTo(b, 0x73, 0, 10);
+            w.Sound(0x281BA9);
+            ++c.sub;
+        }
+        if (b.anim.tick[0] == Ticks(w, b) - 1) {
+            c.state = 4;
+            c.sub = 0;
+            b.flags34 &= ~0x40000000u;
+        }
+        return;
+    }
     if (c.sub == 0) {
         int m;
         if (c.prevState == 7) {
@@ -1578,12 +1702,82 @@ void St22(World::Impl& w, Boss4Task& b) {
 }
 
 // 0x004919D0
+void StartTypingStory(World::Impl& w, Boss4Task& b) {
+    int bankCount = 0;
+    for (const auto& bank : TypingWordBanks()) if (bank.group == 6) ++bankCount;
+    if (!bankCount) return;
+    const auto* bank = FindTypingWordBank(6, 1 + w.Rand(0x0048B5BD) % bankCount);
+    if (!bank) return;
+    const auto records = TypingWords(*bank);
+    if (records.size() < b.story.size()) return;
+    std::copy_n(records.begin(), b.story.size(), b.story.begin());
+    b.storyStarted = true;
+    b.storyReveal.reset();
+    b.storyDeadline = -1;
+    ++b.storyToken;
+    ++b.storyPresentationGeneration;
+}
+
+void TickTypingStory(World::Impl& w, Boss4Task& b, uint32_t serial) {
+    if (b.hp < 1 || b.c.state >= 22) {
+        if (w.typingHud.story.owner == serial) w.typingHud.story.active = false;
+    }
+    if (b.hp < 1 || b.c.state >= 22 || b.c.phase == 0xFF || w.paused || w.runner->camera.modeCur != 2 ||
+        (w.player[0].state != 5 && w.player[1].state != 5)) return;
+    if (!b.storyStarted) StartTypingStory(w, b);
+    if (!b.storyStarted) return;
+    if (!b.storyReveal.available()) {
+        b.storyReveal.tick();
+        TypingStrengthPostersHud(w, serial, b.storyPresentationGeneration, b.story, b.storyReveal.line(),
+                                 b.storyReveal.available(), b.storyDeadline, b.c.state);
+        return;
+    }
+    b.storyReveal.tick();
+    if (b.storyDeadline < 0)
+        b.storyDeadline = int(TypingStrengthTimeFrames(b.story[b.storyReveal.line()].measure, w.rank));
+    if (b.storyDeadline > 0) --b.storyDeadline;
+    TypingStrengthPostersHud(w, serial, b.storyPresentationGeneration, b.story, b.storyReveal.line(),
+                             b.storyReveal.available(), b.storyDeadline, b.c.state);
+}
+
+void CompleteTypingStoryLine(World::Impl& w, Boss4Task& b) {
+    const bool lastLine = b.storyReveal.completeLine();
+    ++b.storyToken;
+    b.storyDeadline = -1;
+    b.flags34 &= ~0x10000000u;
+    ++b.c.hits;
+    if (lastLine) {
+        b.hp = static_cast<int16_t>(TypingStrengthLifeAfterStory(b.hp, b.hpMax));
+        w.bossBar = float(b.hp) / float(b.hpMax);
+    }
+    if (b.hp == 0) {
+        b.flags34 = (b.flags34 & ~0x2000u) | 0x4000100u;
+        --w.liveEnemies;
+        w.TypingController(b.typingPlayer).addBasePoints(900);
+        w.AddScore(b.typingPlayer, 900);
+        BossRecords(w);
+        b.c.state = 22;
+        b.c.sub = 0;
+        return;
+    }
+    w.SpawnHitBlood(b, 2, 2.0f);
+    w.Sound(0x316A9);
+    if (!(b.flags34 & 0x40002000u)) {
+        b.flags34 = (b.flags34 & 0xEFFFBFFFu) | 0x40000000u;
+        b.c.prevState = b.c.state;
+        b.c.prevSub = b.c.sub;
+        b.c.state = 20;
+        b.c.sub = 0;
+    }
+    if (lastLine) StartTypingStory(w, b);
+}
+
 void TaskBoss4(Task& t) {
     World::Impl& w = *CurrentWorld();
     Boss4Task& b = t.As<Boss4Task>();
     Boss4Ctl& c = b.c;
     if (b.lock) b.slot120 = static_cast<int8_t>(b.lock->slot);
-    Shots(w, b);          // 0x00491B40
+    if (!w.cfg.portTyping) Shots(w, b);          // 0x00491B40
     Relocate(w, b);       // 0x004928D0
     WallThreshold(w, b);  // 0x00492350
     WallClear(w, b);      // 0x004922C0
@@ -1630,6 +1824,7 @@ void TaskBoss4(Task& t) {
     }
     Aggression(w, b);   // 0x004934D0
     EngineSound(w, b);  // 0x004935E0
+    if (w.cfg.portTyping) TickTypingStory(w, b, t.serial);
     if (w.runner->camera.camId == b.endCam && w.runner->camera.tick == b.endTick) {
         if (b.actorSlot >= 0 && b.actorSlot < 14) w.actorSlots[b.actorSlot] = nullptr;
         w.EnemyDestroy(b);
@@ -1645,7 +1840,11 @@ void TaskBoss4(Task& t) {
 bool World::Impl::SpawnBoss4(Task& t, SpawnTask& s) {
     const SpawnRecord r = s.rec;
     auto d = std::make_unique<Boss4Task>();
+    SetTypingSpawnOrigin(*d, r);
     Boss4Task& b = *d;
+    // This adapter represents the four original poster actors, whose mask is
+    // different from the Strength body actor's generic one-key spawn mask.
+    if (cfg.portTyping) b.typingFlags = 0x34120008u;
     b.fn = 0x004919D0;
     b.record = r;
     b.flags34 = r.flags | 1;  // 0x00408A20
@@ -1705,6 +1904,32 @@ bool World::Impl::SpawnBoss4(Task& t, SpawnTask& s) {
     b.endTick = r.ParamS16(0x42);
     t.data = std::move(d);
     t.fn = TaskBoss4;
+    return true;
+}
+
+bool TypingBoss4(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool complete) {
+    auto* b = dynamic_cast<Boss4Task*>(&actor);
+    if (!b) return false;
+    out.boss = true;
+    if (b->hp < 1 || (b->flags34 & 0x4000000u) || b->c.phase == 0xFF || b->c.state >= 22) return true;
+    if (w.cfg.portTyping) {
+        if (!b->storyStarted || !b->storyReveal.available()) return true;
+        out.retain = true;
+        out.token = 0x400000u + b->storyToken * 4u + b->storyReveal.line();
+        out.word = &b->story[b->storyReveal.line()];
+        memcpy(out.view, b->anim.nodes[2].hit, 12);
+        if ((b->c.state == 4 || b->c.state == 20) && !(b->flags34 & 0x40008100u)) {
+            out.node = 2;
+            if (complete) CompleteTypingStoryLine(w, *b);
+        }
+        return true;
+    }
+    out.retain = true;
+    out.token = 0x400000u | (static_cast<uint32_t>(b->c.phase) << 12);
+    memcpy(out.view, b->anim.nodes[2].hit, 12);
+    if (b->flags34 & 0x40008100u) return true;
+    out.node = 2;
+    if (complete) TypingDeliver(*b, out.node);
     return true;
 }
 

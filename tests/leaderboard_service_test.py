@@ -165,6 +165,31 @@ class RankingServiceTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT name,players FROM rankings_v1").fetchall(),[(b"OLD",3)])
             self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='rankings_name3_legacy'").fetchone())
 
+    def test_migrate_thirteen_board_database_preserves_records(self):
+        self.service.close()
+        records=[(b"A"*16,self.build,0,b"OLD_NAME",900,0,2,1,12345),
+                 (b"B"*16,self.build,12,b"BOSS_RUN",500,0,4,1,12346)]
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DROP TABLE rankings_v1")
+            db.execute(rankings.SCHEMA.replace("board BETWEEN 0 AND 13","board BETWEEN 0 AND 12"))
+            db.execute("CREATE INDEX rankings_board ON rankings_v1(build,board)")
+            db.executemany("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",records)
+        self.service=rankings.Rankings(self.path)
+        self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),records)
+        self.assertEqual(self.submit(table=13,score=1400000,difficulty=5,players=2,name=b"TYPING",version=2),0)
+        self.assertEqual(self.query(table=13,version=2),[(b"TYPING",1400000,0,5,2)])
+        self.refill();self.assertEqual(self.submit(table=0,score=900,name=b"OLD_NAME",run=b"A"*16,version=2),1)
+
+    def test_typing_original_has_separate_score_board_and_two_player_records(self):
+        for board,score,players in ((13,1700000,2),(13,1900000,1),(0,2000000,1),(1,1800000,1)):
+            self.refill();self.assertEqual(self.submit(table=board,score=score,difficulty=5,players=players,name=b"TYPING",version=2),0)
+        self.refill();self.assertEqual([row[1] for row in self.query(table=13,version=2)],[1900000,1700000])
+        self.assertEqual([row[4] for row in self.query(table=13,version=2)],[1,2])
+        self.assertEqual([row[1] for row in self.query(table=0,version=2)],[2000000])
+        self.assertEqual([row[1] for row in self.query(table=1,version=2)],[1800000])
+        for case in (dict(table=14),dict(table=13,rounds=1),dict(table=13,difficulty=7)):
+            self.refill();self.assertEqual(self.submit(version=2,**case),2)
+
     def test_board_build_isolation_and_sort_direction(self):
         for table,score,rounds in ((0,100,0),(0,200,0),(3,800,0),(3,400,0),(2,1000,2),(2,10,3)):
             self.refill();self.assertEqual(self.submit(table=table,score=score,rounds=rounds),0)
@@ -225,7 +250,7 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.service.db.execute("SELECT COUNT(*) FROM rankings_v1 WHERE build=? AND board=0",(builds[0],)).fetchone()[0],4)
 
     def test_eligibility_and_fixed_bounds(self):
-        cases = [dict(score=0),dict(table=13),dict(name=b"a!?"),dict(name=b"   "),dict(table=2),
+        cases = [dict(score=0),dict(table=14),dict(name=b"a!?"),dict(name=b"   "),dict(table=2),
                  dict(table=0,rounds=1),dict(table=3,players=2),dict(table=3,score=1296001),dict(difficulty=7)]
         for case in cases:
             self.refill();self.assertEqual(self.submit(**case),2)

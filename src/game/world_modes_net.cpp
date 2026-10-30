@@ -40,8 +40,8 @@ constexpr uint32_t kUp = 0x10, kDown = 0x20, kOk = 0xC, kBack = 2;  // P1's bits
 void RoomFrame(World::Impl& w) {
     auto& m = *w.modes;
     m.netState = 1;
-    constexpr int difficultyRow = 6, rows = 8;  // Keep mode choices 0..5 stable; Difficulty, then Leave.
-    constexpr float rowStart = 5.0f, rowStep = 1.1f;
+    constexpr int difficultyRow = 7, rows = 9;
+    constexpr float rowStart = 5.0f, rowStep = 1.0f;
     uint32_t buttons = w.pressed & 0xFFFF;
     const auto& gun = w.input[0];
     if (gun.kind == 1 && gun.x < 640 && gun.y < 480) {
@@ -73,6 +73,9 @@ void RoomFrame(World::Impl& w) {
         w.Note("network room: host selected difficulty " + std::to_string(w.cfg.difficulty));
     } else if ((buttons & kOk) && w.front.menuCursor < difficultyRow) {
         const int choice = w.front.menuCursor;
+        w.cfg.portTyping = choice == 6;
+        w.cfg.typingOriginal = true;
+        w.cfg.typingOptions.difficulty = TypingDifficulty(std::clamp(w.cfg.difficulty,0,4));
         w.front.sceneSelect = choice == 2;
         w.front.sceneStart = -1;
         w.front.hordeStart = choice == 4;
@@ -88,7 +91,7 @@ void RoomFrame(World::Impl& w) {
         w.Note("network room: host selected " + std::to_string(choice));
         return;
     }
-    static const std::array<const char*, rows> labels = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "", "LEAVE ROOM" };
+    static const std::array<const char*, rows> labels = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "TYPING ORIGINAL", "", "LEAVE ROOM" };
     const std::string difficultyName = w.exe.CStr(0x00569758 + static_cast<uint32_t>(w.cfg.difficulty) * 10);
     if (w.cfg.portFeatures && w.cfg.portModernMenu) {
         NightShiftNetworkRoomFrame(w, labels, difficultyName);

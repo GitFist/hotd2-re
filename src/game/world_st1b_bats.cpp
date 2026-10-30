@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 #include "game/mstack.h"
 #include "game/world_internal.h"
@@ -135,6 +136,33 @@ struct BatSplashTask : WTask {
 };
 
 }  // namespace
+
+bool TypingDrillFinishBat(ActorTask& actor) {
+    const auto* world = CurrentWorld();
+    if (!world || !world->cfg.portTyping || world->cfg.eventMode != 7 || world->cfg.gameType != 2) return false;
+    auto* bat = dynamic_cast<BatTask*>(&actor);
+    if (!bat) return false;
+    // PC4A7478: kind1D's active task stops drawing at state6.
+    bat->state = 6;
+    return true;
+}
+
+bool TypingPrivateBat(World::Impl&, ActorTask& actor, TypingTargetSpec& target, bool complete) {
+    auto* bat = dynamic_cast<BatTask*>(&actor);
+    if (!bat || bat->fn != 0x0043C440 || bat->typingFlags == 0 || bat->typingRevision != 0 ||
+        bat->state == 0 || bat->state == 6 || (bat->flags34 & 0x04008100u)) return false;
+    target.node = 1;
+    target.token = 0x740000u;
+    target.danger = (bat->flags34 & 0x10000000u) != 0;
+    memcpy(target.view, bat->viewPos, sizeof(target.view));
+    if (complete) {
+        // The bat's native shot handler retains the hit until its emergence
+        // gate opens, then owns the enemy counters, death motion and effects.
+        TypingDeliver(actor, 1);
+        actor.typingStrike = false;
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Skeleton draw of the bats / leeches (skeleton 0x1D): the second animation system 0x0040EAE0 / 0x0040F4F0
@@ -428,10 +456,9 @@ static void BatSkelDraw(World::Impl& w, BatTask& b) {
             } else {
                 body = w.Draw(d.model, d.m, 8, -1.0f, false, i);
             }
-            // Deliberate correction of the PC's scaled-normal highlight plateau.
-            // This also covers the mirrored body; separate floor/water shadows
-            // and hit effects retain their existing lighting and material state.
-            if (body) body->unitSpecular = true;
+            // Keep the original scaled-normal highlight in the PC Drill;
+            // the other modes retain their existing unit-normal correction.
+            if (body) body->unitSpecular = !(w.cfg.portTyping && w.cfg.eventMode == 7 && w.cfg.gameType == 2);
         }
         if (i == 7) b.f1358 = 1;
     }
@@ -487,6 +514,7 @@ static void BatSyncLock(BatTask& b) {
 // 0x0043D4F0: start a dive at the players (shooting camera, players in game; state 5 only when on screen)
 static int BatStartDive(World::Impl& w, BatTask& b) {
     if (w.runner->camera.modeCur != 2 || w.players == 0) return 0;
+    if (!w.TypingAttackReady()) return 0;  // TOTD 0x0042AAFA
     if (b.state == 5) {
         const int sx = static_cast<int>(w.focal * b.viewPos[0] / b.viewPos[2]);  // 0x0043EF30
         const int sy = static_cast<int>(w.focal * b.viewPos[1] / b.viewPos[2]);  // 0x0043EF50
@@ -993,6 +1021,12 @@ static void TaskBatInit(Task& t) {
                 if (b.idx == 0) SpawnBatWater(w, b.pos);  // 0x0043EF70 (world_st2_bats.cpp)
             }
         }
+        if (w.cfg.portTyping && st == 7 && w.cfg.gameType == 2 && sc == 3) {
+            // PC4294A8/4294EE/42950C: Final Exam uses group3's
+            // emergence path, delays and target cells, with wing set0.
+            b.wing = 0;
+            c.group = 3;
+        }
         float wt[3], wt2[3];
         SplineWeights(exe, 0.0f, wt);
         const uint32_t pts = 0x0055E200 + static_cast<uint32_t>((b.idx + c.group * 10) * 16);
@@ -1071,11 +1105,31 @@ void World::Impl::SpawnBatGroup(const SpawnRecord& r, int variant, int count) {
         if (sc == 0xE || sc == 0x12) n = players == 2 ? 8 : 6;
         if (sc == 0x19) n = 4;
     }
+    if (typingReferenceActive && variant == 1) {
+        // Reference constructor4291F0: group size is independent of the gun
+        // game's eight/ten-creature group and is capped by free word slots.
+        const int scene = runner->scene;
+        n = cfg.eventMode == 0 ? 4 : 5;
+        if (scene == 0xE || scene == 0x12 || scene == 1) n = 5;
+        if (players == 2) n += 2;
+        if (scene == 0x19) n = 4;
+        if (cfg.eventMode == 7 && scene == 3) n = 8;
+        // Source 0x41A8C0 counts vacant entries in the native actor-slot
+        // table. Retained word-cache entries can outlive an actor and must
+        // not shrink an authored group (the Final Exam requires eight bats).
+        const int vacant = static_cast<int>(std::count(std::begin(actorSlots),std::end(actorSlots),nullptr));
+        n = std::min(n,vacant);
+    }
     if (count > 0) n = std::min(count, 10);  // port only (the Horde mode's groups)
     batAlive = 0;
     for (auto& p : batList) p = nullptr;
     for (int i = 0; i < n; ++i) {
         BatTask* b = NewTask<BatTask>(TaskBatInit, 0x0043BEF0);
+        if (cfg.portTyping) {
+            // Source429310 creates an explicit word-post for every member.
+            b->typingFlags = 0x30000018u;
+            b->typingWordStyle = 1;
+        }
         memcpy(b->pos, r.pos, 12);
         b->rot[1] = r.rot[1];
         b->idx = static_cast<int8_t>(i);
@@ -1092,6 +1146,7 @@ void World::Impl::SpawnBatGroup(const SpawnRecord& r, int variant, int count) {
 
 // 0x00430C50: blood (task 0x00430BD0) at a view-space point (other actors: actor 0x42 fish, world_routes_fish.cpp)
 void World::Impl::SpawnBlood430BD0(const float view[3]) {
+    if (cfg.portTyping && !cfg.typingOptions.bloodEffects) return;
     BatBloodTask* k = NewTask<BatBloodTask>(TaskBatBlood, 0x00430BD0);
     memcpy(k->pos, view, 12);
     k->model = 0x3A;

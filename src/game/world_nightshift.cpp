@@ -4,9 +4,11 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <unordered_map>
 #include "game/menu_text.h"
 #include "game/menu_audio.h"
+#include "game/sound_table.h"
 #include "game/world_modes.h"
 
 namespace game {
@@ -14,14 +16,19 @@ namespace {
 struct Row { const char* label; int action; };
 enum { kPlay=100, kPractice, kLeaderboard, kOnline, kOptions, kExit, kHome, kHorde, kRandomizer, kScene,
        kHost, kBrowse, kPeer, kArcadeBoard, kOriginalBoard, kHordeBoard, kBossBoard, kBossPrev, kBossNext, kBoardSource, kPublish,
-       kHomeRoom, kExtras };
+       kHomeRoom, kExtras, kTyping, kTypingStart, kTypingBoard, kTypingDrill, kSwitchGame };
 constexpr Row kHomeRows[]={{"PLAY",kPlay},{"PRACTICE",kPractice},{"LEADERBOARD",kLeaderboard},{"ONLINE",kOnline},{"EXTRAS",kExtras},{"OPTIONS",kOptions},{"EXIT",kExit}};
 constexpr int kHomeCount = int(std::size(kHomeRows));
+constexpr Row kTypingHomeRows[]={{"ORIGINAL",kTyping},{"DRILL",kTypingDrill},{"LEADERBOARD",kLeaderboard},{"OPTIONS",kOptions},{"EXIT",kExit}};
 constexpr Row kPlayRows[]={{"ARCADE",0},{"ORIGINAL",1},{"CHALLENGES",2},{"BOSS MODE",3},{"HORDE MODE",kHorde},{"RANDOMIZER",kRandomizer},{"BACK",kHome}};
 constexpr Row kPracticeRows[]={{"SCENE SELECT",kScene},{"BACK",kHome}};
-constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"BACK",kHome}};
+constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"TYPING OF DEAD",kTypingBoard},{"BACK",kHome}};
+constexpr Row kTypingBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"BACK",kHome}};
+constexpr int kTypingBoardTable = 13;
+constexpr bool TimeBoard(int table) { return table>=3 && table<=12; }
 constexpr const char* kBoss[] = {"JUDGMENT","HIEROPHANT A","HIEROPHANT B","TOWER A","TOWER B","STRENGTH A","STRENGTH B","MAGICIAN","EMPEROR","BOSS RUSH"};
 constexpr size_t kOnlineNameLimit = 12;
+int HomeCount(const World::Impl& w) { return w.front.typingHome?int(std::size(kTypingHomeRows)):kHomeCount; }
 
 void Panel(World::Impl& w,float l,float t,float r,float b,uint32_t color) { w.hud.menuPanels.push_back({l,t,r,b,color}); }
 void Text(World::Impl& w,float x,float y,const std::string& s,float scale=0.72f,uint32_t color=0xFFEDE9DF) {
@@ -56,6 +63,7 @@ bool Hit(const WorldInput& in,float l,float t,float r,float b) {
 }
 void LoadSprites(World::Impl& w,size_t first) {
     for(size_t i=first;i<w.hudSprites.size();++i) {
+        if(w.hudSprites[i].id>=0x4000)continue;
         const auto file=w.exe.U32(0x0057A5BC+uint32_t(w.hudSprites[i].id)*4);
         if(file<w.texFiles.size()&&w.texFiles[file]!=4)w.ProcessRequest({0x54,file});
     }
@@ -68,29 +76,75 @@ void Logo(World::Impl& w,bool small) {
         d.depth=.01f; d.flags|=0x700; w.hudSprites.push_back(d);
     }
 }
+void TypingSettings(World::Impl& w, bool save) {
+    if (w.cfg.savePath.empty()) return;
+    const std::filesystem::path path = w.cfg.savePath+".typing.ini";
+    auto& o = w.cfg.typingOptions;
+    if (save) {
+        std::ofstream out(path);
+        if (out) out << "difficulty=" << int(o.difficulty) << "\nlife=" << o.startingLives
+                     << "\ncontinue=" << o.continues << "\nword_size=" << int(o.wordSize)
+                     << "\nkeyboard=" << int(o.keyboard) << '\n';
+        return;
+    }
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in,line)) {
+        const auto equal = line.find('=');
+        if (equal == std::string::npos) continue;
+        int value = -1;
+        try { value = std::stoi(line.substr(equal+1)); } catch (...) { continue; }
+        const auto key = line.substr(0,equal);
+        if (key == "difficulty") o.difficulty = TypingDifficulty(std::clamp(value,0,4));
+        else if (key == "life" && (value == 1 || value == 3 || value == 5)) o.startingLives = value;
+        else if (key == "continue" && (value == -1 || value == 0 || value == 3 || value == 5 || value == 9)) o.continues = value<0?0:value;
+        else if (key == "word_size") o.wordSize = value == 1 ? TypingWordSize::Large : TypingWordSize::Normal;
+        else if (key == "keyboard") o.keyboard = value == 0 ? TypingKeyboard::US : TypingKeyboard::UK;
+        else if (key == "blood") o.bloodEffects = value != 0;
+    }
+}
 void Confirm(World::Impl& w,int action) {
     auto& f=w.front;
     auto page=[&](int p) {
         const bool optionsBack=(f.nightShiftPage==5||f.nightShiftPage==9)&&p==0;
         if(f.nightShiftPage==9&&p!=9)w.SoundCall(World::kPreviewStop);
+        if(f.nightShiftPage==11&&p!=11) { w.SoundStopAll(); f.sceneStart=-1; }
         f.nightShiftPage=p; f.nightShiftRow=0;
         if(p==5||p==9||optionsBack) w.SoundCall(World::kOptionFeedback, optionsBack?kOptionBackSound:kOptionSelectSound);
         else w.Sound(0x121A9);
     };
     switch(action) {
     case kPlay: page(1); return;
+    case kSwitchGame:
+        if (f.menuSwitchAge<0) {
+            f.menuSwitchTargetTyping=!f.typingHome;
+            f.menuSwitchAge=0;
+            w.Sound(0x121A9);
+        }
+        return;
+    case kTyping:
+        if (!f.typingOptionsLoaded) { TypingSettings(w,false); f.typingOptionsLoaded = true; }
+        w.cfg.typingOriginal = true; w.ResetTyping();
+        f.sceneStart=-1;
+        page(11); return;
+    case kTypingDrill:
+        w.typingDrill.view=0; w.typingDrill.characters.clear();
+        w.typingDrill.visualView=-1;
+        w.typingDrill.visualSelected=w.typingDrill.visualPrevious=-1;
+        page(12); return;
     case kPractice: page(2); return;
     case kExtras:
         w.SoundStopAll();page(9);f.extrasPage=f.extrasColumn=f.extrasControl=0;
         for(int p=0;p<2;++p){f.extrasAimX[p]=w.input[p].x;f.extrasAimY[p]=w.input[p].y;}
         return;
-    case kLeaderboard: page(3); if(f.nightShiftShared)++f.portLeaderboardRequests; return;
+    case kLeaderboard: if(f.typingHome)f.nightShiftTable=kTypingBoardTable; page(3); if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kHome: page(0); return;
     case kExit: f.quit=true; return;
     case kArcadeBoard: f.nightShiftTable=0; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kOriginalBoard: f.nightShiftTable=1; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kHordeBoard: f.nightShiftTable=2; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
-    case kBossBoard: if(f.nightShiftTable<3)f.nightShiftTable=3; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
+    case kBossBoard: if(!TimeBoard(f.nightShiftTable))f.nightShiftTable=3; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
+    case kTypingBoard: f.nightShiftTable=kTypingBoardTable; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kBossPrev: f.nightShiftTable=3+(f.nightShiftTable-3+9)%10; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kBossNext: f.nightShiftTable=3+(f.nightShiftTable-3+1)%10; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
     case kBoardSource: f.nightShiftShared=!f.nightShiftShared; if(f.nightShiftShared)++f.portLeaderboardRequests; return;
@@ -101,7 +155,7 @@ void Confirm(World::Impl& w,int action) {
         ++f.portLobbyRequests;
         ModesMenuConfirm(w,6); return;
     case kHomeRoom: {
-        const int i=f.nightShiftRow-kHomeCount;
+        const int i=f.nightShiftRow-HomeCount(w)-1;
         if(i<0||i>=int(f.homeRooms.size()))return;
         f.portLobbyRoom=f.homeRooms[i].id;f.portLobbyAction=4;++f.portLobbyRequests;
         ModesMenuConfirm(w,6);return;
@@ -110,6 +164,21 @@ void Confirm(World::Impl& w,int action) {
     default: break;
     }
     // Keep the same player-join path, credits and unlocks as the original mode handlers.
+    w.cfg.portTyping=action==kTypingStart;
+    w.cfg.typingOriginal=true;
+    w.ResetTyping();
+    if(action==kTypingStart) {
+        w.SoundStopAll();
+        if (!w.typingPreviousOptions.valid) {
+            auto& saved = w.typingPreviousOptions;
+            saved.valid = true; saved.difficulty = w.cfg.difficulty; saved.lives = w.cfg.livesSetting;
+            saved.creditSetting = w.cfg.creditSetting; saved.credits = w.cfg.credits; saved.freePlay = w.cfg.freePlay;
+        }
+        w.cfg.difficulty = int(w.cfg.typingOptions.difficulty);
+        w.cfg.livesSetting = w.cfg.typingOptions.startingLives;
+        w.cfg.creditSetting = w.cfg.typingOptions.continues==0?-1:w.cfg.typingOptions.continues;
+        action=0;
+    }
     f.menuCursor=action>=0&&action<=3?action:0;
     w.FrontScreensFree();
     if(action==kScene) { SceneSelectMenuConfirm(w); return; }
@@ -121,15 +190,81 @@ void Confirm(World::Impl& w,int action) {
     w.cfg.credits=w.cfg.freePlay?0:w.cfg.creditSetting+1;
     w.Sound(0x121A9);
 }
+void TypingOptionsPage(World::Impl& w) {
+    auto& f = w.front;
+    auto& o = w.cfg.typingOptions;
+    const auto unlocks = w.typing.originalProgress().unlocks();
+    const auto lives = TypingLifeOptions((unlocks&1)!=0);
+    const auto continues = TypingContinueOptions((unlocks&2)!=0,(unlocks&32)!=0);
+    if (std::find(lives.begin(),lives.end(),o.startingLives)==lives.end()) o.startingLives=3;
+    if (std::find(continues.begin(),continues.end(),o.continues)==continues.end()) o.continues=3;
+    auto cycle = [](const std::vector<int>& choices,int value,int step) {
+        const auto at=std::find(choices.begin(),choices.end(),value);
+        const int index=at==choices.end()?0:int(at-choices.begin());
+        return choices[(index+int(choices.size())+step)%choices.size()];
+    };
+    constexpr int count = 6;
+    constexpr float top=149, pitch=39, height=32;
+    f.nightShiftRow=std::clamp(f.nightShiftRow,0,count-1);
+    const uint32_t buttons = (w.pressed&0xfff)|((w.pressed>>16)&0xfff);
+    if (buttons&0x10) f.nightShiftRow = (f.nightShiftRow+count-1)%count;
+    if (buttons&0x20) f.nightShiftRow = (f.nightShiftRow+1)%count;
+    bool confirm = (buttons&0xc) != 0;
+    for (const auto& input : w.input) if (input.kind == 1) {
+        const bool moved = input.x != f.nightShiftAimX || input.y != f.nightShiftAimY;
+        f.nightShiftAimX = input.x; f.nightShiftAimY = input.y;
+        for (int row = 0; row < count; ++row) {
+            const float y=row==5?361.f:top+row*pitch;
+            if (!Hit(input,96,y,544,y+height)) continue;
+            if (moved || input.fired) f.nightShiftRow = row;
+            if (input.fired) confirm = true;
+        }
+        if (input.fired&&Hit(input,512,98,544,128)) { Confirm(w,kHome);w.pressed&=~0xc000c;return; }
+    }
+    if (buttons&2) { w.pressed &= ~0xc000c; Confirm(w,kHome); return; }
+    if (confirm && f.nightShiftRow == 5) { Confirm(w,kTypingStart); return; }
+    w.pressed &= ~0xc000c;
+    const int change = buttons&0x40 ? -1 : (buttons&0x80 || confirm) ? 1 : 0;
+    if (change) {
+        switch (f.nightShiftRow) {
+        case 0: o.difficulty = TypingDifficulty((int(o.difficulty)+5+change)%5); break;
+        case 1: o.startingLives = cycle(lives,o.startingLives,change); break;
+        case 2: o.continues = cycle(continues,o.continues,change); break;
+        case 3: o.wordSize = o.wordSize == TypingWordSize::Normal ? TypingWordSize::Large : TypingWordSize::Normal; break;
+        case 4: o.keyboard = o.keyboard == TypingKeyboard::US ? TypingKeyboard::UK : TypingKeyboard::US; break;
+        default: break;
+        }
+        TypingSettings(w,true);
+    }
+    static constexpr const char* difficulties[] = {"VERY EASY","EASY","NORMAL","HARD","VERY HARD"};
+    const std::string values[] = {difficulties[std::clamp(int(o.difficulty),0,4)],std::to_string(o.startingLives),
+        o.continues==0?"FREE PLAY":std::to_string(o.continues),o.wordSize == TypingWordSize::Large ? "LARGE" : "NORMAL",
+        o.keyboard == TypingKeyboard::US ? "US" : "UK"};
+    const char* names[] = {"DIFFICULTY","LIFE","CONTINUES","WORD SIZE","KEYBOARD TYPE"};
+    Panel(w,0,0,640,480,0xA8000000);
+    Panel(w,84,84,556,416,0xF20C1114);
+    Panel(w,84,84,556,87,0xFF92272D);
+    Text(w,104,107,"ORIGINAL MODE",.90f);
+    Button(w,512,98,544,128,"X",false,.59f);
+    for (int row = 0; row < 5; ++row) {
+        const float y=top+row*pitch;
+        Button(w,96,y,544,y+height,names[row],f.nightShiftRow==row,.60f);
+        Text(w,366,y+9,values[row],.55f);
+        if (f.nightShiftRow==row) {Text(w,344,y+9,"<",.55f);Text(w,525,y+9,">",.55f);}
+    }
+    Button(w,96,361,544,393,"START",f.nightShiftRow==5,.78f);
+    Text(w,104,402,"ARROWS ADJUST   ENTER CONFIRM   ESC CLOSE",.35f,0xffb2b3ab);
+}
 std::string Score(int n) { char s[32]; snprintf(s,sizeof(s),"%d",std::max(0,n));return s; }
 std::string Time(int n) { char s[32]; n=std::max(n,0);snprintf(s,sizeof(s),"%02dM%02dS%02d",n/3600,(n/60)%60,(n%60)*100/60);return s; }
 void Leaderboard(World::Impl& w) {
-    const int table=std::clamp(w.front.nightShiftTable,0,12);
+    const int table=std::clamp(w.front.nightShiftTable,0,kTypingBoardTable);
+    const bool timed=TimeBoard(table),typing=table==kTypingBoardTable;
     Panel(w,201,78,618,429,0xE10B1012);
-    const char* title=table==0?"ARCADE":table==1?"ORIGINAL":table==2?"HORDE":kBoss[table-3];
-    Text(w,216,88,title,.95f);
+    const char* title=table==0?"ARCADE":table==1?"ORIGINAL":table==2?"HORDE":typing?"TYPING OF THE DEAD":kBoss[table-3];
+    Text(w,216,88,title,typing?.78f:.95f);
     Text(w,216,116,w.front.nightShiftShared?"ONLINE LEADERBOARD":"LOCAL LEADERBOARD",.48f,0xFFA6ACA8);
-    if(table>=3) {
+    if(timed) {
         Button(w,535,86,566,115,"<",false,.65f);
         Button(w,574,86,605,115,">",false,.65f);
     }
@@ -139,19 +274,22 @@ void Leaderboard(World::Impl& w) {
     if(shared) {
         Text(w,250,152,"NAME",.50f,0xFFB9AA91);
         if(table==2)Text(w,390,152,"RD",.45f,0xFFB9AA91);
-        Text(w,table==2?436:398,152,table>=3?"TIME M S CS":"SCORE",table>=3?.40f:.50f,0xFFB9AA91);
-        Text(w,532,152,table>=3||table==2?"LEVEL":"STAGE",.45f,0xFFB9AA91);
+        Text(w,table==2?436:398,152,timed?"TIME M S CS":"SCORE",timed?.40f:.50f,0xFFB9AA91);
+        Text(w,532,152,timed||table==2?"LEVEL":"STAGE",.45f,0xFFB9AA91);
         Text(w,584,152,"PL",.45f,0xFFB9AA91);
     } else {
         Text(w,256,152,table==2?"ROUND":"NAME",.55f,0xFFB9AA91);
-        Text(w,360,152,table>=3?"TIME M S CS":"SCORE",table>=3?.43f:.55f,0xFFB9AA91);
-        Text(w,505,152,table>=3||table==2?"LEVEL":"STAGE",.55f,0xFFB9AA91);
-        if(table==2)Text(w,570,152,"PL",.55f,0xFFB9AA91);
+        Text(w,360,152,timed?"TIME M S CS":"SCORE",timed?.43f:.55f,0xFFB9AA91);
+        Text(w,505,152,timed||table==2?"LEVEL":"STAGE",.55f,0xFFB9AA91);
+        if(table==2||typing)Text(w,570,152,"PL",.55f,0xFFB9AA91);
     }
     if(shared&&(w.front.sharedTable!=table||w.front.sharedLeaderboard.empty())) {
         std::string status=w.front.sharedTable==table?w.front.sharedLeaderboardStatus:"LOADING...";
         if(status.empty()||status=="COMMUNITY RUNS / UNVERIFIED")status="NO ONLINE RECORDS YET";
         Text(w,234,221,status.substr(0,32),.62f);
+    } else if(typing&&w.front.typingLeaderboard.empty()&&!shared) {
+        Text(w,234,221,"NO TYPING RUNS SAVED",.66f);
+        Text(w,234,252,"PLAY ORIGINAL TO SET A RECORD",.49f,0xFFA6ACA8);
     } else if(table==2&&w.front.hordeLeaderboard.empty()&&!shared) {
         Text(w,234,221,"NO HORDE RUNS SAVED",.66f);
         Text(w,234,252,"PLAY HORDE TO SET A RECORD",.52f,0xFFA6ACA8);
@@ -164,9 +302,16 @@ void Leaderboard(World::Impl& w) {
             const auto& e=w.front.sharedLeaderboard[i];
             Text(w,250,y,e.name.substr(0,kOnlineNameLimit),.52f);
             if(table==2)Text(w,390,y,Score(e.rounds),.45f);
-            Text(w,table==2?436:398,y,table>=3?Time(e.score):Score(e.score),table==2?.45f:.55f);
+            Text(w,table==2?436:398,y,timed?Time(e.score):Score(e.score),table==2?.45f:.55f);
             Text(w,532,y,Score(e.difficulty+1),.55f);
             Text(w,584,y,Score(std::clamp(e.players,1,2)),.55f);
+        } else if(typing) {
+            if(i>=int(w.front.typingLeaderboard.size()))break;
+            const auto& e=w.front.typingLeaderboard[i];
+            Text(w,256,y,e.name.substr(0,kOnlineNameLimit),.49f);
+            Text(w,360,y,Score(e.score),.62f);
+            Text(w,505,y,Score(e.difficulty+1),.62f);
+            Text(w,574,y,Score(e.players),.62f);
         } else if(table==2) {
             if(i>=int(w.front.hordeLeaderboard.size()))break;
             const auto& e=w.front.hordeLeaderboard[i];
@@ -181,7 +326,7 @@ void Leaderboard(World::Impl& w) {
             for(int c=0;c<3&&e.name[c];++c)name+=e.name[c]>=32&&e.name[c]<127?e.name[c]:'?';
             if(name.find_first_not_of(' ')==std::string::npos)name="---";
             Text(w,256,y,name,.62f);
-            Text(w,360,y,table>=3?Time(e.score):Score(e.score),.62f);
+            Text(w,360,y,timed?Time(e.score):Score(e.score),.62f);
             Text(w,505,y,Score(int(e.b5)+1),.62f);
         }
     }
@@ -415,29 +560,48 @@ void ExtrasPage(World::Impl& w) {
 
 void NightShiftMenuFrame(World::Impl& w) {
     auto& f=w.front;
+    // Older snapshots may still refer to the retired manual-publish page.
+    if(f.nightShiftPage==4) {f.nightShiftPage=3;f.nightShiftRow=0;}
+    if (f.menuSwitchAge>=0) {
+        ++f.menuSwitchAge;
+        if (f.menuSwitchAge==24) {
+            f.typingHome=f.menuSwitchTargetTyping;
+            f.nightShiftPage=f.nightShiftRow=0;
+            f.nightShiftAimX=f.nightShiftAimY=-1;
+        }
+        if (f.menuSwitchAge>=48) f.menuSwitchAge=-1;
+    }
+    const bool switching=f.menuSwitchAge>=0;
+    const bool modal=f.nightShiftPage==11;
+    const int page=modal?0:f.nightShiftPage;
     w.hud.menuPanels.clear();
     w.hud.menuText.clear();
     const size_t spriteStart=w.hudSprites.size();
+    if(f.nightShiftPage==12) {TypingDrillMenuFrame(w);LoadSprites(w,spriteStart);return;}
     // Subtle uniform shading keeps the original attract scenes visible behind the UI.
     Panel(w,0,0,640,480,0x3503090B);
     Panel(w,0,440,640,480,0xC8090D10);
-    Logo(w,f.nightShiftPage!=0);
-    // Older snapshots may still refer to the retired manual-publish page.
-    if(f.nightShiftPage==4) {f.nightShiftPage=3;f.nightShiftRow=0;}
+    if (!f.typingHome) Logo(w,page!=0);
     if(f.nightShiftPage==9) {ExtrasPage(w);LoadSprites(w,spriteStart);return;}
-    const Row* rows=kHomeRows; int count=kHomeCount;
+    const Row* rows=f.typingHome?kTypingHomeRows:kHomeRows; int count=HomeCount(w);
     float left=24,right=322,top=158,pitch=37,height=32,scale=1.05f;
-    if(f.nightShiftPage==1) {rows=kPlayRows;count=int(std::size(kPlayRows));Text(w,26,83,"PLAY",1.45f);top=136;pitch=40;height=35;}
-    else if(f.nightShiftPage==2) {rows=kPracticeRows;count=int(std::size(kPracticeRows));Text(w,26,83,"PRACTICE",1.45f);top=140;pitch=52;height=44;}
-    else if(f.nightShiftPage==3) {rows=kBoardRows;count=int(std::size(kBoardRows));Text(w,26,78,"LEADERBOARD",.81f);top=130;pitch=40;height=35;right=187;scale=.60f;}
-    const int roomCount=f.nightShiftPage==0?int(f.homeRooms.size()):0;
-    const int total=count+(f.nightShiftPage==0?3+roomCount:0);
-    f.nightShiftRow=std::clamp(f.nightShiftRow,0,total-1);
-    uint32_t buttons=(w.pressed&0xFFF)|((w.pressed>>16)&0xFFF);
+    if(page==1) {rows=kPlayRows;count=int(std::size(kPlayRows));Text(w,26,83,"PLAY",1.45f);top=136;pitch=37;height=32;}
+    else if(page==2) {rows=kPracticeRows;count=int(std::size(kPracticeRows));Text(w,26,83,"PRACTICE",1.45f);top=140;pitch=52;height=44;}
+    else if(page==3) {
+        rows=f.typingHome?kTypingBoardRows:kBoardRows;
+        count=f.typingHome?int(std::size(kTypingBoardRows)):int(std::size(kBoardRows));
+        if(f.typingHome)f.nightShiftTable=kTypingBoardTable;
+        Text(w,26,78,"LEADERBOARD",.81f);top=130;pitch=40;height=35;right=187;scale=.60f;
+    }
+    const int roomCount=page==0?int(f.homeRooms.size()):0;
+    const int total=count+(page==0?1+roomCount:0);
+    if (!modal) f.nightShiftRow=std::clamp(f.nightShiftRow,0,total-1);
+    uint32_t buttons=switching||modal?0:(w.pressed&0xFFF)|((w.pressed>>16)&0xFFF);
+    if(switching)w.pressed&=~0x0fff0fff;
     bool pointerShot=false, pointerHit=false;
     int pointAction=-1;
     int pointerPlayer=-1;
-    for(int q=0;q<2;++q) {
+    for(int q=0;!switching&&!modal&&q<2;++q) {
         const int player=(f.startPlayer+q)&1;
         const auto& in=w.input[player];
         if(in.kind!=1)continue;
@@ -448,15 +612,16 @@ void NightShiftMenuFrame(World::Impl& w) {
         const auto& in=w.input[pointerPlayer];
         int row=-1;
         for(int i=0;i<count;++i)if(Hit(in,left,top+i*pitch,right,top+i*pitch+height))row=i;
-        if(f.nightShiftPage==0) {
-            for(int i=0;i<roomCount;++i)if(Hit(in,366,166+i*50,612,210+i*50))row=count+i;
-            for(int i=0;i<3;++i)if(Hit(in,366,282+i*40,612,317+i*40))row=count+roomCount+i;
+        if(page==0) {
+            if(Hit(in,366,104,612,214))row=count;
+            for(int i=0;i<roomCount;++i)if(Hit(in,366,280+i*50,612,324+i*50))row=count+1+i;
         }
         const bool moved=in.x!=f.nightShiftAimX||in.y!=f.nightShiftAimY;
         if((moved||in.fired)&&row>=0)f.nightShiftRow=row;
+        else if(moved&&page==0&&f.nightShiftRow==count)f.nightShiftRow=0;
         if(in.fired) {
             pointerShot=true;pointerHit=row>=0;
-            if(f.nightShiftPage==3&&f.nightShiftTable>=3) {
+            if(page==3&&TimeBoard(f.nightShiftTable)) {
                 if(Hit(in,535,86,566,115)){pointAction=kBossPrev;pointerHit=true;}
                 if(Hit(in,574,86,605,115)){pointAction=kBossNext;pointerHit=true;}
             }
@@ -465,15 +630,15 @@ void NightShiftMenuFrame(World::Impl& w) {
     }
     if(buttons&0x10)f.nightShiftRow=(f.nightShiftRow+total-1)%total;
     if(buttons&0x20)f.nightShiftRow=(f.nightShiftRow+1)%total;
-    if(f.nightShiftPage==3&&f.nightShiftTable>=3) {
+    if(page==3&&TimeBoard(f.nightShiftTable)) {
         if(buttons&0x40)Confirm(w,kBossPrev);
         if(buttons&0x80)Confirm(w,kBossNext);
     }
-    if(buttons&2) { if(f.nightShiftPage!=0)Confirm(w,kHome); w.pressed&=~0xC000C; }
+    if(buttons&2) { if(page!=0)Confirm(w,kHome); w.pressed&=~0xC000C; }
     else if((buttons&0xC)&&(!pointerShot||pointerHit)) {
         const int rail=f.nightShiftRow-count;
         const int action=pointAction>=0?pointAction:f.nightShiftRow<count?rows[f.nightShiftRow].action:
-            rail<roomCount?kHomeRoom:rail==roomCount?kHost:rail==roomCount+1?kBrowse:kPeer;
+            rail==0?kSwitchGame:kHomeRoom;
         const int oldPage=f.nightShiftPage;
         Confirm(w,action);
         // A menu click must not join a player except when a gameplay mode was confirmed.
@@ -481,26 +646,25 @@ void NightShiftMenuFrame(World::Impl& w) {
         if(oldPage!=f.nightShiftPage)return;
     } else if(pointerShot&&!pointerHit) w.pressed&=~0xC000C;
     for(int i=0;i<count;++i) {
-        const bool boardSel=f.nightShiftPage==3&&i>0&&i<5&&(f.nightShiftTable==i-1||(i==4&&f.nightShiftTable>=3));
-        const char* label=f.nightShiftPage==3&&i==0?(f.nightShiftShared?"SOURCE: ONLINE":"SOURCE: LOCAL"):rows[i].label;
-        Button(w,left,top+i*pitch,right,top+i*pitch+height,label,f.nightShiftRow==i,scale,boardSel);
+        const bool boardSel=page==3&&!f.typingHome&&((i>0&&i<4&&f.nightShiftTable==i-1)||
+            (i==4&&TimeBoard(f.nightShiftTable))||(i==5&&f.nightShiftTable==kTypingBoardTable));
+        const char* label=page==3&&i==0?(f.nightShiftShared?"SOURCE: ONLINE":"SOURCE: LOCAL"):rows[i].label;
+        Button(w,left,top+i*pitch,right,top+i*pitch+height,label,modal?i==0:f.nightShiftRow==i,scale,boardSel);
     }
-    if(f.nightShiftPage==0) {
-        Panel(w,366,158,612,159,0xFF726B58);
-        Text(w,366,136,"ONLINE",.87f);
-        if(roomCount==0)Text(w,378,205,f.homeRoomsStatus.substr(0,29),.48f,0xFFB2B3AB);
+    if(page==0) {
+        Panel(w,366,272,612,273,0xFF726B58);
+        Text(w,366,250,"ONLINE LOBBIES",.72f);
+        if(roomCount==0)Text(w,378,303,f.homeRoomsStatus.substr(0,29),.48f,0xFFB2B3AB);
         for(int i=0;i<roomCount;++i) {
-            const auto& room=f.homeRooms[i];const float y=166+i*50.f;
-            Panel(w,366,y,612,y+44,f.nightShiftRow==count+i?0xED8F2026:0x75101315);
-            Text(w,378,y+6,"ROOM "+std::to_string(room.id),room.id>9999999?.52f:.67f);
+            const auto& room=f.homeRooms[i];const float y=280+i*50.f;
+            Panel(w,366,y,612,y+44,!modal&&f.nightShiftRow==count+1+i?0xED8F2026:0x75101315);
+            Text(w,378,y+6,std::string(room.typing?"TYPING ":"ROOM ")+std::to_string(room.id),room.id>9999999?.48f:.60f);
             Text(w,535,y+8,room.privateRoom?"PRIVATE":"PUBLIC",.43f,0xFFD4BA96);
             static constexpr const char* difficulty[]={"VERY EASY","EASY","NORMAL","HARD","VERY HARD"};
             const char* level=room.difficulty>=0&&room.difficulty<5?difficulty[room.difficulty]:"UNKNOWN";
             Text(w,378,y+28,std::string(level)+" / "+(room.unlimited?"UNLIMITED":"3 CONTINUES"),.43f,0xFFC3C6BD);
         }
-        const char* names[]={"HOST ONLINE","BROWSE LOBBY","PEER TO PEER"};
-        for(int i=0;i<3;++i)Button(w,366,282+i*40,612,317+i*40,names[i],f.nightShiftRow==count+roomCount+i,.73f);
-    } else if(f.nightShiftPage==1) {
+    } else if(page==1) {
         const char* help[]={"THE ORIGINAL ARCADE CAMPAIGN","CAMPAIGN WITH ITEMS AND LOADOUTS","TEN AIM AND SURVIVAL CHALLENGES","TIME ATTACK AGAINST EACH BOSS","SURVIVE WAVES AND UPGRADE BETWEEN ROUNDS","A RANDOMIZED ORIGINAL MODE RUN","RETURN TO THE MAIN MENU"};
         Text(w,350,198,"SELECT MODE",.64f,0xFFBBAA91);
         std::string description=help[std::clamp(f.nightShiftRow,0,int(std::size(help))-1)];
@@ -512,18 +676,19 @@ void NightShiftMenuFrame(World::Impl& w) {
             Text(w,350,235+line*25,description.substr(start,end-start),.65f);
             start=end;while(start<description.size()&&description[start]==' ')++start;++line;
         }
-    } else if(f.nightShiftPage==2) {
+    } else if(page==2) {
         Text(w,350,203,"SCENE SELECT",.64f,0xFFBBAA91);
         Text(w,350,239,"REPLAY A CHAPTER",.65f);
-    } else if(f.nightShiftPage==3) {
+    } else if(page==3) {
         Leaderboard(w);
         Text(w,24,466,(f.leaderboardPublishStatus.empty()?"ELIGIBLE RUNS SUBMIT AUTOMATICALLY":f.leaderboardPublishStatus).substr(0,50),.40f,0xFFB9AA91);
     }
     Text(w,24,453,"ARROWS SELECT   ENTER / SHOOT CONFIRM   ESC / RELOAD BACK",.48f,0xFFB2B3AB);
+    if(modal)TypingOptionsPage(w);
     LoadSprites(w,spriteStart);
 }
 
-void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,8>& labels,
+void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,9>& labels,
                                 const std::string& difficulty) {
     w.hud.menuPanels.clear();
     w.hud.menuText.clear();
@@ -549,10 +714,10 @@ void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,8>& 
 
     // Match the existing lockstep pointer bands exactly, including their gaps.
     for(size_t i=0;i<labels.size();++i) {
-        const float top=(5.f+float(i)*1.1f)*24.f+10.f;
+        const float top=(5.f+float(i))*24.f+10.f;
         const bool selected=int(i)==w.front.menuCursor;
-        Button(w,184,top,600,top+24,i==6?"DIFFICULTY":labels[i],selected,.67f);
-        if(i==6) {
+        Button(w,184,top,600,top+23,i==7?"DIFFICULTY":labels[i],selected,.67f);
+        if(i==7) {
             Text(w,420,top+5,difficultyLabel,.67f,selected?0xFFFFF4E5:0xFFD1CCC2);
             if(selected) {
                 Text(w,395,top+5,"<",.67f);
@@ -606,6 +771,9 @@ void NightShiftGameOptionsFrame(World::Impl& w,const std::vector<NightShiftOptio
 void World::SetPortHordeLeaderboard(const std::vector<HordeLeaderboardEntry>& entries) {
     impl_->front.hordeLeaderboard.assign(entries.begin(),entries.begin()+std::min<size_t>(10,entries.size()));
 }
+void World::SetPortTypingLeaderboard(const std::vector<SharedLeaderboardEntry>& entries) {
+    impl_->front.typingLeaderboard.assign(entries.begin(),entries.begin()+std::min<size_t>(10,entries.size()));
+}
 void World::SetPortSharedLeaderboard(int table,const std::vector<SharedLeaderboardEntry>& entries,const std::string& status) {
     auto& f=impl_->front;
     f.sharedTable=table;
@@ -642,18 +810,21 @@ void PortLeaderboardPlayerJoined(World::Impl& w,int player) {
                                   int(w.portRunJoined[0])+int(w.portRunJoined[1])});
 }
 void PortLeaderboardComplete(World::Impl& w,int table,int score,int stageOrDifficulty) {
+    const bool typing=table==kTypingBoardTable;
     if(!w.portLeaderboardRecording||!w.portRunOriginEligible||w.portRunRecorded||!w.frontEnd||!w.cfg.portFeatures||
-       w.front.sceneSelect||w.front.sceneStart>=0||w.prototype||RandomizerActive(w)||HordeActive(w))return;
-    if(table<0||table>12||table==2)return;
+       (w.cfg.portTyping?(!typing||!w.cfg.typingOriginal):typing)||w.front.sceneSelect||
+       (typing?w.front.sceneStart>0:w.front.sceneStart>=0)||w.prototype||RandomizerActive(w)||HordeActive(w))return;
+    if(table<0||table>kTypingBoardTable||table==2)return;
     const int participants=std::clamp(std::max({w.players,w.portRunParticipants,
         int(w.portRunJoined[0])+int(w.portRunJoined[1])}),1,2);
-    if(table>=3&&(score<=0||participants!=1))return;
+    if(TimeBoard(table)&&(score<=0||participants!=1))return;
     LeaderboardRunSnapshot next;
     next.sequence=w.portLeaderboardRun.sequence+1;
     next.table=table; next.players=participants;
-    next.difficulty=std::clamp(stageOrDifficulty,0,table<2?6:4);
-    for(int p=0;p<2;++p)next.playerScores[p]=w.portRunJoined[p]?std::max(0,w.player[p].score):0;
-    next.score=table<2?std::max(next.playerScores[0],next.playerScores[1]):score;
+    next.difficulty=std::clamp(stageOrDifficulty,0,table<2||typing?6:4);
+    for(int p=0;p<2;++p)next.playerScores[p]=!w.portRunJoined[p]?0:typing?
+        int(std::min<uint64_t>(2000000000,w.TypingController(p).runPoints(unsigned(std::max(0,w.rescueTotal))))):std::max(0,w.player[p].score);
+    next.score=table<2||typing?std::max(next.playerScores[0],next.playerScores[1]):score;
     if(next.score<=0)return;
     next.eligible=true;
     w.portLeaderboardRun=next;
@@ -663,17 +834,17 @@ void World::SetPortLeaderboardRecording(bool on) {impl_->portLeaderboardRecordin
 LeaderboardRunSnapshot World::PortLeaderboardRun() const {return impl_->portLeaderboardRun;}
 void World::SetPortHomeRooms(const std::vector<PortHomeRoom>& rooms,const std::string& status) {
     auto& f=impl_->front;
-    const int old=f.nightShiftRow-kHomeCount;
-    const int oldRoomCount=int(f.homeRooms.size());
-    const int action=f.nightShiftPage==0&&old>=oldRoomCount&&old<oldRoomCount+3?old-oldRoomCount:-1;
+    const int count=HomeCount(*impl_);
+    const int old=f.nightShiftRow-count-1;
+    const bool selectedSwitch=f.nightShiftPage==0&&f.nightShiftRow==count;
     const uint32_t selected=f.nightShiftPage==0&&old>=0&&old<int(f.homeRooms.size())?f.homeRooms[old].id:0;
     f.homeRooms.clear();
     for(const auto& r:rooms)if(r.id&&f.homeRooms.size()<2)f.homeRooms.push_back(r);
     f.homeRoomsStatus=status.substr(0,29);
     if(selected) {
         auto it=std::find_if(f.homeRooms.begin(),f.homeRooms.end(),[&](const auto& r){return r.id==selected;});
-        f.nightShiftRow=kHomeCount+int(it-f.homeRooms.begin());  // missing selection safely moves to Host
-    } else if(action>=0)f.nightShiftRow=kHomeCount+int(f.homeRooms.size())+action;
+        f.nightShiftRow=it==f.homeRooms.end()?count:count+1+int(it-f.homeRooms.begin());
+    } else if(selectedSwitch)f.nightShiftRow=count;
 }
 void World::ScrollPortExtras(int rows,int column) {
     auto& f=impl_->front;

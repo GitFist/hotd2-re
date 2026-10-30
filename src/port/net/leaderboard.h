@@ -18,6 +18,9 @@ inline constexpr size_t kLeaderboardMaxNameLength = 12;
 // and multiplayer synchronization. Keep this ID across routine updates; change
 // it only when scoring or eligibility changes make existing records incomparable.
 inline constexpr uint32_t kLeaderboardCompatibilityId = 1;
+inline constexpr int kTypingLeaderboardTable = 13;
+inline constexpr bool IsTimeLeaderboard(int table) { return table >= 3 && table <= 12; }
+inline constexpr bool IsCampaignLeaderboard(int table) { return table < 2 || table == kTypingLeaderboardTable; }
 
 struct LeaderboardEntry {
     std::string name;          // 1..12 uppercase ASCII characters; local save initials remain three characters
@@ -27,7 +30,7 @@ struct LeaderboardEntry {
     uint8_t players = 1;
 };
 struct LeaderboardSubmission : LeaderboardEntry {
-    int table = 0;            // 0 Arcade, 1 Original, 2 Horde, 3..12 bosses/rush
+    int table = 0;            // 0 Arcade, 1 Original, 2 Horde, 3..12 bosses/rush, 13 Typing Original
     // Local-only positive monotonic completion token. A new real run needs a
     // new token even when every visible value matches. Retrying this token is
     // idempotent; once sent, its original name/payload remain frozen.
