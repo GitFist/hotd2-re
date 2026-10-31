@@ -552,33 +552,8 @@ void Platform::SetGameImage(const input::ImageRect& image) {
     m.lightguns.SetImage(float(image.x)/w,float(image.y)/h,float(image.w)/w,float(image.h)/h);
 }
 
-bool Platform::NotifyUpdate(const std::string& currentBuild, const std::string& /*availableTag*/) {
-    if (!impl_->window) return false;
-    const std::string message = "A HOTD2RE update is available.\n\nYou are running version " + currentBuild +
-        ".\n\nUpdate now closes the game and opens an update progress window."
-        "\nThe game restarts when the update is complete."
-        "\nYour saves, settings and installed packs will be kept."
-        "\n\nChoose Download for manual installation, or Later to keep playing.";
-    const SDL_MessageBoxButtonData buttons[] = {
-        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later" },
-        { 0, 2, "Download" },
-        { 0, 1, "Update now" }
-    };
-    const SDL_MessageBoxData box = {
-        SDL_MESSAGEBOX_INFORMATION, impl_->window, "HOTD2RE - Update available", message.c_str(), 3, buttons, nullptr
-    };
-    int choice = 0;
-    if (!SDL_ShowMessageBox(&box, &choice)) return false;
-    if (choice == 2 &&
-        !SDL_OpenURL("https://github.com/GitFist/hotd2-re/releases/latest")) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "HOTD2RE - Download page",
-            "Open this address in your browser:\nhttps://github.com/GitFist/hotd2-re/releases/latest", impl_->window);
-    }
-    return choice == 1;
-}
-
-void Platform::NotifyUpdateError(const std::string& message) {
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "HOTD2RE - Update could not start", message.c_str(), impl_->window);
+bool Platform::OpenReleasePage() {
+    return SDL_OpenURL("https://github.com/GitFist/hotd2-re/releases/latest");
 }
 
 std::unique_ptr<port::GpuDevice> Platform::CreateGpu(Renderer r, int width, int height, bool followWindowSize, int syncInterval,

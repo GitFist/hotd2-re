@@ -2,8 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a
-Complete download: HOTD2RE-1.6-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.31-a
+Complete download: HOTD2RE-1.7-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation
@@ -66,7 +66,7 @@ folder and Windows PowerShell are required. --no-update-check disables the check
 Updates reuse unchanged files and download only changed program files. A verified
 full-client fallback is available automatically; update files need no manual download.
 Client-only updates do not include the Typing data. If it is missing, startup downloads
-it once (89.5 MB), with verification, progress and Cancel. The complete 1.6 ZIP
+it once (89.5 MB), with verification, progress and Cancel. The complete 1.7 ZIP
 already includes it; the original Typing executable is not run. --no-update-check
 also skips this automatic content download.
 Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and

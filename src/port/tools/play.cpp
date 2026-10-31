@@ -80,6 +80,7 @@
 #include "port/play/pause_menu.h"
 #include "port/play/renderer_fallback.h"
 #include "port/play/username_prompt.h"
+#include "port/play/update_prompt.h"
 #include "port/play/score_submission_queue.h"
 #include "port/play/scroll_hint.h"
 #include "port/play/widescreen.h"
@@ -204,20 +205,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.6";
+const char* const kReleaseVersion = "1.7";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026103000;
-const char* const kBuildName = "2026 10 30 A";
+const char* const kBuildName = "2026 10 31 A";
 #else
 constexpr uint32_t kBuildId = 2026103001;
-const char* const kBuildName = "2026 10 30 NS32 A";
+const char* const kBuildName = "2026 10 31 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 30 A";
+const char* const kUpdateBuildName = "2026 10 31 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -1926,6 +1927,7 @@ int main(int argc, char** argv) {
         scoreQueue.Load(queuePath.string());
     }
     play::UsernamePrompt usernamePrompt;
+    play::UpdatePrompt updatePrompt;
     if (interactiveScores && !play::ValidUsername(volumes.username)) usernamePrompt.Open({}, true);
     uint32_t promptPrevKeys = 0;
     bool promptInputConsumed = false;
@@ -2126,7 +2128,7 @@ int main(int argc, char** argv) {
         world.SetPortHomeRooms({}, "CHECKING WAITING ROOMS...");
     };
     auto updateSystemCursor = [&] {
-        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen(),
+        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
         const bool visible = play::SystemCursorVisible(world.Hud(), context);
         plat.SetCursorConfined(!visible);
@@ -2253,8 +2255,21 @@ int main(int argc, char** argv) {
                                      !optionsPage.IsOpen() && !usernamePrompt.IsOpen();
             const bool drillInput = world.PortTypingDrillActive() && !menu.IsOpen() && !optionsPage.IsOpen();
             plat.SetTextInput(active && typingInput && world.PortTypingNameActive());
+            uint32_t updateKeys = 0;
+            bool updateFocusChanged = false;
             for (platform::Event ev; plat.PollEvent(&ev);) {
                 using T = platform::Event::Type;
+                if (updatePrompt.IsOpen()) {
+                    if (ev.type == T::KeyDown || ev.type == T::KeyUp) {
+                        const uint32_t bit = KeyBit(ev.key);
+                        if (ev.type == T::KeyUp) g_keys &= ~bit;
+                        else if (active && !ev.repeat) { updateKeys |= bit; g_keys |= bit; }
+                        continue;
+                    }
+                    if (ev.type == T::Focus && ev.active != active) updateFocusChanged = true;
+                    if (ev.type != T::Quit && ev.type != T::Focus && ev.type != T::MouseMove && ev.type != T::MouseDown)
+                        continue;
+                }
                 int physicalTypingPlayer = keyboardPlayer();
                 if (!netPlayerAssigned && ev.keyboardId && (ev.type == T::KeyDown || ev.type == T::KeyUp)) {
                     if (!typingKeyboardIds[0]) typingKeyboardIds[0] = ev.keyboardId;
@@ -2374,7 +2389,8 @@ int main(int argc, char** argv) {
                 if (active && optionsInput && ev.type == T::KeyDown && !ev.repeat &&
                     (ev.key == platform::Key::PageUp || ev.key == platform::Key::PageDown))
                     optionsTabDelta += ev.key == platform::Key::PageUp ? -1 : 1;
-                if (active && (wiiPage.IsOpen() || lightgunPage.IsOpen()) && (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
+                if (active && (wiiPage.IsOpen() || lightgunPage.IsOpen() || updatePrompt.IsOpen()) &&
+                    (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
                     int ww, wh;
                     plat.ClientSize(&ww, &wh);
                     const auto image =
@@ -2460,44 +2476,52 @@ int main(int argc, char** argv) {
             promptPrevKeys = g_keys;
             updateSystemCursor();
             if (availableUpdate.empty()) availableUpdate = updates.TakeAvailable();
-            if (active && !availableUpdate.empty() && !netplay && lobby.page == Lobby::kOff &&
+            if (updatePrompt.IsOpen()) {
+                auto mi = menuInput(updateKeys, keyboardPlayer());
+                if (wiiMouse.trigger || (!mi.trigger && wiiMouse.pointer)) {
+                    mi.pointer = wiiMouse.pointer;
+                    mi.px = wiiMouse.px;
+                    mi.py = wiiMouse.py;
+                    mi.trigger |= wiiMouse.trigger;
+                }
+                mi.reload |= wiiMouse.reload;
+                wiiMouse = {};
+                const auto action = active && !updateFocusChanged ? updatePrompt.Update(mi) : play::UpdatePrompt::Action::None;
+                if (guns) guns->BeginFrame();
+                if (action != play::UpdatePrompt::Action::None) {
+                    if (trace) { printf("play: update prompt choice %d\n", int(action)); fflush(stdout); }
+                    if (action == play::UpdatePrompt::Action::Install) {
+                        std::string error;
+                        if (port::update::StartUpdate(availableUpdate, &error)) quit = true;
+                        else updatePrompt.ShowError(error);
+                    } else if (action == play::UpdatePrompt::Action::Download && !plat.OpenReleasePage()) {
+                        updatePrompt.ShowError("Open this address in your browser: https://github.com/GitFist/hotd2-re/releases/latest");
+                    }
+                    availableUpdate.clear();
+                    if (quit) break;
+                    if (!updatePrompt.IsOpen()) {
+                        if (sndDriver) sndDriver->OnActivate(true);
+                        // Consume the dismissing input using the same first-tick latch as the username prompt.
+                        promptInputConsumed = true;
+                        menuPrevKeys = g_keys;
+                        clock.Reset(plat.Seconds());
+                    }
+                }
+            } else if (active && !availableUpdate.empty() && !promptInputConsumed && !netplay && lobby.page == Lobby::kOff &&
                 (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !wiiPage.IsOpen() &&
                 !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !usernamePrompt.IsOpen()) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
                 if (attractionDriver) attractionAudio.Update(*attractionDriver, sndTable, attract, false);
-                if (plat.NotifyUpdate(kReleaseVersion, availableUpdate)) {
-                    std::string updateError;
-                    if (port::update::StartUpdate(availableUpdate, &updateError)) quit = true;
-                    else plat.NotifyUpdateError(updateError);
-                }
-                // The modal can leave input and focus events queued. Preserve window
-                // close/activation, then discard its key/mouse edges before resuming.
-                for (platform::Event ev; plat.PollEvent(&ev);) {
-                    if (ev.type == platform::Event::Type::Quit) quit = true;
-                    if (ev.type == platform::Event::Type::Focus) active = ev.active;
-                }
-                availableUpdate.clear();
-                if (quit) break;
-                if (sndDriver) sndDriver->OnActivate(true);
-                g_keys = menuPrevKeys = 0;
+                updatePrompt.Open(kReleaseVersion);
+                if (trace) { printf("play: update prompt opened\n"); fflush(stdout); }
                 scoreDisplay.ResetSequence();
                 typed.clear();
                 typedBackspace = false;
-                lightguns.ReleaseButtons();
-                wii.Update();  // drain remote button edges accumulated while the modal was open
+                wiiMouse = {};
                 if (guns) guns->BeginFrame();
-                for (int p = 0; p < 2; ++p) {
-                    const int dev = deviceForPlayer(p);
-                    const auto ps = dev >= 0 && guns ? guns->Player(dev) : input::PlayerState{};
-                    play::DevicePlayer held;
-                    held.held = ps.held;
-                    play::DeviceWorldInput(held, world.Hud().player[p].state, prevButtons[p]);
-                }
-                clock.Reset(plat.Seconds());
-                continue;  // resume with a fresh clock and cleared dialog input
             }
-            steps = clock.Advance(plat.Seconds());
+            steps = updatePrompt.IsOpen() ? 0 : clock.Advance(plat.Seconds());
             gameFrames += steps;
             if (runFrames > 0 && gameFrames >= runFrames) {
                 const double t = plat.Seconds() - runStart;
@@ -3597,7 +3621,7 @@ int main(int argc, char** argv) {
         // Gate transitions even when a network wait or menu action skipped the simulation tick above.
         if (attractionDriver)
             attractionAudio.Update(*attractionDriver, sndTable, attract,
-                (activeNightShift || world.Hud().typingHome) && !netplay && world.Hud().nightShiftPage != 9 &&
+                !updatePrompt.IsOpen() && (activeNightShift || world.Hud().typingHome) && !netplay && world.Hud().nightShiftPage != 9 &&
                 (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff));
         updateSystemCursor();  // pause/resume and menus apply before presentation throttling
         // --- render ---
@@ -3731,11 +3755,12 @@ int main(int argc, char** argv) {
         const int pattern = optionsPage.IsOpen() ? optionsPage.CalibrationPattern()
                             : menu.DisplayOpen() ? menu.Display().CalibrationPattern()
                                                  : -1;
-        if (usernamePrompt.IsOpen()) {
+        if (usernamePrompt.IsOpen() || updatePrompt.IsOpen()) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             game::WorldHud nameHud;
-            usernamePrompt.ModernHud(nameHud);
+            if (updatePrompt.IsOpen()) updatePrompt.ModernHud(nameHud);
+            else usernamePrompt.ModernHud(nameHud);
             play::AppendNightShiftPanels(nameHud, sprites, viewportAspect);
             if (uiFont.Available()) uiFont.Append(nameHud.menuText, sprites, port::ViewportXScale(viewportAspect));
             else {
@@ -4157,10 +4182,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "Temporal upscale: %s\n", displayNotice.c_str());
         }
 #endif
-        play::AppendMenuGameFade(world.Hud(),sprites);
+        if (!updatePrompt.IsOpen()) play::AppendMenuGameFade(world.Hud(),sprites);
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         const bool outputResolutionMenu = !previewHidden &&
-            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() ||
+            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen() ||
              world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
              world.NetworkLobby() || lobby.page != Lobby::kOff);
         // Menu readability is independent of scene resolution and the saved
@@ -4187,7 +4212,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         temporalEnabled |= dlss.active || generatedFrames.active;
         if (generatedFrames.active)
-            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen() || usernamePrompt.IsOpen());
+            port::SetNativeD3D12FrameGenerationPaused(*gpu, world.Hud().paused || menu.IsOpen() || optionsPage.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen());
 #endif
         if (temporalEnabled) {
             temporal.enabled = true;

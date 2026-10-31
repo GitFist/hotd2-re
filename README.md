@@ -4,7 +4,7 @@
 
 A native Windows port of **The House of the Dead 2** and **The Typing of the Dead**, with online co-op and modern controls.
 
-**[Download 1.6 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.30-a/HOTD2RE-1.6-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.30-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.7 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.31-a/HOTD2RE-1.7-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.31-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -30,7 +30,7 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.6-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.30-a/HOTD2RE-1.6-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.7-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.31-a/HOTD2RE-1.7-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
