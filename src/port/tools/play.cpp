@@ -66,6 +66,9 @@
 #include "port/play/display_viewport.h"
 #include "port/play/gameplay_hud.h"
 #include "port/play/gun_input.h"
+#include "port/play/gamepad_input.h"
+#include "port/play/controller_menu.h"
+#include "port/play/lobby_keypad.h"
 #include "port/play/home_lobby_preview.h"
 #include "port/play/attraction_audio.h"
 #include "port/play/keyboard.h"
@@ -205,20 +208,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.7";
+const char* const kReleaseVersion = "1.8";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
 constexpr uint32_t kBuildId = 2026103000;
-const char* const kBuildName = "2026 10 31 A";
+const char* const kBuildName = "2026 11 01 A";
 #else
 constexpr uint32_t kBuildId = 2026103001;
-const char* const kBuildName = "2026 10 31 NS32 A";
+const char* const kBuildName = "2026 11 01 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 10 31 A";
+const char* const kUpdateBuildName = "2026 11 01 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -371,6 +374,8 @@ struct Lobby {
     bool canRejoin = false;
     game::MenuPointerFocus pointer;
     int pointerKey = -1;
+    int codeKey = 0;
+    bool codePadNavigation = false;
 
     static constexpr float kRowX = 17.0f, kRowY0 = 5.0f, kRowPitch = 1.25f;   // menu rows, cells (the widest row ends at x 39)
     static constexpr float kListX = 2.0f, kListY0 = 3.5f, kListPitch = 1.0f;  // Browse rows
@@ -1518,6 +1523,12 @@ int main(int argc, char** argv) {
         updates.Start(kUpdateBuildName);
     std::string availableUpdate;
     auto& lightguns = plat.Lightguns();
+    auto& controllers = plat.Controllers();
+    const std::string controllerSettingsPath = "hotd2re_controllers.ini";
+    if (!headless) {
+        controllers.settings.Load(controllerSettingsPath);
+        controllers.Configure();
+    }
     const std::string lightgunSettingsPath = "hotd2re_lightguns.ini";
     if (!headless) lightguns.settings.Load(lightgunSettingsPath);
     input::WiiRemotes wii(plat.Guns());
@@ -1756,9 +1767,11 @@ int main(int argc, char** argv) {
     int lightgunRequestsSeen = 0;
     if (getenv("HOTD2_LIGHTGUN_MENU")) lightgunPage.Open();
     play::WiiMenu wiiPage;
+    play::ControllerMenu controllerPage;
     int wiiRequestsSeen = 0;
     play::MenuInput wiiMouse;
     if (getenv("HOTD2_WII_MENU")) wiiPage.Open();  // isolated screenshot/test entry
+    if (getenv("HOTD2_CONTROLLER_MENU")) controllerPage.Open();
     play::DisplayMenu optionsPage;
     std::vector<std::string> monitorNames;
     for (const auto& monitor : plat.Displays())
@@ -1944,19 +1957,27 @@ int main(int argc, char** argv) {
         mi.preview = (pressedKeys & play::kPreviewKey) != 0;
         mi.scroll = optionsScroll;
         mi.pageDelta = optionsTabDelta;
+        bool havePointer = false;
         for (int q = 0; q < 2 && guns; ++q) {
             const int dev = deviceForPlayer((q + firstPlayer) % 2);
             if (dev < 0) continue;
             const input::PlayerState ps = play::DisplayPointer(guns->Player(dev), volumes.display.graphics.crtCurvature);
             if (!ps.connected) continue;
+            if (ps.gamepad) {
+                const auto padMenu = play::GamepadMenuInput(ps);
+                mi.pressed |= padMenu.pressed;
+                mi.pageDelta += padMenu.pageDelta;
+                continue;
+            }
+            mi.pressed |= ps.menuPressed;
+            mi.start |= (ps.pressed & input::kStart) != 0;
+            if (havePointer) continue;
+            havePointer = true;
             mi.pointer = ps.onScreen;
             mi.px = play::MenuPointerX(ps.x, viewportAspect) * 640.0f;
             mi.py = ps.y * 480.0f;
             mi.trigger = (ps.pressed & input::kTrigger) != 0;
             mi.reload = (ps.pressed & input::kReload) != 0;
-            mi.start = mi.start || (ps.pressed & input::kStart) != 0;
-            mi.pressed |= ps.menuPressed;
-            break;
         }
         return mi;
     };
@@ -2128,7 +2149,7 @@ int main(int argc, char** argv) {
         world.SetPortHomeRooms({}, "CHECKING WAITING ROOMS...");
     };
     auto updateSystemCursor = [&] {
-        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen(),
+        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
         const bool visible = play::SystemCursorVisible(world.Hud(), context);
         plat.SetCursorConfined(!visible);
@@ -2378,7 +2399,7 @@ int main(int argc, char** argv) {
                     modelGallery.HandleEvent(ev, play::MenuPointerX(x, viewportAspect) * 640, y * 480);
                 }
                 const bool optionsInput = !usernamePrompt.IsOpen() && (optionsPage.IsOpen() || (menu.IsOpen() && menu.DisplayOpen())) &&
-                                          !wiiPage.IsOpen() && !lightgunPage.IsOpen();
+                                          !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen();
                 if (active && optionsInput && ev.type == T::MouseWheel && ev.wheel != 0) {
                     optionsScroll = std::clamp(optionsScroll + (ev.wheel > 0 ? 1 : -1), -8, 8);
                 } else if (active && !netplay && !optionsInput && !usernamePrompt.IsOpen() && !modelGallery.IsOpen() && ev.type == T::MouseWheel && ev.wheel != 0 &&
@@ -2389,7 +2410,7 @@ int main(int argc, char** argv) {
                 if (active && optionsInput && ev.type == T::KeyDown && !ev.repeat &&
                     (ev.key == platform::Key::PageUp || ev.key == platform::Key::PageDown))
                     optionsTabDelta += ev.key == platform::Key::PageUp ? -1 : 1;
-                if (active && (wiiPage.IsOpen() || lightgunPage.IsOpen() || updatePrompt.IsOpen()) &&
+                if (active && (controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || updatePrompt.IsOpen()) &&
                     (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
                     int ww, wh;
                     plat.ClientSize(&ww, &wh);
@@ -2406,7 +2427,7 @@ int main(int argc, char** argv) {
                         wiiMouse.reload |= ev.button == 3;
                     }
                 }
-                if (active && !netplay && !optionsInput && !wiiPage.IsOpen() && !lightgunPage.IsOpen() &&
+                if (active && !netplay && !optionsInput && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() &&
                     !modelGallery.IsOpen() && world.GameMode() == 4 && world.Hud().nightShiftPage == 4 && ev.type == T::KeyDown) {
                     // Name typing owns printable keys, including Space/H/P, which otherwise trigger game actions.
                     if (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127)) {
@@ -2467,7 +2488,10 @@ int main(int argc, char** argv) {
                 auto mi = menuInput(g_keys & ~promptPrevKeys, keyboardPlayer());
                 mi.start = active && ((g_keys & ~promptPrevKeys) & play::kEscapeKey) != 0;
                 const int dev = deviceForPlayer(keyboardPlayer());
-                if (active && guns && dev >= 0 && (guns->Player(dev).pressed & input::kStart)) mi.pressed |= 8;
+                if (active && guns && dev >= 0) {
+                    const auto ps = guns->Player(dev);
+                    if (!ps.gamepad && (ps.pressed & input::kStart)) mi.pressed |= 8;
+                }
                 if (mi.trigger && !mi.pointer) { mi.trigger = false; mi.reload = true; }
                 updateUsernamePrompt(mi);
                 promptInputConsumed = true;
@@ -2508,7 +2532,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if (active && !availableUpdate.empty() && !promptInputConsumed && !netplay && lobby.page == Lobby::kOff &&
-                (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !wiiPage.IsOpen() &&
+                (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() &&
                 !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !usernamePrompt.IsOpen()) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
@@ -2582,13 +2606,14 @@ int main(int argc, char** argv) {
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
             bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false, lightgunOpenedThisFrame = false;
+            bool controllerOpenedThisFrame = false;
             bool namePromptWasOpen = usernamePrompt.IsOpen() || promptInputConsumed;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
             const bool scoreCodeEligible = (active || headless) && !netplay && !net.CatchingUp() &&
                 lobby.page == Lobby::kOff && !namePromptWasOpen && !menu.IsOpen() && !optionsPage.IsOpen() &&
-                !wiiPage.IsOpen() && !lightgunPage.IsOpen() && !modelGallery.IsOpen() &&
+                !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() && !modelGallery.IsOpen() &&
                 play::ScoreDisplayCode::FrontEnd(world.GameMode(), world.Hud().nightShiftPage);
             const auto scoreInput = scoreDisplay.Update(g_keys, scoreCodeEligible);
             const uint32_t frameKeys = scoreInput.keys;
@@ -2618,8 +2643,15 @@ int main(int argc, char** argv) {
                 }
                 menuWasOpen = menu.IsOpen();
                 menuPausePlayer = hh.pausePlayer;
-                if (menuWasOpen && !menuClosing && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
-                    const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
+                if (menuWasOpen && !menuClosing && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+                    auto mi = menuInput(frameKeys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
+                    for (int dev = 0; dev < 2 && guns; ++dev) {
+                        const auto ps = guns->Player(dev);
+                        if (ps.gamepad && (ps.menuPressed & input::gamepad::kMenuStart)) {
+                            mi.start = true;
+                            mi.pressed &= ~8u;
+                        }
+                    }
                     std::vector<uint32_t> menuSounds;
                     const play::Settings before = volumes;
                     const bool pageWasOpen = menu.DisplayOpen();
@@ -2640,6 +2672,11 @@ int main(int argc, char** argv) {
                     if (volumes != before || act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen()))
                         volumes.Save(settingsPath);  // leaving the menu / page keeps the settings
                     const auto deviceAction = menu.Display().TakeDeviceAction();
+                    if (deviceAction == play::DisplayMenu::DeviceAction::Controllers) {
+                        controllerPage.Open();
+                        wii.BeginFrame();
+                        controllerOpenedThisFrame = true;
+                    }
                     if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
                         wiiPage.Open();
                         wii.BeginFrame();
@@ -2672,13 +2709,43 @@ int main(int argc, char** argv) {
             }
             // The display page over the Options screen: opened when the world reports a new request; while open it
             // takes the keys and the device buttons (the world gets no input, so the screen stays as it is).
-            bool pageWasOpen = wiiPage.IsOpen() || lightgunPage.IsOpen();
+            bool pageWasOpen = controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen();
+            if ((active || headless) && menuEnabled && controllerPage.IsOpen() && !controllerOpenedThisFrame) {
+                auto mi = menuInput(frameKeys & ~menuPrevKeys, 0);
+                if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
+                if (wiiMouse.trigger || (!mi.trigger && wiiMouse.pointer)) {
+                    mi.pointer = wiiMouse.pointer;
+                    mi.px = wiiMouse.px;
+                    mi.py = wiiMouse.py;
+                    mi.trigger |= wiiMouse.trigger;
+                }
+                mi.reload |= wiiMouse.reload;
+                const auto before = controllers.settings;
+                std::vector<uint32_t> deviceSounds;
+                const bool closed = controllerPage.Update(mi, controllers, &deviceSounds);
+                if (controllers.settings != before) controllers.Configure();
+                if ((closed || controllers.settings != before) && !controllers.settings.Save(controllerSettingsPath)) {
+                    const std::string message = "Could not save controller settings - check folder access";
+                    controllerPage.Notice(message);
+                    if (closed) {
+                        optionsPage.SetStatus(message);
+                        menu.Display().SetStatus(message);
+                    }
+                }
+                if (sndDriver)
+                    for (uint32_t id : deviceSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
+                wiiMouse = {};
+            }
             if ((active || headless) && menuEnabled && wiiPage.IsOpen() && !wiiOpenedThisFrame) {
                 auto mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
                 for (int dev = 0; dev < 2; ++dev) {
                     const auto ps = play::DisplayPointer(focusedGuns.Player(dev), volumes.display.graphics.crtCurvature);
                     if (ps.connected && (ps.pressed || ps.menuPressed)) {
+                        if (ps.gamepad) {
+                            mi.pressed |= play::GamepadMenuInput(ps).pressed;
+                            continue;
+                        }
                         mi.pointer = ps.onScreen;
                         mi.px = play::MenuPointerX(ps.x, viewportAspect) * 640;
                         mi.py = ps.y * 480;
@@ -2710,6 +2777,10 @@ int main(int argc, char** argv) {
                     const auto ps = play::DisplayPointer(focusedGuns.Player(dev), volumes.display.graphics.crtCurvature);
                     if (ps.connected && (ps.pressed || ps.menuPressed)) {
                         deviceAction = true;
+                        if (ps.gamepad) {
+                            mi.pressed |= play::GamepadMenuInput(ps).pressed;
+                            continue;
+                        }
                         mi.pointer = ps.onScreen;
                         mi.px = play::MenuPointerX(ps.x, viewportAspect) * 640;
                         mi.py = ps.y * 480;
@@ -2752,7 +2823,7 @@ int main(int argc, char** argv) {
                     lightgunPage.Notice("Could not save gun settings - check folder access");
                 wiiMouse = {};
             }
-            if (menuEnabled && !namePromptWasOpen && optionsPage.IsOpen() && !pageWasOpen && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+            if (menuEnabled && !namePromptWasOpen && optionsPage.IsOpen() && !pageWasOpen && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
@@ -2774,6 +2845,10 @@ int main(int argc, char** argv) {
                 if ((closed || volumes != before) && !volumes.Save(settingsPath))
                     optionsPage.SetStatus("Could not save local options - check folder access.");
                 const auto deviceAction = optionsPage.TakeDeviceAction();
+                if (deviceAction == play::DisplayMenu::DeviceAction::Controllers) {
+                    controllerPage.Open();
+                    wii.BeginFrame();
+                }
                 if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
                     wiiPage.Open();
                     wii.BeginFrame();
@@ -2824,10 +2899,11 @@ int main(int argc, char** argv) {
                         dp.onScreen = ps.onScreen;
                         dp.held = ps.held;
                         dp.pressed = ps.pressed;
-                        in[p] = play::DeviceWorldInput(dp, world.Hud().player[p].state, prevButtons[p]);
+                        in[p] = ps.gamepad ? play::GamepadWorldInput(ps, world.Hud().player[p].state, inGame, prevButtons[p]) :
+                                            play::DeviceWorldInput(dp, world.Hud().player[p].state, prevButtons[p]);
                         if (inGame && !menuWasOpen && !pageWasOpen) in[p] = play::AspectedWorldInput(in[p], ps.x, ps.y, viewportAspect);
-                        in[p].held |= keys | play::WorldKeyboardBits(ps.menuHeld, inGame, activePlayer);
-                        in[p].pressed |= keysPressed | play::WorldKeyboardBits(ps.menuPressed, inGame, activePlayer);
+                        in[p].held |= keys | (ps.gamepad ? 0 : play::WorldKeyboardBits(ps.menuHeld, inGame, activePlayer));
+                        in[p].pressed |= keysPressed | (ps.gamepad ? 0 : play::WorldKeyboardBits(ps.menuPressed, inGame, activePlayer));
                     }
                     if (menuWasOpen) {  // the pause menu took this frame's input (the world ignores all but start while paused)
                         in[p].held = in[p].pressed = 0;
@@ -2983,11 +3059,13 @@ int main(int argc, char** argv) {
                     lobby.pageSeconds = 0;
                     lobby.pointer.seen = false;
                     lobby.pointerKey = -1;
+                    lobby.codeKey = 0;
+                    lobby.codePadNavigation = false;
                 };
                 lobby.pageSeconds += 1.0 / 60.0;
                 net.Poll();
                 net.LobbyRefresh();
-                const uint32_t pressed = netPresent[0] ? in[0].pressed : 0;  // (a stale in[0] from an earlier step is not an edge)
+                const uint32_t pressed = (netPresent[0] ? in[0].pressed : 0) | (netPresent[1] ? in[1].pressed : 0);
                 const bool up = pressed & 0x10, down = pressed & 0x20, left = pressed & 0x40, right = pressed & 0x80;
                 bool confirm = pressed & 0xC, back = pressed & 0x2;
                 bool codeBack = false;
@@ -2995,18 +3073,36 @@ int main(int argc, char** argv) {
                 const size_t roomCount = net.LobbyRooms().size();
                 const int rows = lobby.RowCount(roomCount);
                 // Use the applied input, so mouse, guns, touch and scripted checks share the same hit testing.
-                const auto& pointer = in[0];
-                const bool aimed = netPresent[0] && pointer.kind == 1 && !pointer.offscreen && pointer.x < 640 && pointer.y < 480;
-                const bool shot = netPresent[0] && pointer.kind == 1 && pointer.fired && !pointer.offscreen;
+                int pointerPlayer = 0;
+                if (netPresent[1] && in[1].kind == 1 && (!netPresent[0] || in[0].kind != 1 || in[1].fired)) pointerPlayer = 1;
+                const auto& pointer = in[pointerPlayer];
+                const bool aimed = netPresent[pointerPlayer] && pointer.kind == 1 && !pointer.offscreen && pointer.x < 640 && pointer.y < 480;
+                const bool shot = netPresent[pointerPlayer] && pointer.kind == 1 && pointer.fired && !pointer.offscreen;
                 const bool modernLobby = activeNightShift && uiFont.Available();
                 const int r = aimed ? lobby.RowAt(float(pointer.x), float(pointer.y), roomCount, modernLobby) : -1;
-                if (lobby.pointer.Update(aimed, float(pointer.x), float(pointer.y), shot)) {
+                const bool pointerMoved = lobby.pointer.Update(aimed, float(pointer.x), float(pointer.y), shot);
+                if (pointerMoved) {
                     if (r >= 0 && r != lobby.cursor) {
                         lobby.cursor = r;
                         sound(0xA9);
                     }
                 }
                 lobby.pointerKey = aimed && lobby.page == Lobby::kCode ? Lobby::KeyAt(float(pointer.x), float(pointer.y)) : -1;
+                if (lobby.page == Lobby::kCode) {
+                    if (pointerMoved && lobby.pointerKey >= 0) {
+                        lobby.codeKey = lobby.pointerKey;
+                        lobby.codePadNavigation = false;
+                    }
+                    const auto keypad = play::UpdateLobbyKeypad(lobby.codeKey, pressed);
+                    lobby.codeKey = keypad.key;
+                    if (pressed & 0xFC) lobby.codePadNavigation = true;
+                    if (!aimed || lobby.codePadNavigation) lobby.pointerKey = lobby.codeKey;
+                    if (!shot) {
+                        if (keypad.digit) typed += keypad.digit;
+                        typedBackspace |= keypad.erase;
+                        codeBack |= keypad.back;
+                    }
+                }
                 const bool cancelPage = lobby.page == Lobby::kWaiting || lobby.page == Lobby::kConnecting || lobby.page == Lobby::kRejoin;
                 if (cancelPage && aimed &&
                     game::MenuTextRowHit(float(pointer.x), float(pointer.y), 17.5f, modernLobby ? 26 : 224, modernLobby ? 636 : 416))
@@ -3805,7 +3901,7 @@ int main(int argc, char** argv) {
             (optionsPage.IsOpen() ? optionsPage : menu.Display()).ModernHud(volumes.display, patternHud);
             play::AppendNightShiftPanels(patternHud, sprites, viewportAspect);
             uiFont.Append(patternHud.menuText, sprites, port::ViewportXScale(viewportAspect));
-        } else if (uiFont.Available() && activeNightShift && (lightgunPage.IsOpen() || wiiPage.IsOpen())) {
+        } else if (uiFont.Available() && activeNightShift && (controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen())) {
             if (world.Hud().paused && !lastSceneDraws.empty())
                 vp = scene.BuildFromWorld(renderer, world, &lastSceneDraws);
             else if (attract.Get())
@@ -3817,13 +3913,15 @@ int main(int argc, char** argv) {
                 vp = game::Mat4::Identity();
             }
             game::WorldHud deviceHud;
-            if (lightgunPage.IsOpen())
+            if (controllerPage.IsOpen())
+                controllerPage.ModernHud(controllers, deviceHud);
+            else if (lightgunPage.IsOpen())
                 lightgunPage.ModernHud(lightguns, plat.CurrentInput() == platform::Input::RawInput, deviceHud);
             else
                 wiiPage.ModernHud(wii, deviceHud);
             // Calibration targets and the gun-test sights must retain full contrast.
-            const bool aimCanvas = lightgunPage.IsOpen() ? lightgunPage.CalibrationTarget() >= 0 || lightgunPage.Testing()
-                                                        : wiiPage.CalibrationStep() >= 0;
+            const bool aimCanvas = !controllerPage.IsOpen() && (lightgunPage.IsOpen() ? lightgunPage.CalibrationTarget() >= 0 || lightgunPage.Testing()
+                                                        : wiiPage.CalibrationStep() >= 0);
             play::AppendNightShiftPanels(deviceHud, sprites, viewportAspect, aimCanvas ? 100 : volumes.display.menuOpacity);
             uiFont.Append(deviceHud.menuText, sprites, port::ViewportXScale(viewportAspect));
         } else if (world.Hud().stageResults.active) {
@@ -3875,6 +3973,12 @@ int main(int argc, char** argv) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             sprites = scene.MakeSpriteDraws(world.Hud().sprites, 0.001f, nullptr);
+        } else if (controllerPage.IsOpen()) {
+            renderer.SetScene(assets, {});
+            vp = game::Mat4::Identity();
+            std::vector<game::SpriteDef> md;
+            controllerPage.Sprites(assets.Exe(), controllers, md);
+            sprites = scene.MakeSpriteDraws(md, 0.001f, nullptr);
         } else if (lightgunPage.IsOpen()) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
@@ -4185,7 +4289,7 @@ int main(int argc, char** argv) {
         if (!updatePrompt.IsOpen()) play::AppendMenuGameFade(world.Hud(),sprites);
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         const bool outputResolutionMenu = !previewHidden &&
-            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen() ||
+            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen() ||
              world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
              world.NetworkLobby() || lobby.page != Lobby::kOff);
         // Menu readability is independent of scene resolution and the saved

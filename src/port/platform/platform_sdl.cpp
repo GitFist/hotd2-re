@@ -2,10 +2,12 @@
 
 #include <SDL3/SDL.h>
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 
 #include "audio/sdl_audio_backend.h"
+#include "input/gamepad_guns.h"
 #include "input/pointer_guns.h"
 #include "input/touch_guns.h"
 
@@ -75,6 +77,65 @@ const char* CommonUsage() { return "[--renderer d3d11|d3d12|sdlgpu] [--input aut
 
 namespace {
 
+// FocusedGuns needs the physical held state while inactive to suppress held
+// controls on refocus. Share the hint across gun windows and restore it when
+// the last one closes; headless captures and viewers never change it.
+int gamepadHintUsers = 0;
+bool hadGamepadHint = false;
+std::string previousGamepadHint;
+
+void AcquireGamepadEvents() {
+    if (gamepadHintUsers++ != 0) return;
+    const char* value = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+    hadGamepadHint = value != nullptr;
+    previousGamepadHint = value ? value : "";
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
+}
+
+void ReleaseGamepadEvents() {
+    if (--gamepadHintUsers != 0) return;
+    const char* value = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+    if (value && std::strcmp(value, "1") == 0) {
+        SDL_ResetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+        if (hadGamepadHint && !SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, previousGamepadHint.c_str()) &&
+            previousGamepadHint != (SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS) ?
+                                    SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS) : ""))
+            SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, previousGamepadHint.c_str(), SDL_HINT_OVERRIDE);
+    }
+    previousGamepadHint.clear();
+}
+
+struct AxisBinding { SDL_GamepadAxis sdl; input::GamepadAxis game; };
+constexpr AxisBinding gamepadAxes[] = {
+    {SDL_GAMEPAD_AXIS_LEFTX, input::GamepadAxis::LeftX},
+    {SDL_GAMEPAD_AXIS_LEFTY, input::GamepadAxis::LeftY},
+    {SDL_GAMEPAD_AXIS_RIGHTX, input::GamepadAxis::RightX},
+    {SDL_GAMEPAD_AXIS_RIGHTY, input::GamepadAxis::RightY},
+    {SDL_GAMEPAD_AXIS_LEFT_TRIGGER, input::GamepadAxis::LeftTrigger},
+    {SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, input::GamepadAxis::RightTrigger},
+};
+struct ButtonBinding { SDL_GamepadButton sdl; input::GamepadButton game; };
+constexpr ButtonBinding gamepadButtons[] = {
+    {SDL_GAMEPAD_BUTTON_SOUTH, input::GamepadButton::South},
+    {SDL_GAMEPAD_BUTTON_EAST, input::GamepadButton::East},
+    {SDL_GAMEPAD_BUTTON_WEST, input::GamepadButton::West},
+    {SDL_GAMEPAD_BUTTON_NORTH, input::GamepadButton::North},
+    {SDL_GAMEPAD_BUTTON_BACK, input::GamepadButton::Back},
+    {SDL_GAMEPAD_BUTTON_START, input::GamepadButton::Start},
+    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, input::GamepadButton::LeftShoulder},
+    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, input::GamepadButton::RightShoulder},
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, input::GamepadButton::Up},
+    {SDL_GAMEPAD_BUTTON_DPAD_DOWN, input::GamepadButton::Down},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, input::GamepadButton::Left},
+    {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, input::GamepadButton::Right},
+};
+
+float NormalizeGamepadAxis(SDL_GamepadAxis axis, Sint16 value) {
+    if (axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+        return value > 0 ? static_cast<float>(value) / 32767.0f : 0.0f;
+    return static_cast<float>(value) / (value < 0 ? 32768.0f : 32767.0f);
+}
+
 Key MapKey(SDL_Keycode k) {
     switch (k) {
     case SDLK_ESCAPE: return Key::Escape;
@@ -130,6 +191,7 @@ public:
 struct Platform::Impl {
     Options opt;
     bool sdlVideo = false;
+    bool sdlGamepad = false, gamepadEvents = false;
     SDL_Window* window = nullptr;
     SDL_Cursor* cursor = nullptr;
     Input input = Input::Auto;
@@ -137,6 +199,49 @@ struct Platform::Impl {
     input::Lightguns lightguns;
     input::TouchGuns touch;
     MappedGuns mapped;
+    input::GamepadGuns gamepads{&mapped};
+    struct Pad { SDL_JoystickID id = 0; SDL_Gamepad* device = nullptr; };
+    std::array<Pad, input::kMaxPlayers> pads{};
+    Uint64 gamepadUpdateNS = 0;
+
+    int GamepadSlot(SDL_JoystickID id) const {
+        for (int slot = 0; slot < input::kMaxPlayers; ++slot)
+            if (pads[slot].id == id) return slot;
+        return -1;
+    }
+
+    void SampleGamepad(int slot) {
+        for (const auto& binding : gamepadAxes)
+            gamepads.SetAxis(slot, binding.game, NormalizeGamepadAxis(binding.sdl, SDL_GetGamepadAxis(pads[slot].device, binding.sdl)));
+        for (const auto& binding : gamepadButtons)
+            gamepads.SetButton(slot, binding.game, SDL_GetGamepadButton(pads[slot].device, binding.sdl));
+    }
+
+    void OpenGamepad(SDL_JoystickID id) {
+        if (!id || GamepadSlot(id) >= 0) return;
+        for (int slot = 0; slot < input::kMaxPlayers; ++slot) {
+            if (pads[slot].device) continue;
+            SDL_Gamepad* device = SDL_OpenGamepad(id);
+            if (!device) return;
+            pads[slot] = {id, device};
+            gamepads.SetConnected(slot, true);
+            SampleGamepad(slot);
+            return;
+        }
+    }
+
+    void OpenGamepads() {
+        int count = 0;
+        SDL_JoystickID* ids = SDL_GetGamepads(&count);
+        for (int i = 0; i < count; ++i) OpenGamepad(ids[i]);
+        SDL_free(ids);
+    }
+
+    void CloseGamepad(int slot) {
+        if (pads[slot].device) SDL_CloseGamepad(pads[slot].device);
+        pads[slot] = {};
+        gamepads.SetConnected(slot, false);
+    }
     // Application activation (Event::Type::Focus): the last state reported, and the state the platform saw last.
     bool activeReported = true, activeNow = true;
 #ifdef _WIN32
@@ -204,6 +309,9 @@ Platform::~Platform() {
     if (impl_->sdlProc && impl_->hwnd) SetWindowLongPtrW(impl_->hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(impl_->sdlProc));
     if (Impl::activeImpl == impl_.get()) Impl::activeImpl = nullptr;
 #endif
+    for (int slot = 0; slot < input::kMaxPlayers; ++slot) impl_->CloseGamepad(slot);
+    if (impl_->sdlGamepad) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    if (impl_->gamepadEvents) ReleaseGamepadEvents();
     if (impl_->cursor) SDL_DestroyCursor(impl_->cursor);
     if (impl_->window) SDL_DestroyWindow(impl_->window);
     if (impl_->sdlVideo) SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
@@ -250,6 +358,14 @@ bool Platform::Init(const Options& o, std::string* error) {
     }
 #endif
     if (o.guns) {
+        AcquireGamepadEvents();
+        m.gamepadEvents = true;
+        if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+            if (error) *error = std::string("SDL gamepad init: ") + SDL_GetError();
+            return false;
+        }
+        m.sdlGamepad = true;
+        m.gamepadUpdateNS = SDL_GetTicksNS();
         m.cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
         if (m.cursor) SDL_SetCursor(m.cursor);
 #ifdef _WIN32
@@ -270,6 +386,8 @@ bool Platform::Init(const Options& o, std::string* error) {
         SDL_GetWindowSize(m.window, &w, &h);
         m.touch.config.displayW = static_cast<float>(w);
         m.touch.config.displayH = static_cast<float>(h);
+        Guns();
+        m.OpenGamepads();
     }
     return true;
 }
@@ -322,6 +440,41 @@ bool Platform::PollEvent(Event* e) {
     while (SDL_PollEvent(&ev)) {
         *e = Event{};
         switch (ev.type) {
+        case SDL_EVENT_GAMEPAD_ADDED:
+            if (guns) m.OpenGamepad(ev.gdevice.which);
+            continue;
+        case SDL_EVENT_GAMEPAD_REMOVED:
+            if (guns) {
+                const int slot = m.GamepadSlot(ev.gdevice.which);
+                if (slot >= 0) {
+                    m.CloseGamepad(slot);
+                    m.OpenGamepads();  // a previously ignored third pad may use the freed slot
+                }
+            }
+            continue;
+        case SDL_EVENT_GAMEPAD_REMAPPED:
+            if (guns) {
+                const int slot = m.GamepadSlot(ev.gdevice.which);
+                if (slot >= 0) m.SampleGamepad(slot);
+            }
+            continue;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            if (guns) {
+                const int slot = m.GamepadSlot(ev.gaxis.which);
+                if (slot >= 0) for (const auto& binding : gamepadAxes)
+                    if (binding.sdl == ev.gaxis.axis)
+                        m.gamepads.SetAxis(slot, binding.game, NormalizeGamepadAxis(binding.sdl, ev.gaxis.value));
+            }
+            continue;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            if (guns) {
+                const int slot = m.GamepadSlot(ev.gbutton.which);
+                if (slot >= 0) for (const auto& binding : gamepadButtons)
+                    if (binding.sdl == ev.gbutton.button)
+                        m.gamepads.SetButton(slot, binding.game, ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+            }
+            continue;
 #ifndef _WIN32
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
         case SDL_EVENT_WINDOW_FOCUS_LOST:
@@ -399,6 +552,11 @@ bool Platform::PollEvent(Event* e) {
         }
     }
     if (guns && m.input == Input::Touch) m.touch.Update(static_cast<double>(SDL_GetTicksNS()) * 1e-9);
+    if (m.sdlGamepad) {
+        const Uint64 now = SDL_GetTicksNS();
+        m.gamepads.Update(static_cast<double>(now - m.gamepadUpdateNS) * 1e-9);
+        m.gamepadUpdateNS = now;
+    }
     return false;
 }
 
@@ -421,9 +579,10 @@ input::GunSource* Platform::Guns() {
     m.mapped.gameSpace = m.input == Input::Touch || m.input == Input::RawInput;
     m.mapped.inner = m.input == Input::RawInput ? static_cast<input::GunSource*>(&m.lightguns) :
                      m.input == Input::Touch ? static_cast<input::GunSource*>(&m.touch) : &m.pointer;
-    return &m.mapped; // stable address when the source changes with a Wii wrapper attached
+    return &m.gamepads; // stable address when the source changes with a Wii wrapper attached
 }
 input::Lightguns& Platform::Lightguns() { return impl_->lightguns; }
+input::GamepadGuns& Platform::Controllers() { return impl_->gamepads; }
 Input Platform::CurrentInput() const { return impl_->input; }
 bool Platform::SetCursorVisible(bool visible) {
     if (!impl_->sdlVideo || !impl_->window) return false;

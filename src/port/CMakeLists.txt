@@ -5,7 +5,7 @@
 #                   port_input (Windows raw input; also used by the hook)
 #   platform layer: port_platform (SDL3: window, events, clock, input sources, device / audio creation, PNG)
 
-add_library(port_input_core STATIC input/aim_map.cpp input/aim_calibration.cpp input/lightguns.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp)
+add_library(port_input_core STATIC input/aim_map.cpp input/aim_calibration.cpp input/lightguns.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp input/gamepad_guns.cpp input/gamepad_settings.cpp)
 target_include_directories(port_input_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(WIN32)
@@ -200,6 +200,8 @@ if(HOTD2_SDL3)
   # play.exe - playable game on the native world (game mode 6): gun input, gameplay HUD, sound.
   add_executable(play tools/play.cpp)
   target_link_libraries(play PRIVATE port_platform game_hud port_play port_net port_update)
+  add_executable(gamepad_platform_test ${CMAKE_SOURCE_DIR}/tests/gamepad_platform_test.cpp)
+  target_link_libraries(gamepad_platform_test PRIVATE port_platform)
   if(WIN32)
     add_executable(lightgun_platform_test ${CMAKE_SOURCE_DIR}/tests/lightgun_platform_test.cpp)
     target_link_libraries(lightgun_platform_test PRIVATE port_platform)
@@ -207,6 +209,8 @@ if(HOTD2_SDL3)
     target_link_libraries(startup_window_test PRIVATE port_platform)
     add_executable(device_menu_render_test ${CMAKE_SOURCE_DIR}/tests/device_menu_render_test.cpp)
     target_link_libraries(device_menu_render_test PRIVATE port_platform port_play port_render)
+    add_executable(controller_menu_render_test ${CMAKE_SOURCE_DIR}/tests/controller_menu_render_test.cpp)
+    target_link_libraries(controller_menu_render_test PRIVATE port_platform port_play port_render)
     add_executable(scroll_hint_render_test ${CMAKE_SOURCE_DIR}/tests/scroll_hint_render_test.cpp)
     target_link_libraries(scroll_hint_render_test PRIVATE port_platform port_play port_render)
     add_executable(online_name_render_test ${CMAKE_SOURCE_DIR}/tests/online_name_render_test.cpp)
@@ -221,22 +225,11 @@ if(HOTD2_SDL3)
   # hotd2.exe - the same program as a Windows GUI app (no console window when double-clicked). play.exe stays a console
   # program for scripts and headless runs (callers wait for it and read its output).
   if(WIN32)
-    # Icon: the original's icon group from the local game\Hod2.exe when present, else our own crosshair
-    # (tools/make_icon.py); written to the build folder only, never committed.
-    set(HOTD2_ICON "${CMAKE_CURRENT_BINARY_DIR}/hotd2.ico")
+    set(HOTD2_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/hotd2re.ico")
     set(HOTD2_RC "${CMAKE_CURRENT_BINARY_DIR}/hotd2.rc")
-    find_package(Python3 COMPONENTS Interpreter QUIET)
-    set(HOTD2_RC_SOURCES)
-    if(Python3_Interpreter_FOUND)
-      execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/make_icon.py" "${HOTD2_ICON}"
-                              --from-exe "${PROJECT_SOURCE_DIR}/game/Hod2.exe"
-                      RESULT_VARIABLE HOTD2_ICON_RESULT)
-      if(HOTD2_ICON_RESULT EQUAL 0 AND EXISTS "${HOTD2_ICON}")
-        file(WRITE "${HOTD2_RC}" "1 ICON \"${HOTD2_ICON}\"\n")
-        set(HOTD2_RC_SOURCES "${HOTD2_RC}")
-      endif()
-    endif()
-    add_executable(hotd2 WIN32 tools/play.cpp ${HOTD2_RC_SOURCES})
+    file(GENERATE OUTPUT "${HOTD2_RC}" CONTENT "1 ICON \"${HOTD2_ICON}\"\n")
+    set_property(SOURCE "${HOTD2_RC}" PROPERTY OBJECT_DEPENDS "${HOTD2_ICON}")
+    add_executable(hotd2 WIN32 tools/play.cpp "${HOTD2_RC}")
     target_link_libraries(hotd2 PRIVATE port_platform game_hud port_play port_net port_update)
     target_compile_definitions(hotd2 PRIVATE PLAY_GUI=1)
     if(MSVC)

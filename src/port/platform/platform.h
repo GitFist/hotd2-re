@@ -16,6 +16,7 @@
 #include "audio/audio_output.h"
 #include "input/aim_map.h"
 #include "input/player_state.h"
+#include "input/gamepad_guns.h"
 #include "input/lightguns.h"
 #include "render/gpu_device.h"
 
@@ -95,6 +96,7 @@ public:
     Input CurrentInput() const;
     bool SetInput(Input mode, std::string* error);
     input::Lightguns& Lightguns();
+    input::GamepadGuns& Controllers();
 
     // Main thread: the system pointer is separate from the game's HUD sights. Headless/uninitialized instances
     // cannot change SDL's process-wide cursor; their visibility query returns the default visible state.

@@ -2,8 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.10.31-a
-Complete download: HOTD2RE-1.7-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.01-a
+Complete download: HOTD2RE-1.8-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation
@@ -14,6 +14,8 @@ This folder contains the port and any accompanying redistributable runtime compo
 3. Double-click hotd2.exe. The original CD is not needed by the port.
 
 Controls (mouse / touchpad / light gun): left button = trigger, right button = reload, middle button or Enter = start.
+Xbox/PlayStation controllers: configure each player in Options > Devices > Controllers.
+LB/L1 and RB/R1 switch settings categories; A/Cross selects and B/Circle goes back.
 Keyboard in menus: arrows, Enter (confirm), Esc / Backspace (back). Esc pauses/resumes during play and never quits.
 Score display: at the title or main menu, press Left, Left, Right, Right, Right,
 Left, Right, Enter. Repeat to turn it off. The setting lasts until you close the game.

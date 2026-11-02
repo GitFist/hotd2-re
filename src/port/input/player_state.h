@@ -25,6 +25,7 @@ struct PlayerState {
     uint8_t pressed = 0;       // went down since last BeginFrame()
     uint8_t released = 0;      // went up since last BeginFrame()
     uint32_t menuHeld = 0, menuPressed = 0; // native controller D-pad and confirm (world pad bits)
+    bool gamepad = false;      // claimed standard controller, with stick aim already normalized over the game image
 };
 
 // A source of per-player gun input for the port's game loop. Player() is the state for the coming game frame (aim

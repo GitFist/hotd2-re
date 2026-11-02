@@ -156,6 +156,7 @@ class DisplayMenu {
         kLightguns,
         kWiiRemotes,
         kUsername,
+        kControllers,
         kRowCount
     };
 
@@ -167,7 +168,7 @@ class DisplayMenu {
         std::string username;
         bool operator==(const OptionValues&) const = default;
     };
-    enum class DeviceAction { None, Lightguns, WiiRemotes };
+    enum class DeviceAction { None, Lightguns, WiiRemotes, Controllers };
     void SetOptionValues(const OptionValues& values) { optionValues_ = values; }
     const OptionValues& OptionValuesState() const { return optionValues_; }
     bool TakeOptionChange(OptionValues* values) {
