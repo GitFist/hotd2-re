@@ -177,6 +177,7 @@ struct EnemyTask : ActorTask {
     int8_t c131D = -1, c131E = 0, c131F = 0;
     int headPitch = 0, headYaw = 0;  // +0x1320 / +0x1324
     int texCounter = 0;        // +0x1328
+    int cameraBehaviour = 1;   // +0x132C behaviour 42: underlying AI until its scripted camera checkpoint
     int counter1330 = 0;       // +0x1330
     int counter1334 = 0;       // +0x1334
     int timer1338 = 0;         // +0x1338
@@ -348,6 +349,9 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     TypingDrillUi typingDrill;
     TypingDrillGameState typingDrillGame;
     std::string typingCharacters;
+    static constexpr std::string_view kTypingSkipWord = "skip";
+    std::array<uint8_t, 2> typingSkipProgress{};
+    bool CanTypeCutsceneSkip() const;
     bool typingCancel = false;
     std::map<std::pair<uint32_t,uint32_t>,std::array<float,2>> typingPositions;
     std::map<uint32_t, std::pair<TypingTarget, TypingTargetSpec>> typingCachedTargets;
@@ -742,6 +746,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     std::vector<World::SoundEvent> sounds;
     std::vector<std::string> notes;
     WorldHud hud;
+    WorldFeedback feedback;
     StageResults stageResults;
     void BeginStageResults(int bonus = 0);
     bool StageResultsFrame();
@@ -845,7 +850,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     void EnemyProcessHits(EnemyTask& e);     // 0x00453EB0
     void EnemyCollectShots(EnemyTask& e);    // 0x004092F0
     void EnemyVoice(EnemyTask& e, int which);  // 0x0040A6F0
-    void EnemyBehaviour(EnemyTask& e);
+    void EnemyBehaviour(EnemyTask& e, int selected = -1);
     void EnemyBeh23(EnemyTask& e);      // 0x00457B50
     void EnemyBeh9(EnemyTask& e);       // 0x004550E0
     void EnemyBeh7(EnemyTask& e);       // 0x00454F20
@@ -864,6 +869,7 @@ struct World::Impl : public EventHost, public CrtRand::Observer {
     void EnemyBeh34(EnemyTask& e);      // 0x0045A890 walk to the civilian
     void EnemyBeh35(EnemyTask& e);      // 0x0045AAA0 motion list (attacks the civilian)
     void EnemyBeh45(EnemyTask& e);      // 0x0045C7D0 short idle, then the saved behaviour
+    void EnemyBeh42(EnemyTask& e);      // 0x0045BFD0 keep AI running until the scripted camera checkpoint
     void EnemyBeh40(EnemyTask& e);      // 0x0045BCB0 walk past a point
     bool EnemyPointBehind(const EnemyTask& e, const float pt[3]);  // 0x0045BC10
     void EnemyScriptEnd(EnemyTask& e);  // 0x0045C8D0

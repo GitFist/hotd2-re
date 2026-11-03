@@ -230,11 +230,35 @@ void World::Impl::EnemyScriptEnd(EnemyTask& e) {
         break;
     }
     if (e.behaviour == 1 && e.P(3) != -1) {
-        Note("enemy script end with P[12] != -1 (behaviour 0x2A) not ported");
+        e.cameraBehaviour = 1;
         e.behaviour = 0x2A;
         e.flags34 |= 0x10000;
     }
     if (e.behaviour != 0x22) e.flags34 &= ~0x2500u;  // 0xFFFFDAFF
+}
+
+// 0x0045BFD0 (behaviour 42): keep the normal AI running while hidden from the camera's
+// target table, then release it at the camera/tick stored in P s16 12/14. The wrapper
+// suppresses attack transitions until then, without leaving stale walking velocity.
+void World::Impl::EnemyBeh42(EnemyTask& e) {
+    EnemyBehaviour(e, e.cameraBehaviour);
+    const PropWorld state = PropState();
+    int checkpoint = e.record.ParamS16(12);
+    // Prepared Typing enemy records retain this native camera ID; accept banks
+    // which already carry the namespace too, without applying it twice.
+    if (typingReferenceActive && checkpoint >= 0 && checkpoint < 0x4000) checkpoint += 0x4000;
+    if (state.camPath == checkpoint && state.camTime == e.record.ParamS16(14)) {
+        e.flags34 &= ~0x10000u;
+        e.behaviour = static_cast<int16_t>(e.cameraBehaviour);
+    } else if (e.behaviour != 42) {
+        if (e.behaviour == 3) {
+            e.cameraBehaviour = 2;
+            if (e.target >= 0 && e.target < 2) targetTaken[e.target] = 0;
+        } else {
+            e.cameraBehaviour = e.behaviour;
+        }
+        e.behaviour = 42;
+    }
 }
 
 // 0x0045C8A0(enemy, civilian): the civilian is dead (+0x34 & 0x4000000) -> 0x0045C8D0, true

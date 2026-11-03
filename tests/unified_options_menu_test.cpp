@@ -161,7 +161,7 @@ void CompactFooter(bool modern) {
             Require(!Text(hud, status), "saved-setting status no longer occupies Options list space");
             const auto help = menu.RowHelp(settings, row);
             Require(help.empty() || !Text(hud, help), "normal Options does not render per-row tooltips");
-            int cornerHints = 0;
+            int cornerHints = 0, categoryHints = 0;
             for (const auto& text : hud.menuText) {
                 Require(text.text.find("UP/DOWN: SELECT") == std::string::npos &&
                             text.text.find("WHEEL: SCROLL") == std::string::npos &&
@@ -172,11 +172,16 @@ void CompactFooter(bool modern) {
                     Require(text.x == 558 && text.y == 462 && text.scale > 0 && text.scale <= .31f &&
                                 Menu::PreviewButtonAt(text.x, text.y),
                             "Hide UI is small and inside its bottom-right click target");
+                } else if (text.text == "LB/L1 / RB/R1: CATEGORY") {
+                    ++categoryHints;
+                    Require(text.x == 28 && text.y == 461 && text.scale > 0 && text.scale <= .42f,
+                            "controller category hint stays compact at the bottom left");
                 } else {
                     Require(text.y < 456, "the list footer contains no large instruction or tooltip block");
                 }
             }
             Require(cornerHints == 1, "every Options category retains one compact Hide UI control");
+            Require(categoryHints == 1, "every Options category retains one compact controller category hint");
         }
     }
     menu.SetPage(Menu::kGraphics);

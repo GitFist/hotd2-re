@@ -1,4 +1,4 @@
-// typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--miss-recovery]
+// typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--miss-recovery|--chapter2-regression]
 // Real stage scripts, enemies and boss damage windows; all campaign damage comes
 // through the same queued text API used by the local keyboard frontend.
 #include <algorithm>
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "game/exe_image.h"
+#include "game/mstack.h"
 #include "game/world.h"
 #include "game/world_internal.h"
 #include "port/play/keyboard.h"
@@ -523,6 +524,138 @@ void EndingRoute(const char* dir) {
     Require(false, "authored chapter-six epilogue reaches the ending within its bounded dialogue sequence", &world);
 }
 
+void Chapter2Opening(const char* dir) {
+    game::TypingReference reference;
+    game::EventMemory memory;
+    game::CameraBank cameras;
+    std::string error;
+    const char* bank = std::getenv("HOTD2_TYPING_REFERENCE");
+    const auto referencePath = bank && *bank ? std::filesystem::path(bank) : std::filesystem::path(dir)/"typing_reference.bank";
+    Require(reference.Load(referencePath.string(),&error,false),error.c_str());
+    Require(reference.ApplyStage(1,memory,cameras,&error),error.c_str());
+    std::array<bool,3> sawPath{};
+    for (bool rescue : {false,true}) {
+        game::World world;
+        auto cfg=Config(); cfg.eventMode=1; cfg.typingOriginal=true;
+        Start(world,dir,cfg);
+        bool accepted=false,completed=false,sawGate=false,sawClosedGate=false;
+        uint32_t rider=0;
+        const uint64_t beforeWords=world.PortTypingStats().completedWords;
+        for (int frame=0;frame<1800 && world.Events().scene==0;++frame) {
+            const auto camera=world.Events().camera;
+            for (const auto& task:world.Tasks())
+                if (task.fn==0x00451860 || task.fn==0x00451980) rider=task.serial;
+            const auto prompts=world.PortTypingPrompts();
+            const auto word=std::find_if(prompts.begin(),prompts.end(),[&](const auto& p){return p.serial==rider&&!p.waiting;});
+            if (camera.camId==0x4049 && camera.tick<100)
+                Require(word==prompts.end(),"Chapter2 rider word stays hidden before the source cutscene gate",&world);
+            if (word!=prompts.end()) {
+                Require(camera.camId==0x4049 && camera.tick>=100 && camera.tick<220,
+                        "Chapter2 rider word uses the actual PC camera4049/ticks100..219 gate",&world);
+                sawGate=true;
+            }
+            if (!rescue && camera.camId==0x4049 && camera.tick>=220) {
+                Require(word==prompts.end(),"missed Chapter2 rider word closes at the authored deadline",&world);
+                sawClosedGate=true;
+            }
+            if (rescue && word!=prompts.end() && !completed) {
+                const auto previous=world.PortTypingStats();
+                // Exercise real keyboard acceptance before completing the rest.
+                world.PortTypingInput(word->text.substr(word->progress,accepted?std::string::npos:1));
+                Step(world);
+                accepted |= world.PortTypingStats().correctCharacters>previous.correctCharacters;
+                completed=world.PortTypingStats().completedWords>beforeWords;
+            } else Step(world);
+            const auto& drawnCamera=world.Events().camera;
+            const int which=drawnCamera.camId>=0x4048 && drawnCamera.camId<=0x404A ? drawnCamera.camId-0x4048 : -1;
+            if (which>=0) {
+                const int path=which==0?0x416A:which==1?0x4170:0x416F;
+                for (const auto& draw:world.Draws()) {
+                    if ((draw.fn!=0x004521B0 && draw.fn!=0x004522A0) ||
+                        (draw.model!=reference.SourceModel(0x2D) && draw.model!=reference.SourceModel(0x2E))) continue;
+                    sawPath[which]=true;
+                    if (draw.fn==0x004521B0) {
+                        float position[3],angles[3]; int roll=0;
+                        Require(cameras.Evaluate(path,float(drawnCamera.tick),position,angles,&roll,false),
+                                "Chapter2 vehicle's exact prepared PC path is resident",&world);
+                        for (int axis=0;axis<3;++axis)
+                            Require(std::fabs(draw.world.m[12+axis]-position[axis])<.001f,
+                                    "moving Chapter2 vehicle is submitted on its authored prepared path",&world);
+                    }
+                }
+            }
+            for (const auto& note:world.Notes())
+                Require(note.find("vehicle 0x004521B0 outside cameras")==std::string::npos,
+                        "Typing opening vehicle never falls back to a stale native camera",&world);
+        }
+        Require(sawGate && world.Events().scene!=0,"both rider outcomes leave the Chapter2 opening",&world);
+        Require(rescue ? accepted&&completed : sawClosedGate,
+                "Chapter2 rider can be typed and defeated, or missed without blocking progression",&world);
+        Require(world.PortTypingStats().errors==0,"Chapter2 cutscene typing adds no errors",&world);
+    }
+    Require(sawPath[0]&&sawPath[1]&&sawPath[2],"both Chapter2 routes submit their intact/crashed vehicle bodies");
+    std::puts("PASS Chapter2 prepared vehicles, source rider word window, typed rescue and missed-route progression");
+}
+
+void HierophantWaterWindow(const char* dir) {
+    // Run the real water-leap task directly. The authored initial state14 lets
+    // the regression measure its input window without an auto-typist ending
+    // the fight before this attack occurs.
+    auto storage=std::make_unique<game::World::Impl>();
+    auto& w=*storage;
+    std::string error;
+    w.gameDir=dir;
+    Require(w.exe.Load((std::filesystem::path(dir)/"Hod2.exe").string()),"load Hierophant scalar tables");
+    Require(w.enemyTables.Load(w.exe),"load Hierophant skeleton metadata");
+    w.motionFiles=game::ListMotionFiles(w.exe);
+    const char* bank=std::getenv("HOTD2_TYPING_REFERENCE");
+    const auto referencePath=bank&&*bank?std::filesystem::path(bank):std::filesystem::path(dir)/"typing_reference.bank";
+    Require(w.typingReference.Load(referencePath.string(),&error,false),error.c_str());
+    Require(w.typingReference.ApplyStage(1,w.mem,w.cameraBank,&error),error.c_str());
+    w.cfg.portTyping=w.typingReferenceActive=true;
+    w.cfg.gameMode=w.gameMode=6; w.cfg.eventMode=1;
+    w.players=1; w.playersInGame=0; w.route=1; w.rank=0;
+    w.player[0].state=5; w.player[0].lives=5; w.player[1].state=9; w.canShoot=1;
+    w.playerPos[2]=100;
+    w.cam.view=game::Mat4::Identity(); w.cam.view.m[14]=-100;
+    w.cam.inverse=game::mx::Inverse(w.cam.view);
+    w.runner=std::make_unique<game::EventRunner>(w.mem,w,&w.env,&w.exe);
+    w.runner->camera.camId=-1; w.runner->camera.modeCur=2;
+    game::SetCurrentWorld(&w);
+    struct RestoreCurrent { ~RestoreCurrent(){game::SetCurrentWorld(nullptr);} } restore;
+    auto* task=w.ts.Create([](game::Task& task) {
+        auto& current=*game::CurrentWorld();
+        current.SpawnStage2c(task,task.As<game::SpawnTask>());
+    });
+    auto spawn=std::make_unique<game::SpawnTask>();
+    spawn->rec.type=0x14; spawn->rec.state=300;
+    spawn->rec.params[0]=0x48; spawn->rec.params[1]=14;
+    task->data=std::move(spawn);
+    const auto tick=[&] {
+        ++w.frame; ++w.seedCounter; ++w.frameCounter2BAC; w.draws.clear(); w.targets.clear();
+        w.ts.RunFrame(); w.ts.FreeDead();
+    };
+    tick();
+    auto* boss=dynamic_cast<game::EnemyTask*>(task->data.get());
+    Require(boss!=nullptr,"water fixture creates the real Hierophant task");
+    boss->target=0; boss->flags34&=~0x8100u; boss->typingFlags|=0x400u;
+    tick();
+    Require(std::fabs(boss->vel[1]-(4.0f+boss->acc[1]))<.00001f &&
+            std::fabs(boss->acc[1]-(-.06805555522441864f*.7f))<.00001f,
+            "PC water leap preserves vertical4.0 launch and applies exact0.7 gravity",nullptr);
+    int usableFrames=0,longestWindow=0,window=0;
+    for (int frame=0;frame<220 && w.player[0].lives==5;++frame) {
+        game::TypingTargetSpec target;
+        const bool usable=game::TypingBoss2(w,*boss,target,false) && target.retain && target.node==1 &&
+                          !(boss->typingFlags&0x400u);
+        if(usable){++usableFrames;longestWindow=std::max(longestWindow,++window);}else window=0;
+        tick();
+    }
+    Require(w.player[0].lives==4,"unanswered Hierophant water leap still damages the target player");
+    Require(longestWindow>=70,"original water leap leaves at least70 consecutive usable typing frames before impact");
+    std::printf("PASS Hierophant original water-leap gravity and %d consecutive usable word frames (%d total)\n",longestWindow,usableFrames);
+}
+
 void BossVariants(const char* dir) {
     game::ExeImage exe;
     Require(exe.Load((std::filesystem::path(dir) / "Hod2.exe").string()), "read authored boss selector scene table");
@@ -580,7 +713,7 @@ void HumanRateBosses(const char* dir) {
         StartBoss(world, dir, exe, selector);
         bool sawBoss = false, completed = false, heldPartial = false, joined = false;
         uint64_t bossWords = 0, waitingFrames = 0;
-        int holdUntil = -1;
+        int holdUntil = -1,minimumLives=5;
         game::PortTypingPrompt interrupted;
         for (int frame = 0; frame < 30000; ++frame) {
             bool bossAlive = false;
@@ -588,14 +721,23 @@ void HumanRateBosses(const char* dir) {
             sawBoss |= bossAlive;
             const auto& hud = world.Hud();
             joined |= hud.player[0].state == 5;
+            if (hud.player[0].state==5) {
+                if (selector==1 && hud.player[0].lives<minimumLives)
+                    std::fprintf(stderr,"Hierophant human-rate damage at frame%d camera%X/tick%d words%llu\n",world.Frame(),
+                                 world.Events().camera.camId,world.Events().camera.tick,
+                                 static_cast<unsigned long long>(world.PortTypingStats().completedWords));
+                minimumLives=std::min(minimumLives,int(hud.player[0].lives));
+            }
             if (sawBoss && BossStageFinished(world)) {
                 Require(heldPartial && frame >= holdUntil && bossWords > 0,
                         "human-rate boss defeat preserves a partial phrase through the deliberate interruption", &world);
                 Require(world.PortTypingStats().errors == 0, "human-rate native phase transitions do not charge typing errors", &world);
+                if (selector==1)
+                    Require(minimumLives==5,"natural Hierophant fight, including its water leap, is completed at ten characters per second without taking damage",&world);
                 NoGunRecord(world);
-                std::printf("PASS human-rate boss selector %d: %llu phrases, %llu waiting frames, %d frames\n",
+                std::printf("PASS human-rate boss selector %d: %llu phrases, %llu waiting frames, %d frames, minimum%d lives\n",
                             selector, static_cast<unsigned long long>(bossWords),
-                            static_cast<unsigned long long>(waitingFrames), frame);
+                            static_cast<unsigned long long>(waitingFrames), frame,minimumLives);
                 completed = true;
                 break;
             }
@@ -1195,12 +1337,16 @@ void Eligibility() {
 
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
-        std::fprintf(stderr, "usage: typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--eligibility|--miss-recovery]\n");
+        std::fprintf(stderr, "usage: typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--eligibility|--miss-recovery|--chapter2-regression]\n");
         return 2;
     }
     const std::string only = argc == 3 ? argv[2] : "";
     const bool fromChapter = only.size() == 15 && only.starts_with("--from-chapter") && only.back() >= '1' && only.back() <= '6';
-    if (!only.empty() && !fromChapter && only != "--campaign" && only != "--two-player" && only != "--human-campaign" && only != "--ending" && only != "--bosses" && only != "--human-bosses" && only != "--menu" && only != "--lifecycle" && only != "--gun" && only != "--eligibility" && only != "--miss-recovery") return 2;
+    if (!only.empty() && !fromChapter && only != "--campaign" && only != "--two-player" && only != "--human-campaign" && only != "--ending" && only != "--bosses" && only != "--human-bosses" && only != "--menu" && only != "--lifecycle" && only != "--gun" && only != "--eligibility" && only != "--miss-recovery" && only != "--chapter2-regression") return 2;
+    if (only.empty() || only=="--chapter2-regression") {
+        Chapter2Opening(argv[1]); HierophantWaterWindow(argv[1]);
+        if (!only.empty()) return 0;
+    }
     if (only == "--two-player") { Campaign(argv[1],0,false,true); return 0; }
     if (only == "--miss-recovery") { AxeMissRecovery(argv[1]); AxeContinueRecovery(argv[1]); return 0; }
     if (fromChapter) { Campaign(argv[1],only.back()-'1'); return 0; }

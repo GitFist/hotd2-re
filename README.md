@@ -4,7 +4,7 @@
 
 A native Windows port of **The House of the Dead 2** and **The Typing of the Dead**, with online co-op and modern controls.
 
-**[Download 1.8 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.01-a/HOTD2RE-1.8-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.01-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
+**[Download 1.9 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.02-a/HOTD2RE-1.9-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a) · **[Optional 2× graphics pack](https://github.com/GitFist/hotd2-re/releases/download/v2026.10.16-r/hotd2re-graphics-2x.zip)**
 
 ## Features
 
@@ -12,6 +12,7 @@ A native Windows port of **The House of the Dead 2** and **The Typing of the Dea
 - **HOTD2 modes:** Arcade, Original, Boss Mode, Horde and Randomizer.
 - **Online play:** two-player co-op, shared lobbies and leaderboards.
 - **Controls:** keyboard, mouse, touch, Xbox/PlayStation controllers, light guns and Wii Remotes.
+- **Native feedback:** controller rumble and light-gun recoil with per-player settings.
 - **Graphics and extras:** modern display options, blood colors, music library and model viewer.
 
 ## Screenshots
@@ -30,7 +31,7 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.8-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.01-a/HOTD2RE-1.8-Windows-x64.zip)**.
+1. Download **[HOTD2RE-1.9-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.02-a/HOTD2RE-1.9-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
@@ -63,6 +64,8 @@ Typing gameplay uses the keyboard to enter the displayed words. The controls bel
 ### Xbox and PlayStation controllers
 
 Up to two controllers connect automatically. Adjust each player's sensitivity, deadzone and gameplay bindings in **Options > Devices > Controllers**. By default, either stick aims; RT/R2 or A/Cross fires, X/Square or LT/L2 reloads, and Menu/Options pauses. Navigate menus with the D-pad or left stick, A/Cross to select, and B/Circle to go back. **LB/L1 and RB/R1 switch settings categories.** Typing words still requires a keyboard.
+
+Configure rumble and light-gun recoil in **Options > Devices > Feedback**. See the [feedback setup guide](docs/NATIVE-FEEDBACK.md) for supported devices.
 
 ## Graphics and display
 

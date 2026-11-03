@@ -281,6 +281,7 @@ void World::Impl::PlayerTakeHit(int p, int flag, int kind) {
     if (cfg.portTyping && cfg.typingOriginal && TypingController(p).original().invulnerable()) return;
     // 0x009C9FD8 + p * 0x7C: infinite lives (Hod2.ini cheat) assumed off
     --P.lives;
+    if (gameMode == 6 && demoFlag != 1) feedback.damage[p] = true;
     TypingDrillGameDamage(*this,p);
     if (cfg.portStageResults && !stageResults.shown) ++stageResults.player[p].damage;
     rankAdj -= 2;
@@ -952,6 +953,7 @@ void World::Impl::PlayerTrigger(Task& t) {
             }
             P.pending = 1;  // 0x009A5C78 + p * 0x130
             P.firedThisFrame = true;
+            if (gameMode == 6 && demoFlag != 1) feedback.shot[p] = true;
             if (GlobalInt(0x009A5C48, 0) == 0) ++P.shots;
             P.ray = MakeShotRay(P.aim[0], P.aim[1], focal);  // Shot_BuildRay 0x00406110
             {  // Shot_SpawnTracer 0x00416F70 (weapon 0: no 0x009CA08C == 1 extras)
@@ -1233,6 +1235,8 @@ void World::Impl::FillHud() {
     hud.shake = shake;
     hud.skippable = runner && runner->skippable;
     hud.skipping = runner && runner->skipping;
+    hud.typingCanSkip = CanTypeCutsceneSkip();
+    if (!hud.typingCanSkip) typingSkipProgress = {};
     hud.frameCounter = seedCounter;
     hud.flags5900 = flags5900;
     hud.paused = paused;

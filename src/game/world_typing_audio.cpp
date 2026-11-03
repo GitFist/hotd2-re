@@ -1,5 +1,6 @@
 #include "game/world_internal.h"
 #include "game/sound_table.h"
+#include "game/world_typing_original.h"
 
 namespace game {
 namespace {
@@ -50,13 +51,14 @@ void TypingWordCancelAudio(World::Impl& world, bool hadSelection) {
     world.TypingSound(0x003E16A9u);
 }
 
-void TypingWordCompletionAudio(World::Impl& world, uint32_t actorFlags, int player) {
-    if (!world.cfg.portTyping || !world.typingReferenceActive || player < 0 || player > 1) return;
-    // Source 0x4B20C2/0x4B21B6/0x4B2301 take flags 2, 1 and 4 first.
-    // Only the remaining flag8 completion path (0x4B2378) emits this cue.
-    // Ordinary accepted letters and initial word selection emit no sound.
-    if ((actorFlags & 0xFu) == 8)
-        world.TypingSound(player == 0 ? 0x003416A9u : 0x003316A9u);
+void TypingKeyAudio(World::Impl& world, bool mistake) {
+    if (!mistake && (TypingOriginalSharedFlags(world) & 32u)) return;
+    const int player = world.typingPlayer;
+    // Original PC key feedback, 0x49F030. Both games share the GUN5 / GUN4 IDs.
+    constexpr uint32_t shot[] = {0x003416A9u, 0x003316A9u};
+    constexpr uint32_t miss[] = {0x005517A9u, 0x005617A9u};
+    const uint32_t error = world.typingReferenceActive ? miss[player] : 0x000200A9u; // HOTD2 ERROR1
+    world.TypingSound(mistake ? error : shot[player]);
 }
 
 void World::Impl::TypingSound(uint32_t id) {

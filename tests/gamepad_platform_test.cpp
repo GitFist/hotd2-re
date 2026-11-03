@@ -7,6 +7,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -32,6 +41,16 @@ bool Neutral(const input::PlayerState& state) {
 struct VirtualPad {
     SDL_JoystickID id = 0;
     SDL_Joystick* joystick = nullptr;
+    int rumbleCalls = 0;
+    Uint16 lowRumble = 0, highRumble = 0;
+
+    static bool SDLCALL Rumble(void* userdata, Uint16 low, Uint16 high) {
+        auto& pad = *static_cast<VirtualPad*>(userdata);
+        ++pad.rumbleCalls;
+        pad.lowRumble = low;
+        pad.highRumble = high;
+        return true;
+    }
 
     void Attach(const char* name, Uint16 vendor, Uint16 product, SDL_GamepadType type) {
         SDL_VirtualJoystickDesc desc;
@@ -44,6 +63,8 @@ struct VirtualPad {
         desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
         desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1u;
         desc.name = name;
+        desc.userdata = this;
+        desc.Rumble = Rumble;
         id = SDL_AttachVirtualJoystick(&desc);
         Check(id != 0 && SDL_IsGamepad(id), "virtual device has an SDL standard gamepad mapping");
         Check(SDL_GetGamepadTypeForID(id) == type, "SDL recognizes the virtual Xbox/PlayStation family");
@@ -124,6 +145,13 @@ void VirtualGamepads() {
         options.height = 480;
         std::string error;
         Check(platform.Init(options, &error), error.c_str());
+        Check(!platform.RumbleGamepad(-1, 1, 1, 50) && !platform.RumbleGamepad(2, 1, 1, 50) &&
+                  !platform.RumbleGamepad(1, 1, 1, 50),
+              "rumble rejects invalid and unoccupied local slots");
+        Check(platform.RumbleGamepad(0, 12000, 24000, 1000) && xbox.lowRumble == 12000 && xbox.highRumble == 24000,
+              "native rumble reaches the assigned Xbox with both strengths intact");
+        platform.StopGamepadRumble();
+        Check(xbox.lowRumble == 0 && xbox.highRumble == 0, "explicit stop silences native gamepad rumble");
         input::GunSource* source = platform.Guns();
         Check(source != nullptr, "gamepad wrapper exists");
         Check(source->Player(0).gamepad && source->Player(0).connected &&
@@ -148,6 +176,31 @@ void VirtualGamepads() {
         Check(source->Player(1).gamepad && (source->Player(1).held & input::kTrigger) && (source->Player(1).menuPressed & 8),
               "DualShock Cross maps to fire and menu confirm for player two");
         Check(!source->Player(0).held, "two gamepads keep independent player buttons");
+        const int xboxRumbles = xbox.rumbleCalls;
+        Check(platform.RumbleGamepad(1, 30000, 9000, 1000) && dualshock.lowRumble == 30000 && dualshock.highRumble == 9000 &&
+                  xbox.rumbleCalls == xboxRumbles,
+              "player-two rumble reaches only the assigned DualShock");
+        Check(platform.RumbleGamepad(1, 0, 0, 0) && dualshock.lowRumble == 0 && dualshock.highRumble == 0,
+              "zero strengths stop one pad independently");
+#ifdef _WIN32
+        int windowCount = 0;
+        SDL_Window** windows = SDL_GetWindows(&windowCount);
+        Check(windowCount == 1, "hidden fixture owns one window for native focus messages");
+        HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(windows[0]), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        SDL_free(windows);
+        Check(hwnd != nullptr, "hidden fixture exposes its native window");
+        Check(platform.RumbleGamepad(0, 11111, 22222, 1000) && platform.RumbleGamepad(1, 33333, 44444, 1000),
+              "both local feedback channels can be active");
+        SendMessageW(hwnd, WM_ACTIVATEAPP, FALSE, 0);
+        Pump(platform);
+        Check(!xbox.lowRumble && !xbox.highRumble && !dualshock.lowRumble && !dualshock.highRumble,
+              "native focus loss stops both feedback channels");
+        const int inactiveRumbles = xbox.rumbleCalls;
+        Check(!platform.RumbleGamepad(0, 1000, 1000, 1000) && xbox.rumbleCalls == inactiveRumbles,
+              "inactive application cannot start gamepad feedback");
+        SendMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
+        Pump(platform);
+#endif
         dualshock.Button(SDL_GAMEPAD_BUTTON_SOUTH, false);
         Pump(platform);
 
@@ -222,6 +275,10 @@ void VirtualGamepads() {
         xbox.Detach();
         Pump(platform);
         Check(source->Player(0).gamepad && (source->Player(0).held & input::kReload), "waiting DualSense reuses the freed player-one slot and samples held Square");
+        const int survivingRumbles = dualshock.rumbleCalls;
+        Check(platform.RumbleGamepad(0, 14000, 28000, 1000) && dualsense.lowRumble == 14000 && dualsense.highRumble == 28000 &&
+                  dualshock.rumbleCalls == survivingRumbles,
+              "rumble follows replacement in the freed slot without renumbering player two");
         source->BeginFrame();
         dualshock.Button(SDL_GAMEPAD_BUTTON_SOUTH, true);
         Pump(platform);
@@ -230,8 +287,11 @@ void VirtualGamepads() {
         Pump(platform);
         Check(!source->Player(0).gamepad && !source->Player(0).held, "disconnect clears gamepad ownership and held buttons");
         Check(source->Player(1).gamepad && (source->Player(1).held & input::kTrigger), "other player's held state survives disconnect");
+        Check(!platform.RumbleGamepad(0, 1000, 1000, 1000), "disconnected local slot cannot receive feedback");
+        Check(platform.RumbleGamepad(1, 11000, 22000, 1000), "feedback remains available for the surviving player");
         lastPad = dualshock.id;
     }
+    Check(!dualshock.lowRumble && !dualshock.highRumble, "platform teardown stops feedback before closing the surviving pad");
     Check(SDL_GetGamepadFromID(lastPad) == nullptr, "platform teardown closes its SDL gamepad handles");
     Check(std::strcmp(SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS), "0") == 0, "platform teardown restores the previous background-events hint");
     dualshock.Detach();

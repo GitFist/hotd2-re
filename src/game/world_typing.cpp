@@ -24,7 +24,7 @@ void TypingWordHud(World::Impl&);
 void TypingWordMistakeHud(World::Impl&, uint32_t serial);
 void TypingWordCompleteHud(World::Impl&, const TypingCompletion&,std::string_view text);
 void TypingWordCancelAudio(World::Impl&, bool hadSelection);
-void TypingWordCompletionAudio(World::Impl&, uint32_t actorFlags, int player);
+void TypingKeyAudio(World::Impl&, bool mistake);
 void TypingBoss5Mistype(World::Impl&, uint32_t serial, int player);
 
 void TypingDeliver(ActorTask& a, int node) {
@@ -355,6 +355,7 @@ void World::Impl::TypingAttackTimer(int operation) {
 }
 
 void World::Impl::ResetTyping() {
+    typingSkipProgress = {};
     typing.setProfilePath(cfg.portNetworkRoom || cfg.networkStartedAt || cfg.savePath.empty() ? std::string{} : cfg.savePath+".typing.profile");
     typing.reset();
     typing.setOriginalMode(cfg.typingOriginal);
@@ -397,10 +398,18 @@ void World::Impl::TypingStep() {
     if (!cfg.portTyping) return;
     if (gameMode == 6 && !paused) TypingAttackTimer(1);
     TypingPlayerStep();
-    if (player[1].state != 9 || typingWasReady2) {
+    const bool stepSecond = player[1].state != 9 || typingWasReady2;
+    if (stepSecond) {
         typingHud2.story = typingHud.story;
         SwapTypingPlayer();
         TypingPlayerStep();
+        SwapTypingPlayer();
+    }
+    // Both prefix lengths belong to this input frame, including P2 on P1's screen.
+    TypingWordHud(*this);
+    if (stepSecond) {
+        SwapTypingPlayer();
+        TypingWordHud(*this);
         SwapTypingPlayer();
     }
     TypingOriginalHud(*this);
@@ -419,10 +428,6 @@ void World::Impl::SwapTypingPlayer() {
 void World::Impl::TypingPlayerStep() {
     TypingDrillGameBeforeTargets(*this);
     if (!cfg.portTyping) return;
-    if (TypingDrillGameActive(*this)) typing.setKeyObserver([this](unsigned char expected, bool mistake) {
-        TypingDrillGameTypedKey(*this, expected, mistake);
-        DrillLetterHit(*this, mistake);
-    });
     typing.setRandomSource([this] { return static_cast<uint32_t>(Rand(0x004B05B0)); });
     typing.setFrameCounter(frameCounter2BAC);
     typing.setDifficulty(static_cast<TypingDifficulty>(std::clamp(cfg.difficulty,0,4)));
@@ -439,7 +444,6 @@ void World::Impl::TypingPlayerStep() {
     if (!ready) {
         typingItemKeys[typingPlayer] = 0;
         typingPositions.clear();
-        TypingWordHud(*this);
         return;
     }
 
@@ -499,7 +503,6 @@ void World::Impl::TypingPlayerStep() {
         else ++cached;
     }
     const uint32_t selected = typing.selectedSerial();
-    const uint64_t beforeWords = typing.assignedWordCount();
     std::vector<TypingTarget> snapshot;
     typingPositions.clear();
     for (const auto& entry : actorOrder) {
@@ -539,10 +542,12 @@ void World::Impl::TypingPlayerStep() {
     }
     // The reference's global frame stamp permits one new word in task order.
     // Hidden entries keep their slots but never allocate their first word.
-    typing.syncTargets(snapshot);
+    const bool chooseWords = typingPlayer == 0 || !typingWasReady2;
+    const bool hasPartner = player[1-typingPlayer].state != 9;
+    const size_t newWords = typing.syncTargets(snapshot, hasPartner ? &typing2 : nullptr, chooseWords);
     typing.update(1.0 / 60.0, ready);
     if(ready)TypingDrillGameWordPoll(*this);
-    if (typing.assignedWordCount() != beforeWords) TypingAttackTimer(2);
+    if (newWords) TypingAttackTimer(2);
     // The actor tasks run after TaskHit and can end a selected damage phase
     // between display and the next input batch. Drop that stale batch instead
     // of charging errors against the newly assigned phase's phrase.
@@ -571,12 +576,25 @@ void World::Impl::TypingPlayerStep() {
     }
     typingItemKeys[typingPlayer] = 0;
 
+    if (!typingCharacters.empty()) typing.setKeyObserver([this](unsigned char expected, bool mistake) {
+        TypingKeyAudio(*this, mistake);
+        if (expected && TypingDrillGameActive(*this)) {
+            TypingDrillGameTypedKey(*this, expected, mistake);
+            DrillLetterHit(*this, mistake);
+        }
+    });
     auto deliverBatch = [&](std::string_view text) {
         // Completion removes its prompt from the controller. Preserve the
         // authored word width for40A150's glass grid before accepting input.
         const auto priorPrompts=typingReferenceActive?typing.prompts():std::vector<TypingPrompt>{};
         const auto completed = typing.typeCharacters(text, true);
         if (typing.lastMistypeSerial()) {
+            const auto target = typingCachedTargets.find(typing.lastMistypeSerial());
+            if (hasPartner && target != typingCachedTargets.end() && (target->second.first.flags & 0x00200000u)) {
+                // Magician's accuracy penalty clears the shared posts for both typists.
+                typing2.discardActiveWords();
+                typingCharacters2.clear();
+            }
             TypingDrillGameMistype(*this,typing.lastMistypeSerial());
             TypingBoss5Mistype(*this, typing.lastMistypeSerial(), typingPlayer);
             TypingWordMistakeHud(*this, typing.lastMistypeSerial());
@@ -587,8 +605,10 @@ void World::Impl::TypingPlayerStep() {
             ActorTask& actor = *found->second;
             TypingTargetSpec current;
             if (!Describe(*this, actor, current, false) || Token(*this, actor, current) != done.token) continue;
+            // A completed phrase is claimed even when a boss is still waiting to
+            // expose its weak point. The partner keeps their keystroke statistics.
+            if (hasPartner && typing2.retireTarget(done.serial, done.token)) typingCharacters2.clear();
             TypingDrillGameWordComplete(*this,done);
-            TypingWordCompletionAudio(*this, actor.typingFlags, typingPlayer);
             TypingAttackTimer(2);  // original completed-word paths 0x004B1E60
             if (current.retain && current.node < 0) {
                 typingPendingBoss[done.serial] = done.token;
@@ -637,10 +657,16 @@ void World::Impl::TypingPlayerStep() {
     }
     deliver(std::string_view(typingCharacters).substr(first));
     typingCharacters.clear();
-    TypingWordHud(*this);
 }
 
 bool World::PortTypingActive() const { return impl_->cfg.portTyping && impl_->gameMode == 6; }
+
+bool World::Impl::CanTypeCutsceneSkip() const {
+    const bool story = (cfg.eventMode >= 0 && cfg.eventMode < 6) || cfg.eventMode == 9;
+    return cfg.portTyping && story && typingAttractDemo < 0 && gameMode == 6 && subState == 2 &&
+           !paused && !typingResultsActive && !stageResults.shown && !canShoot &&
+           runner && runner->skippable && !runner->skipping;
+}
 
 bool World::StartTypingAttract(int demoIndex, std::string* error) {
     // English PC demo table59390C: authored stage/scene pairs,1536 ticks each.
@@ -673,6 +699,21 @@ void World::PortTypingInput(const std::string& text, bool cancel, int player) {
     if (player == 1) impl_->SwapTypingPlayer();
     struct Restore { Impl* w; int player; ~Restore() { if (player == 1) w->SwapTypingPlayer(); } } restore{impl_.get(),player};
     if (player == 0 && QueueTypingReportText(*impl_, text)) return;
+    if (impl_->CanTypeCutsceneSkip()) {
+        auto& progress = impl_->typingSkipProgress[player];
+        const auto word = Impl::kTypingSkipWord;
+        if (cancel || impl_->player[player].state == 9) {
+            progress = 0;
+        } else {
+            for (char c : text) {
+                if (progress == word.size()) break;
+                if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+                if (c == word[progress]) ++progress;
+                else progress = c == word.front() ? 1 : 0;
+            }
+        }
+        return;
+    }
     if (PortTypingActive() && (cancel || !text.empty())) impl_->typingChallenge.keyActivity = true;
     if (cancel) {
         impl_->typingCharacters.clear();

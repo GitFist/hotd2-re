@@ -7,11 +7,12 @@
 
 add_library(port_input_core STATIC input/aim_map.cpp input/aim_calibration.cpp input/lightguns.cpp input/pointer_guns.cpp input/touch_guns.cpp input/wii_remote.cpp input/gamepad_guns.cpp input/gamepad_settings.cpp)
 target_include_directories(port_input_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_sources(port_input_core PRIVATE input/native_gun_feedback.cpp input/sinden_feedback.cpp input/feedback_settings.cpp)
 
 if(WIN32)
   target_sources(port_input_core PRIVATE input/wii_remote_win.cpp)
   target_compile_definitions(port_input_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(port_input_core PUBLIC hid setupapi bthprops)
+  target_link_libraries(port_input_core PUBLIC hid setupapi bthprops ws2_32)
   add_library(port_input STATIC input/raw_input.cpp input/raw_input_guns.cpp)
   target_include_directories(port_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(port_input PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)

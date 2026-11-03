@@ -200,7 +200,7 @@ struct Platform::Impl {
     input::TouchGuns touch;
     MappedGuns mapped;
     input::GamepadGuns gamepads{&mapped};
-    struct Pad { SDL_JoystickID id = 0; SDL_Gamepad* device = nullptr; };
+    struct Pad { SDL_JoystickID id = 0; SDL_Gamepad* device = nullptr; bool rumbling = false; };
     std::array<Pad, input::kMaxPlayers> pads{};
     Uint64 gamepadUpdateNS = 0;
 
@@ -238,9 +238,15 @@ struct Platform::Impl {
     }
 
     void CloseGamepad(int slot) {
+        StopGamepadRumble(slot);
         if (pads[slot].device) SDL_CloseGamepad(pads[slot].device);
         pads[slot] = {};
         gamepads.SetConnected(slot, false);
+    }
+    void StopGamepadRumble(int slot) {
+        auto& pad = pads[slot];
+        if (pad.device && pad.rumbling) SDL_RumbleGamepad(pad.device, 0, 0, 0);
+        pad.rumbling = false;
     }
     // Application activation (Event::Type::Focus): the last state reported, and the state the platform saw last.
     bool activeReported = true, activeNow = true;
@@ -430,6 +436,7 @@ bool Platform::PollEvent(Event* e) {
     SDL_Event ev;
     auto focusChange = [&] {
         if (m.activeNow == m.activeReported) return false;
+        if (!m.activeNow) StopGamepadRumble();
         m.activeReported = m.activeNow;
         *e = Event{};
         e->type = Event::Type::Focus;
@@ -583,6 +590,18 @@ input::GunSource* Platform::Guns() {
 }
 input::Lightguns& Platform::Lightguns() { return impl_->lightguns; }
 input::GamepadGuns& Platform::Controllers() { return impl_->gamepads; }
+bool Platform::RumbleGamepad(int localSlot, uint16_t low, uint16_t high, uint32_t milliseconds) {
+    Impl& m = *impl_;
+    if (localSlot < 0 || localSlot >= input::kMaxPlayers) return false;
+    auto& pad = m.pads[localSlot];
+    if (!pad.device || ((low || high) && !m.activeNow)) return false;
+    const bool ok = SDL_RumbleGamepad(pad.device, low, high, milliseconds);
+    if (ok) pad.rumbling = (low || high) && milliseconds != 0;
+    return ok;
+}
+void Platform::StopGamepadRumble() {
+    for (int slot = 0; slot < input::kMaxPlayers; ++slot) impl_->StopGamepadRumble(slot);
+}
 Input Platform::CurrentInput() const { return impl_->input; }
 bool Platform::SetCursorVisible(bool visible) {
     if (!impl_->sdlVideo || !impl_->window) return false;

@@ -994,6 +994,7 @@ void World::Impl::TaskEvent(Task& t) {
         uint32_t v = 0;
         switch (e.opcode) {
         case 0x2C:  // 0x0045FD90: skippable on -> 0x009A2230 = 0
+            typingSkipProgress = {};
             if (runner->skippable) skip2230 = 0;
             break;
         case 0x4D:  // 0x0045EEC0: Game_SeedRandom 0x004157D0 (mode 5: only the first 0x4D after the stage start)
@@ -1804,6 +1805,7 @@ void World::LeaveNetworkRoom() {
     RequestTitle();
 }
 void World::Step() {
+    impl_->feedback = {};
     impl_->hud.polFileLoads.clear();  // this frame's pol file loads (FillHud appends)
     impl_->Step();
     if (impl_->modes) impl_->modes->clockOverride = -0x7FFFFFFF;  // SetWallClock: one frame
@@ -1929,6 +1931,7 @@ WorldCamera World::ContextNow() const {
 }
 const std::vector<WorldDraw>& World::Draws() const { return impl_->draws; }
 const WorldHud& World::Hud() const { return impl_->hud; }
+const WorldFeedback& World::Feedback() const { return impl_->feedback; }
 const std::vector<World::RandCall>& World::RandCalls() const { return impl_->randCalls; }
 uint32_t World::RandState() const { return impl_->rng.state; }
 std::vector<World::TaskInfo> World::Tasks() const {

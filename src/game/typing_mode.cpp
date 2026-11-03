@@ -350,7 +350,8 @@ const TypingWordRecord& TypingModeController::assignWord(const TypingTarget& tar
     return *candidate;
 }
 
-void TypingModeController::syncTargets(const std::vector<TypingTarget>& targets) {
+size_t TypingModeController::syncTargets(const std::vector<TypingTarget>& targets,
+                                         const TypingModeController* partner, bool chooseNewWords) {
     auto ordered = targets;
     for (auto& target : ordered)
         if (target.flags != 0) target.projectile = (target.flags & 0x10u) != 0;
@@ -368,23 +369,56 @@ void TypingModeController::syncTargets(const std::vector<TypingTarget>& targets)
             next.back().target = target;
         } else next.push_back({target});
     }
-    size_t assigned = 0;
-    for (auto& entry : next) if (entry.text.empty() && entry.target.enabled && assigned < maximumNewWords_) {
-        const auto& word = entry.target.forcedWord ? *entry.target.forcedWord : assignWord(entry.target, next);
-        entry.text = word.text;
-        entry.measure = word.measure;
-        entry.flags = word.flags;
-        ++assigned;
+    const auto noteAssignment = [&](const Entry& entry) {
         ++assignedWords_;
         if(!bookDictionaryPending_)++assignedBookWords_; // Source4B0B20..2F.
         if (entry.target.flags & 0x00400000u) ++metrics_.propWords;
         reactionStart_ = std::max(frameCounter_,1u);
         reactionArmed_ = true;
+    };
+    if (partner) for (auto& entry : next) {
+        const auto shared = std::find_if(partner->entries_.begin(), partner->entries_.end(), [&](const Entry& e) {
+            return e.target.serial == entry.target.serial && e.target.token == entry.target.token;
+        });
+        if (shared == partner->entries_.end()) continue;
+        if (shared->complete) entry.complete = true;
+        if (!entry.complete && entry.text.empty() && !shared->text.empty()) {
+            entry.text = shared->text;
+            entry.measure = shared->measure;
+            entry.flags = shared->flags;
+            noteAssignment(entry);
+        }
+    }
+    size_t assigned = 0;
+    if (chooseNewWords) for (auto& entry : next) {
+        if (entry.complete || !entry.text.empty() || !entry.target.enabled || assigned >= maximumNewWords_) continue;
+        const auto& word = entry.target.forcedWord ? *entry.target.forcedWord : assignWord(entry.target, next);
+        entry.text = word.text;
+        entry.measure = word.measure;
+        entry.flags = word.flags;
+        ++assigned;
+        noteAssignment(entry);
     }
     if (std::none_of(next.begin(), next.end(), [&](const Entry& e) {
         return e.target.serial == selectedSerial_ && !e.complete && e.progress > 0;
     })) selectedSerial_ = 0;
     entries_ = std::move(next);
+    return assigned;
+}
+
+bool TypingModeController::retireTarget(uint32_t serial, uint32_t token) {
+    for (auto& entry : entries_) if (entry.target.serial == serial && entry.target.token == token) {
+        entry.complete = true;
+        if (selectedSerial_ != serial) return false;
+        selectedSerial_ = 0;
+        return true;
+    }
+    return false;
+}
+
+void TypingModeController::discardActiveWords() {
+    for (auto& entry : entries_) if (!entry.complete) entry = Entry{entry.target};
+    selectedSerial_ = 0;
 }
 
 void TypingModeController::update(double seconds, bool ready) {
@@ -423,10 +457,16 @@ std::vector<TypingCompletion> TypingModeController::typeCharacters(std::string_v
             return e.target.enabled && !(e.target.flags & 0x10000u) && e.target.serial == selectedSerial_ && !e.complete;
         });
         if (selected == entries_.end()) {
+            const auto available = [](const Entry& e) {
+                return e.target.enabled && !(e.target.flags & 0x10000u) && !e.complete && !e.text.empty();
+            };
             selected = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& e) {
-                return e.target.enabled && !(e.target.flags & 0x10000u) && !e.complete && !e.text.empty() && (hand || Fold(e.text.front()) == typed);
+                return available(e) && (hand || Fold(e.text.front()) == typed);
             });
-            if (selected == entries_.end()) continue;
+            if (selected == entries_.end()) {
+                if (keyObserver_ && std::any_of(entries_.begin(), entries_.end(), available)) keyObserver_(0, true);
+                continue;
+            }
             selectedSerial_ = selected->target.serial;
             // Source4B1CFA clears this attempt's mistake bits, then4B1EAD
             // counts the initial selection frame before evaluating its key.
@@ -440,7 +480,7 @@ std::vector<TypingCompletion> TypingModeController::typeCharacters(std::string_v
             }
         }
         const bool mistake=!hand&&Fold(selected->text[selected->progress])!=typed;
-        if(keyObserver_)keyObserver_(static_cast<unsigned char>(selected->text[selected->progress]),mistake);
+        if (keyObserver_) keyObserver_(static_cast<unsigned char>(selected->text[selected->progress]), mistake);
         if (mistake) {
             lastMistypeSerial_ = selected->target.serial;
             ++stats_.errors;
@@ -452,15 +492,7 @@ std::vector<TypingCompletion> TypingModeController::typeCharacters(std::string_v
             if (selected->target.flags & 0x00200000u) {
                 // Magician's accuracy challenge discards every active word and
                 // selection. The next target snapshot assigns fresh words.
-                for (auto& entry : entries_) if (!entry.complete) {
-                    entry.text.clear();
-                    entry.progress = 0;
-                    entry.selectedFrames = 0;
-                    entry.frameRemainder = 0;
-                    entry.hadMistake = false;
-                    entry.measure = entry.flags = 0;
-                }
-                selectedSerial_ = 0;
+                discardActiveWords();
             }
             continue;
         }

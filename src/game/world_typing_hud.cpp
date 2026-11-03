@@ -151,7 +151,7 @@ void Model(World::Impl& w, int raw, const Poster& p, float x, float y, float sx,
     }
 }
 
-void Frame(World::Impl& w, const Poster& p, bool selected, bool compact, float color) {
+void Frame(World::Impl& w, const Poster& p, unsigned selectedPlayers, bool compact, float color) {
     static const auto fill = Tint(0, 0, 0);
     // Source4AEE31..EBA interpolates the authored warning colour. Selection
     // ownership is shown by the pointers independently of this progress value.
@@ -177,10 +177,11 @@ void Frame(World::Impl& w, const Poster& p, bool selected, bool compact, float c
     Model(w, 0x12C5, p, left, bottom, .25f, .25f, tint);
     Model(w, 0x13DD, p, p.x, bottom, horizontal, .25f, tint);
     Model(w, 0x1769, p, right, bottom, .25f, .25f, tint);
-    if (selected) {
+    if (selectedPlayers) {
         // Source4AF3F0/4AF130: P1 selects with four red rotating pointers;
         // the shared frame remains yellow. Green identifies P2's pointers.
         static const auto red = Tint(1, 0, 0,true);
+        static const auto green = Tint(0, 1, 0,true);
         const int arrow = PreparedModel(w, 0x1CCB);
         const float dx = (float(p.cells) + .2f) * p.scale * .5f;
         const float dy = p.scale * 2.1f * (compact ? 1.3f : 1.f);
@@ -194,7 +195,9 @@ void Frame(World::Impl& w, const Poster& p, bool selected, bool compact, float c
             mx::RotY(matrix, rotation);
             mx::Scale(matrix, p.scale * .075f, p.scale * .075f, p.scale * .075f);
             if (auto* draw = w.Draw(arrow, matrix, 8, -1, false, -1, true)) {
-                draw->edit = w.typingPlayer ? Tint(0,1,0,true) : red;
+                // When both players type on this target, each owns the two corners beside their row.
+                const bool p2 = selectedPlayers == 2 || (selectedPlayers == 3 && (corner & 1));
+                draw->edit = p2 ? green : red;
                 draw->fn = 0x004AF130;
                 SourceLight(*draw, 0x2000, 0x2000);
             }
@@ -203,7 +206,8 @@ void Frame(World::Impl& w, const Poster& p, bool selected, bool compact, float c
 }
 
 void Text(World::Impl& w, Poster p, std::string_view text, size_t progress,
-          float y, bool reference, float vertical = 1, bool centred = true, uint32_t source = 0x004AF870, float alpha = 1) {
+          float y, bool reference, float vertical = 1, bool centred = true, uint32_t source = 0x004AF870, float alpha = 1,
+          const std::shared_ptr<const ModelEdit>& typedTint = {}) {
     static const auto yellow = Tint(1, 1, 0,true);
     static const auto white = Tint(1, 1, 1,true);
     const float firstLeft = text.empty() ? 0 : Letter(static_cast<unsigned char>(text.front())).left;
@@ -214,12 +218,12 @@ void Text(World::Impl& w, Poster p, std::string_view text, size_t progress,
         auto letter = Letter(c);
         if (!centred && c == 'I') letter.left = 0; // original one-key I special case, 0x004AF5C5
         x -= letter.left * p.scale * .75f;
-        if (i >= progress && c >= 32 && c < 128) {
+        if ((i >= progress || typedTint) && c >= 32 && c < 128) {
             float drop = 0;
             if (c == 'g' || c == 'p' || c == 'q' || c == 'y') drop = -.2f;
             else if (c == 'j') drop = -.1f;
             Model(w, kGlyphModels[c - 32], p, x, y + drop * vertical * p.scale,
-                  1, vertical, reference ? yellow : white, source, alpha == 1 ? -1.f : alpha);
+                  1, vertical, i < progress ? typedTint : reference ? yellow : white, source, alpha == 1 ? -1.f : alpha);
         }
         x += letter.width * p.scale * .75f;
     }
@@ -571,6 +575,7 @@ struct WordVisual {
     int cells = 2;
     float alpha = 1;
     float frameColor = 1;
+    const TypingPrompt* partner = nullptr;
 };
 
 void SpreadPosters(std::vector<WordVisual>& words, float focal) {
@@ -623,11 +628,29 @@ void DrawWord(World::Impl& w, const WordVisual& word, bool compact) {
     const auto& view = *word.view;
     Poster p = ClampPoster({view[0], view[1], view[2], 1, word.cells},
                                 w.cfg.typingOptions.wordSize == TypingWordSize::Large, w.focal);
-    if (compact) p.y += (w.typingPlayer ? -1.f : 1.f) * 1.8f;
-    const bool twoRows = compact && word.text.size() > 1;
+    if (compact && !word.partner) p.y += (w.typingPlayer ? -1.f : 1.f) * 1.8f;
+    const bool twoRows = word.partner || (compact && word.text.size() > 1);
     const size_t firstDraw = w.draws.size();
-    Frame(w, p, word.selected, twoRows, word.frameColor);
-    if (word.text.size() > 1) {
+    unsigned selectedPlayers = word.selected ? 1u << w.typingPlayer : 0u;
+    if (word.partner && word.partner->selected) selectedPlayers |= 2u;
+    Frame(w, p, selectedPlayers, twoRows, word.frameColor);
+    if (word.partner) {
+        // The PC glyphs are lit with unnormalized inverse-transpose normals.
+        // A small poster can saturate every nonzero channel. Use the original
+        // red/green pointer colors so typed glyphs stay distinct from white.
+        static const std::array playerTint = {Tint(1, 0, 0, true), Tint(0, 1, 0, true)};
+        constexpr float labelWidth = 2.4f;
+        Poster letters = p;
+        letters.x += labelWidth * .375f * p.scale;
+        Poster label = letters;
+        label.x -= (.5f * TextWidth(word.text) + labelWidth) * .75f * p.scale;
+        for (int player = 0; player < 2; ++player) {
+            const float y = p.y + (player ? -1.04f : .13f) * p.scale;
+            Text(w, label, player ? "P2" : "P1", 2, y, false, .8f, false, word.source, word.alpha, playerTint[player]);
+            Text(w, letters, word.text, player ? word.partner->progress : word.progress, y, false, .8f, true,
+                 word.source, word.alpha, playerTint[player]);
+        }
+    } else if (word.text.size() > 1) {
         Text(w, p, word.text, 0, p.y + p.scale * .13f, true, 1, true, word.source, word.alpha);
         Text(w, p, word.text, word.progress, p.y - p.scale * (twoRows ? 1.04f : 1.3f), false,
              twoRows ? .8f : 1.f, true, word.source, word.alpha);
@@ -695,7 +718,6 @@ void TypingWordMistakeHud(World::Impl& w, uint32_t serial) {
     mistake.token = target->second.first.token;
     if (!CurrentAnchor(w, serial, mistake.token, mistake.anchor)) return;
     w.typingHud.mistakes[serial] = mistake;
-    w.TypingSound(0x005517A9u); // P1's selected-word wrong-key cue, 0x004B1FF5.
 }
 
 void TypingWordCompleteHud(World::Impl& w, const TypingCompletion& done,std::string_view text) {
@@ -706,8 +728,12 @@ void TypingWordCompleteHud(World::Impl& w, const TypingCompletion& done,std::str
     if (!std::isfinite(view[0]) || !std::isfinite(view[1]) || !std::isfinite(view[2]) || view[2] >= -5) return;
     World::Impl::TypingHudPresentation::Complete complete;
     std::copy_n(view, 3, complete.view.begin());
-    const auto poster = w.typingHud.posters.find({done.serial, done.token});
-    if (poster != w.typingHud.posters.end()) {
+    const auto key = std::make_pair(done.serial, done.token);
+    // A shared poster lives in P1's presentation even when P2 completes the word.
+    const auto& posters = w.typingPlayer && w.typingWasReady2 && w.typingHud2.posters.count(key)
+                        ? w.typingHud2.posters : w.typingHud.posters;
+    const auto poster = posters.find(key);
+    if (poster != posters.end()) {
         complete.view = poster->second.view;
         complete.view[2] -= 5; // Feedback's Place adds the source depth offset again.
     }
@@ -736,7 +762,7 @@ void DrawTypingDrillPrompt(World::Impl& w,std::string_view text,size_t progress)
     const float fallback[]={0,-3,-35};
     const float* anchor=ui.visualAnchorValid?ui.visualAnchor.data():fallback;
     Poster poster=Place(anchor,cells,false,w.focal);
-    Frame(w,poster,true,false,0);
+    Frame(w,poster,1u << w.typingPlayer,false,0);
     const float vertical=poster.scale;
     Text(w,poster,text,0,poster.y+.25f*vertical,true);
     Text(w,poster,text,std::min(progress,text.size()),poster.y-.75f*vertical,false);
@@ -774,11 +800,16 @@ void TypingWordHud(World::Impl& w) {
                          ((w.player[0].state == 7 || w.player[0].state == 4) &&
                           (w.player[1].state == 7 || w.player[1].state == 4)) || w.gameMode == 5;
     const auto prompts = w.typing.prompts();
+    const auto partnerPrompts = w.typingWasReady2 ? w.typing2.prompts() : std::vector<TypingPrompt>{};
     std::vector<WordVisual> words;
     bool storyPrompt = false;
     for (const auto& prompt : prompts) {
         const auto cached = w.typingCachedTargets.find(prompt.serial);
         if (cached == w.typingCachedTargets.end() || cached->second.first.token != prompt.token) continue;
+        const auto partner = std::find_if(partnerPrompts.begin(), partnerPrompts.end(), [&](const auto& other) {
+            return other.serial == prompt.serial && other.token == prompt.token;
+        });
+        if (w.typingPlayer && partner != partnerPrompts.end()) continue; // already submitted in P1's pass
         std::array<float, 3> target;
         std::copy_n(cached->second.second.view, 3, target.begin());
         float frameColor = 1;
@@ -808,7 +839,7 @@ void TypingWordHud(World::Impl& w) {
                              std::min(1.f, float(hud.story.deadline) * .0033333334140479565f);
         }
         if (!std::isfinite(target[0]) || !std::isfinite(target[1]) || !std::isfinite(target[2]) || target[2] >= -5) continue;
-        const int cells = int(TextWidth(prompt.text) + 2.3f); // 0x004B06F0
+        const int cells = int(TextWidth(prompt.text) + 2.3f) + (partner != partnerPrompts.end() ? 2 : 0);
         auto& poster = hud.posters[{prompt.serial, prompt.token}];
         MovePoster(poster, target, cached->second.first.flags, w.frame);
         if (TypingDrillGameActive(w) && (flags & 0x4000u)) {
@@ -820,11 +851,12 @@ void TypingWordHud(World::Impl& w) {
         WordVisual word{&poster.view, prompt.text};
         word.progress = prompt.progress; word.flags = cached->second.first.flags;
         word.selected = prompt.selected;
+        if (partner != partnerPrompts.end()) word.partner = &*partner;
         word.cells = cells; word.frameColor = frameColor;
         words.push_back(word);
     }
     std::array<std::array<float, 3>, 4> previews;
-    if (hud.story.active) for (unsigned i = 0; i < 4; ++i) {
+    if (hud.story.active && (w.typingPlayer == 0 || !w.typingWasReady2)) for (unsigned i = 0; i < 4; ++i) {
         const auto& line = hud.story.lines[i];
         if (!line.enabled || line.phase >= 4 || (storyPrompt && i == hud.story.line)) continue;
         const float z = line.view[2] + 5;

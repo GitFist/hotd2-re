@@ -155,7 +155,8 @@ void World::Impl::TaskSkipWatch(Task& t) {
         ts.KillCurrent();
     }
     if (!runner->skippable) ts.KillCurrent();
-    if (!skipRequest) return;
+    if (!skipRequest && !(CanTypeCutsceneSkip() &&
+        (typingSkipProgress[0] == kTypingSkipWord.size() || typingSkipProgress[1] == kTypingSkipWord.size()))) return;
     if (runner->camera.endTick != runner->camera.playTick) runner->camera.endTick = runner->camera.playTick;  // 0x009A6148
     skipRequest = false;
     runner->skipping = true;

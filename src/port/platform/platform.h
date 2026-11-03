@@ -97,6 +97,11 @@ public:
     bool SetInput(Input mode, std::string* error);
     input::Lightguns& Lightguns();
     input::GamepadGuns& Controllers();
+    // Native feedback follows the same local slots as Controllers(). Nonzero
+    // requests fail for absent/unsupported pads or while the app is inactive.
+    // Zero strengths stop the selected pad; focus loss and teardown stop all.
+    bool RumbleGamepad(int localSlot, uint16_t low, uint16_t high, uint32_t milliseconds);
+    void StopGamepadRumble();
 
     // Main thread: the system pointer is separate from the game's HUD sights. Headless/uninitialized instances
     // cannot change SDL's process-wide cursor; their visibility query returns the default visible state.

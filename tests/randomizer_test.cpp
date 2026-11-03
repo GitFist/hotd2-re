@@ -7,6 +7,7 @@
 #include <set>
 #include "game/world_modes.h"
 #include "game/sound_table.h"
+#include "route_planner.h"
 
 static void Require(bool ok, const char* why) {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); }
@@ -16,16 +17,118 @@ static void Input(game::World& w, int p, uint32_t buttons = 0) {
     in.pressed = in.held = buttons;
     w.SetInput(p, in);
 }
-static void Start(game::World& w, const char* dir, int seed) {
+static void Start(game::World& w, const char* dir, int seed, int choice = 5) {
     Require(w.Load(dir), "load world");
     game::WorldConfig cfg;
     cfg.portFeatures = cfg.portModernMenu = cfg.portNetworkRoom = true;
     cfg.gameMode = 6; cfg.gameOver = true;
     cfg.startFrame = 901; cfg.seedCounter = seed; cfg.creditSetting = -1;
     Require(w.StartNetworkGame(cfg), "start room");
-    for (int i = 0; i < 5; ++i) { Input(w, 0, 0x20); w.Step(); Input(w, 0); w.Step(); }
+    for (int i = 0; i < choice; ++i) { Input(w, 0, 0x20); w.Step(); Input(w, 0); w.Step(); }
     Input(w, 0, 4); w.Step(); Input(w, 0); w.Step();
 }
+// The canal-platform rescue after leaving the chapter-2 shutter closed. The original
+// civilian is 0x0097C5AC (kind 0x2A, script 8); two attackers use behaviour 42 at
+// camera 66/tick 430 after he dies. Losing that wrapper sent them offscreen forever.
+static void FailedCanalRescue(const char* dir, int seed, bool friendlyFire, bool randomized = true) {
+    game::World world;
+    Start(world, dir, seed, randomized ? 5 : 1);
+    game::WorldConfig cfg;
+    cfg.portFeatures = cfg.portModernMenu = true;
+    cfg.gameMode = 6; cfg.gameType = 1; cfg.eventMode = 1; cfg.scene = 0;
+    cfg.playerState[0] = 0; cfg.livesSetting = 99;
+    cfg.seedCounter = seed; cfg.startFrame = world.Frame() + 1;
+    Require(world.StartStage(cfg), "start chapter-2 canal rescue regression");
+    plan::Planner planner; planner.Init();
+    planner.skip.push_back({{0x00468F00}, 0, 16000}); // leave the shutter closed: 7 -> 8 -> 10 -> 9
+    uint32_t victim = 0;
+    int deathFrame = -1, shotsAtDeath = -1;
+    bool civilianShot = false, releasedGuard = false, reachableGuard = false, killedGuard = false;
+    std::set<uint32_t> guards;
+    constexpr int noFireDelay = 600;
+    for (int frame = 0; frame < 16000; ++frame) {
+        for (const auto& e : world.Enemies(true)) {
+            if (!victim && world.Events().scene == 9 && e.kind == 0x2A &&
+                std::fabs(e.pos[0] + 216.0f) < 1 && std::fabs(e.pos[2] + 1282.0f) < 1) victim = e.serial;
+            if (victim && e.serial == victim && (e.flags34 & 0x4000000) && deathFrame < 0) {
+                deathFrame = frame; shotsAtDeath = world.Hud().player[0].shots;
+            }
+            if (victim && e.behaviour == 42) guards.insert(e.serial);
+            if (guards.count(e.serial)) {
+                releasedGuard |= !(e.flags34 & 0x10000);
+                killedGuard |= (e.flags34 & 0x4000000) != 0;
+            }
+        }
+        for (const auto& note : world.Notes())
+            Require(note.find("enemy behaviour 42") == std::string::npos &&
+                    note.find("behaviour 0x2A) not ported") == std::string::npos,
+                    "canal attackers have an implemented camera-checkpoint behaviour");
+        if (deathFrame >= 0 && frame <= deathFrame + noFireDelay)
+            Require(world.Hud().player[0].shots == shotsAtDeath, "no shots during delayed failed-rescue handling");
+        if (deathFrame >= 0 && world.Events().scene == 28) {
+            Require(frame > deathFrame + noFireDelay, "failed rescue exercised the full no-fire delay");
+            Require(!friendlyFire || civilianShot, "friendly-fire case actually shot the precise civilian");
+            Require(guards.size() >= 2 && releasedGuard, "both gated attackers resume at their authored camera checkpoint");
+            Require(reachableGuard && killedGuard, "a released attacker is reachable and killed by on-screen gun input");
+            printf("PASS canal failed rescue: seed %d, %s, %s, death %d -> scene28 %d\n", seed,
+                   randomized ? "Randomizer" : "Original", friendlyFire ? "friendly fire" : "enemy attack", deathFrame, frame);
+            return;
+        }
+        const uint8_t previous = planner.held;
+        plan::Line line{};
+        if (!victim || (deathFrame >= 0 && frame > deathFrame + noFireDelay)) {
+            planner.Decide(world, frame + 1, &line);
+            if (deathFrame >= 0 && (planner.held & 1)) {
+                const auto hit = world.PreviewShot(0,int(planner.x*640),int(planner.y*480));
+                reachableGuard |= hit.any && !hit.level && !hit.civilian && guards.count(hit.serial);
+            }
+        } else {
+            planner.held = 0;
+            if (friendlyFire && deathFrame < 0 && !previous && world.Hud().canShoot) {
+                if (!world.Hud().player[0].ammo) planner.Emit(frame+1,planner.x,planner.y,2);
+                else if (frame % 15 == 0) {
+                    bool found = false;
+                    for (int y = 4; y < 480 && !found; y += 8) for (int x = 4; x < 640; x += 8) {
+                        const auto hit = world.PreviewShot(0,x,y);
+                        if (hit.any && !hit.level && hit.civilian && hit.serial == victim) {
+                            planner.Emit(frame+1,(x+.5f)/640,(y+.5f)/480,1);
+                            civilianShot = found = true; break;
+                        }
+                    }
+                }
+            }
+        }
+        world.SetInput(0, game::MakeWorldInput(planner.x, planner.y, planner.held, previous));
+        world.Step();
+    }
+    fprintf(stderr,"canal timeout seed%d friendly%d victim%u death%d scene%d camera%d/%d live%d\n",seed,friendlyFire,
+            victim,deathFrame,world.Events().scene,world.Events().camera.camId,world.Events().camera.tick,world.LiveEnemies());
+    Require(false, "failed canal rescue progresses beyond the corpse camera");
+}
+static void CameraCheckpointNamespaces(const game::ExeImage& exe) {
+    game::World::Impl w;
+    w.runner = std::make_unique<game::EventRunner>(w.mem, w, nullptr, &exe);
+    struct Case { bool typing; int checkpoint, camera; bool release; };
+    const Case cases[] = {{false,66,66,true}, {true,66,0x4042,true}, {true,0x4042,0x4042,true},
+                          {true,66,0x4043,false}, {false,66,0x4042,false}};
+    for (const auto& test : cases) {
+        w.typingReferenceActive = test.typing;
+        w.runner->camera.camId = test.camera;
+        w.runner->camera.tick = 429;
+        game::EnemyTask e;
+        e.behaviour = 42; e.cameraBehaviour = 0; e.flags34 = 0x10000;
+        const int16_t camera = static_cast<int16_t>(test.checkpoint), tick = 430;
+        memcpy(e.record.params+12,&camera,2); memcpy(e.record.params+14,&tick,2);
+        w.EnemyBeh42(e);
+        Require(e.behaviour == 42 && (e.flags34 & 0x10000), "camera gate waits for the authored tick");
+        w.runner->camera.tick = 430;
+        w.EnemyBeh42(e);
+        Require((e.behaviour == 0) == test.release && !(e.flags34 & 0x10000) == test.release,
+                "camera gate respects native and prepared Typing camera IDs");
+    }
+    puts("PASS native/prepared Typing enemy camera checkpoints");
+}
+
 // Optional real-client replay for visual QA: leave scenes unskipped and aim only at hostile hit targets.
 static void RecordScenes(const char* dir, const char* path) {
     game::World w;
@@ -74,9 +177,12 @@ static void RecordScenes(const char* dir, const char* path) {
 int main(int argc, char** argv) {
     if (argc == 3) { RecordScenes(argv[1], argv[2]); return 0; }
     if (argc != 2) return 2;
+    for (int seed : {1, 12345}) for (bool friendlyFire : {false, true}) FailedCanalRescue(argv[1], seed, friendlyFire);
+    for (bool friendlyFire : {false, true}) FailedCanalRescue(argv[1], 12345, friendlyFire, false);
     game::World::Impl w;
     w.gameDir = argv[1];
     Require(w.exe.Load((std::filesystem::path(argv[1]) / "Hod2.exe").string()), "tables");
+    CameraCheckpointNamespaces(w.exe);
     w.cfg.portFeatures = true; w.cfg.gameType = 1; w.cfg.gameMode = w.gameMode = 6;
     game::ModesBoot(w);
     w.modelLoaded.assign(0x4000, 0);

@@ -28,4 +28,4 @@ The game saves input mode in `hotd2re_settings.ini` and gun assignments, mapping
 
 The game accepts standard Windows mouse/Raw Input devices. Two independent guns require separate device reports with absolute aim coordinates. Software that combines both guns into a single Windows cursor cannot provide independent two-player aim. A single software-mapped gun can use **MOUSE** mode instead.
 
-These controls do not replace the manufacturer's tracking software, sensor setup, or firmware. Native recoil outputs and vendor-specific configuration are not included. Automated tests cover the setup and input paths; specific light-gun models still need physical testing.
+These controls do not replace the manufacturer's tracking software, sensor setup, or firmware. For native recoil and damage feedback, open **Options > Devices > Feedback** and follow [Feedback setup](NATIVE-FEEDBACK.md). Automated tests cover setup and output dispatch; specific light-gun models still need physical testing.

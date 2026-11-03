@@ -1183,7 +1183,10 @@ void StJump(World::Impl& w, Boss2Task& b, bool twelve) {
             if (w.typingReferenceActive) {
                 static constexpr float speed[16] = {.4f,.4f,.41f,.42f,.43f,.43f,.44f,.44f,.45f,.46f,.48f,.52f,.54f,.56f,.58f,.58f};
                 const float scale = speed[std::clamp(w.rank,0,15)];
-                for (float& velocity : b.vel) velocity *= scale;
+                // PC469F98/46A852 scales horizontal travel and gravity,
+                // preserving the four-unit launch height/speed.
+                b.vel[0] *= scale;
+                b.vel[2] *= scale;
                 b.acc[1] *= scale;
                 b.typingFlags &= ~0x400u;
             }
@@ -1563,6 +1566,13 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
             b.rot[1] = AngleOf(b.pos[0] - w.playerPos[0], b.pos[2] - w.playerPos[2]);
         }
         JumpAt(w, b, F32(w.exe, 0x0055D2A4));
+        if (w.typingReferenceActive) {
+            // PC46AF54..46AF84 / float4E2174: the water leap keeps its
+            // vertical launch speed but scales horizontal speed and gravity.
+            b.vel[0] *= .7f;
+            b.vel[2] *= .7f;
+            b.acc[1] *= .7f;
+        }
         b.flags34 = (b.flags34 & 0xFFF7BFFFu) | 0x10000000u;
         ++c.sub;
         break;
@@ -1581,10 +1591,15 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
         if (b.vel[1] < 0.0f) {
             b.flags34 &= 0xFFFF9EFFu;
             if (w.typingReferenceActive) b.typingFlags &= ~0x400u;
-            const int r = w.Rand(0x0047AC8F) & 3;
-            c.m8E = static_cast<int16_t>(r * 8 + 1);
+            if (!w.typingReferenceActive) {
+                const int r = w.Rand(0x0047AC8F) & 3;
+                c.m8E = static_cast<int16_t>(r * 8 + 1);
+            }
             ++c.sub;
         }
+        // PC46B092/46B0E7 holds the fully opened chest while airborne;
+        // allowing its ordinary close cycle would block the short word window.
+        if (w.typingReferenceActive && c.m88 == c.m8C) c.m8E = 1;
         break;
     }
     case 2:
@@ -1592,6 +1607,7 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
             c.flags &= ~1u;
             ++c.sub;
         }
+        if (w.typingReferenceActive && c.m88 == c.m8C) c.m8E = 1;
         [[fallthrough]];
     case 3:
         if (b.anim.tick[0] == 0x55) b.flags34 |= 0x4000;
@@ -1610,7 +1626,9 @@ void St14(World::Impl& w, Boss2Task& b) {  // 0x0047A990: leaps out of the water
             if (--c.row94 < 0) c.row94 = 0;
             c.sub = 4;
         }
-        c.row94 = 7;
+        if (w.typingReferenceActive) {
+            if (c.m88 == c.m8C) c.m8E = 1; // PC46B1D1.
+        } else c.row94 = 7;
         break;
     case 4: {
         const int v = c.c9C--;

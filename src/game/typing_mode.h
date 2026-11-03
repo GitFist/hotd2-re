@@ -60,9 +60,15 @@ public:
     static constexpr uint32_t kDefaultSeed = 0x4E535459u;
     explicit TypingModeController(uint32_t seed = kDefaultSeed);
     void reset(uint32_t seed = kDefaultSeed);
-    void syncTargets(const std::vector<TypingTarget>& targets);
+    // Returns the number of new words chosen. A joining player can adopt all
+    // existing posts immediately, with their own independent typing progress.
+    size_t syncTargets(const std::vector<TypingTarget>& targets,
+                       const TypingModeController* partner = nullptr, bool chooseNewWords = true);
+    void discardActiveWords();
+    bool retireTarget(uint32_t serial, uint32_t token); // true if the partner had it selected
     void update(double seconds, bool ready);
     std::vector<TypingCompletion> typeCharacters(std::string_view characters, bool ready = true);
+    // expected is zero for a first key that matches none of the available words.
     void setKeyObserver(std::function<void(unsigned char,bool)> observer) {keyObserver_=std::move(observer);}
     void cancelSelection();
     void setWordSelection(int group, int selector);

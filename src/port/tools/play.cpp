@@ -68,10 +68,14 @@
 #include "port/play/gun_input.h"
 #include "port/play/gamepad_input.h"
 #include "port/play/controller_menu.h"
+#include "port/play/feedback_menu.h"
+#include "port/play/native_feedback.h"
+#include "port/input/sinden_feedback.h"
 #include "port/play/lobby_keypad.h"
 #include "port/play/home_lobby_preview.h"
 #include "port/play/attraction_audio.h"
 #include "port/play/keyboard.h"
+#include "port/play/network_desync.h"
 #include "port/play/score_display_code.h"
 #include "port/play/lightgun_menu.h"
 #include "port/play/local_leaderboard.h"
@@ -86,6 +90,7 @@
 #include "port/play/update_prompt.h"
 #include "port/play/score_submission_queue.h"
 #include "port/play/scroll_hint.h"
+#include "port/play/typing_prompt_overlay.h"
 #include "port/play/widescreen.h"
 #include "port/play/wii_menu.h"
 #include "render/display_calibration.h"
@@ -208,20 +213,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.8";
+const char* const kReleaseVersion = "1.9";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026103000;
-const char* const kBuildName = "2026 11 01 A";
+constexpr uint32_t kBuildId = 2026110220;
+const char* const kBuildName = "2026 11 02 A";
 #else
-constexpr uint32_t kBuildId = 2026103001;
-const char* const kBuildName = "2026 11 01 NS32 A";
+constexpr uint32_t kBuildId = 2026110221;
+const char* const kBuildName = "2026 11 02 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 11 01 A";
+const char* const kUpdateBuildName = "2026 11 02 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -1202,7 +1207,8 @@ int main(int argc, char** argv) {
     bool netVolumesSet = false;
     uint8_t netCmd = 0;  // kCmd* for the next pushed input (the pause menu's Return to Main Menu)
     long long netStalls = 0;
-    bool netDesyncReported = false;
+    play::NetworkDesync networkDesync;
+    uint32_t desyncPreviousKeys = 0;
     uint32_t blink = 0;
     uint8_t scriptButtons[2] = {}, prevButtons[2] = {};
     float scriptX[2] = {0.5f, 0.5f}, scriptY[2] = {0.5f, 0.5f};
@@ -1531,6 +1537,22 @@ int main(int argc, char** argv) {
     }
     const std::string lightgunSettingsPath = "hotd2re_lightguns.ini";
     if (!headless) lightguns.settings.Load(lightgunSettingsPath);
+    const std::string feedbackSettingsPath = "hotd2re_feedback.ini";
+    input::feedback::Settings feedbackSettings;
+    input::feedback::GunFeedback gunFeedback;
+    input::feedback::SindenFeedback sindenFeedback;
+    std::array<play::FeedbackRumble,2> feedbackRumble;
+    std::array<play::RumbleOutput,2> lastRumble{};
+    std::array<bool,2> rumbleDirty{};
+    auto configureFeedback = [&] {
+        for (int p=0;p<2;++p) {
+            const auto& profile=feedbackSettings.player[p];
+            const bool sinden=profile.gun==input::feedback::GunType::Sinden;
+            gunFeedback.Configure(p,sinden?input::feedback::GunType::Off:profile.gun,profile.port);
+            sindenFeedback.Configure(p,sinden?profile.sindenGun:0,profile.sindenPort);
+        }
+    };
+    if (!headless) { feedbackSettings.Load(feedbackSettingsPath); configureFeedback(); }
     input::WiiRemotes wii(plat.Guns());
     const std::string wiiSettingsPath = "hotd2re_wii.ini";
     if (!headless) {
@@ -1768,6 +1790,8 @@ int main(int argc, char** argv) {
     if (getenv("HOTD2_LIGHTGUN_MENU")) lightgunPage.Open();
     play::WiiMenu wiiPage;
     play::ControllerMenu controllerPage;
+    play::FeedbackMenu feedbackPage;
+    if (getenv("HOTD2_FEEDBACK_MENU")) feedbackPage.Open();
     int wiiRequestsSeen = 0;
     play::MenuInput wiiMouse;
     if (getenv("HOTD2_WII_MENU")) wiiPage.Open();  // isolated screenshot/test entry
@@ -1947,6 +1971,42 @@ int main(int argc, char** argv) {
     std::string scoreSubmissionNotice;
     double scoreSubmissionNoticeUntil = 0;
     bool active = true;  // focus gates local input and the system cursor, never the game clock or audio
+    auto feedbackContext = [&](bool stalled = false, bool replay = false) {
+        play::FeedbackContext context;
+        context.active=active; context.headless=headless;
+        context.menu=menu.IsOpen() || optionsPage.IsOpen() || feedbackPage.IsOpen() || controllerPage.IsOpen() ||
+                     wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() ||
+                     updatePrompt.IsOpen() || lobby.page!=Lobby::kOff;
+        context.replay=replay || net.CatchingUp() || net.ReplayPending();
+        context.stalled=stalled; context.desynced=networkDesync.Active();
+        context.online=netPlayerAssigned; context.onlinePlayer=netLocal;
+        return context;
+    };
+    auto feedbackSession = [&](bool stalled = false, bool replay = false) {
+        const bool test=active && !headless && feedbackPage.IsOpen() && !networkDesync.Active();
+        const bool enabled=test || feedbackContext(stalled,replay).Allows(world.Hud());
+        gunFeedback.SetActive(enabled); sindenFeedback.SetActive(enabled);
+        if (!enabled) for(int p=0;p<2;++p) {
+            feedbackRumble[p].Stop();
+            if(lastRumble[p].low || lastRumble[p].high) plat.RumbleGamepad(p,0,0,0);
+            lastRumble[p]={}; rumbleDirty[p]=false;
+        }
+    };
+    auto emitFeedback = [&](const game::WorldFeedback& events, bool test = false) {
+        const double now=plat.Seconds();
+        for(int p=0;p<2;++p) {
+            const auto& profile=feedbackSettings.player[p];
+            const auto source=focusedGuns.Player(p);
+            if(profile.controllerStrength && (test || source.gamepad)) {
+                if(events.shot[p] && profile.recoil) { feedbackRumble[p].Shot(now); rumbleDirty[p]=true; }
+                if(events.damage[p] && profile.damage) { feedbackRumble[p].Damage(now); rumbleDirty[p]=true; }
+            }
+            if(test || (source.connected && !source.gamepad)) {
+                if(events.shot[p] && profile.recoil) { gunFeedback.Shot(p); sindenFeedback.Shot(p); }
+                if(events.damage[p] && profile.damage) { gunFeedback.Damage(p); sindenFeedback.Damage(p); }
+            }
+        }
+    };
     int optionsScroll = 0, optionsTabDelta = 0;
     // One frame of menu input from the keyboard edges and the pointing device (the given player's device first).
     auto menuInput = [&](uint32_t pressedKeys, int firstPlayer) {
@@ -2138,6 +2198,22 @@ int main(int argc, char** argv) {
     bool replayMuted = false;
     std::string networkNotice;
     double networkNoticeUntil = 0;
+    auto observeDesync = [&] {
+        uint32_t frame=0,ours=0,theirs=0;
+        if (!netplay) return;
+        const bool mismatched=net.Desynced(&frame,&ours,&theirs);
+        if (!networkDesync.Observe(mismatched,frame)) return;
+        printf("netplay: DESYNC at frame %u (ours %08X, theirs %08X); gameplay halted\n",frame,ours,theirs);
+        fflush(stdout);
+        desyncPreviousKeys = g_keys;
+        // A divergent replay cannot safely restore this run. Keep ordinary
+        // packets flowing so the other peer can observe its own mismatch too.
+        std::error_code ignore;
+        std::filesystem::remove(kRejoinTicket,ignore);
+        net.Abandon(true);
+        world.SetPortLeaderboardRecording(false);
+        if (sndDriver) sndDriver->StopAll();
+    };
     bool resultsPresented = false;
     double resultsPresentedAt = 0;
     port::RgbaImage calibrationImage;
@@ -2149,7 +2225,7 @@ int main(int argc, char** argv) {
         world.SetPortHomeRooms({}, "CHECKING WAITING ROOMS...");
     };
     auto updateSystemCursor = [&] {
-        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen(),
+        const play::CursorContext context{active, menu.IsOpen() || optionsPage.IsOpen() || feedbackPage.IsOpen() || controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen(),
                                           lobby.page != Lobby::kOff || world.NetworkLobby(), world.PortHordeRun().active};
         const bool visible = play::SystemCursorVisible(world.Hud(), context);
         plat.SetCursorConfined(!visible);
@@ -2215,9 +2291,11 @@ int main(int argc, char** argv) {
         }
         if (netplay) {
             net.Poll();
+            observeDesync();
+            if (headless && networkDesync.Active()) return 1;
             // (10 s, as the console connections below: a stage start with the asset pack or a big internal resolution
             // can keep a machine silent for several seconds, which is a stall for lockstep, not a departure)
-            if (net.CanRejoin() && !net.CatchingUp() && !net.PlayingAlone() && (net.PeerLeft() || net.SecondsSinceRemote() > 10.0)) {
+            if (!networkDesync.Active() && net.CanRejoin() && !net.CatchingUp() && !net.PlayingAlone() && (net.PeerLeft() || net.SecondsSinceRemote() > 10.0)) {
                 net.ContinueAlone(static_cast<uint32_t>(world.Frame()));
             }
             if (net.ReplayPending()) {
@@ -2242,7 +2320,7 @@ int main(int argc, char** argv) {
                 world.LeaveNetworkRoom();
             }
             // Old servers / console connections have no reserved slot or replay service.
-            if (!net.CanRejoin() && (net.PeerLeft() || net.SecondsSinceRemote() > 10.0)) {
+            if (!networkDesync.Active() && !net.CanRejoin() && (net.PeerLeft() || net.SecondsSinceRemote() > 10.0)) {
                 printf("netplay: %s at frame %d; continuing alone as P%d (device 0 -> P%d)\n",
                        net.PeerLeft() ? "the other player left" : "no packets from the other player for 10 s", world.Frame(), netLocal + 1,
                        keyboardPlayer() + 1);
@@ -2272,9 +2350,9 @@ int main(int argc, char** argv) {
         if (!headless) {
             const bool typingGameplay = play::TypingGameplayKeyboard(world.PortTypingActive(),world.PortTypingReportActive(),
                                                                       world.Hud().subState,world.Hud().stageResults.shown);
-            const bool typingInput = (world.PortTypingActive() || world.PortTypingReportActive()) && !world.Hud().paused && !world.Hud().stageResults.active && !menu.IsOpen() &&
-                                     !optionsPage.IsOpen() && !usernamePrompt.IsOpen();
-            const bool drillInput = world.PortTypingDrillActive() && !menu.IsOpen() && !optionsPage.IsOpen();
+            const bool typingInput = !networkDesync.Active() && (world.PortTypingActive() || world.PortTypingReportActive()) && !world.Hud().paused && !world.Hud().stageResults.active && !menu.IsOpen() &&
+                                     !optionsPage.IsOpen() && !feedbackPage.IsOpen() && !usernamePrompt.IsOpen();
+            const bool drillInput = !networkDesync.Active() && world.PortTypingDrillActive() && !menu.IsOpen() && !optionsPage.IsOpen() && !feedbackPage.IsOpen();
             plat.SetTextInput(active && typingInput && world.PortTypingNameActive());
             uint32_t updateKeys = 0;
             bool updateFocusChanged = false;
@@ -2399,7 +2477,7 @@ int main(int argc, char** argv) {
                     modelGallery.HandleEvent(ev, play::MenuPointerX(x, viewportAspect) * 640, y * 480);
                 }
                 const bool optionsInput = !usernamePrompt.IsOpen() && (optionsPage.IsOpen() || (menu.IsOpen() && menu.DisplayOpen())) &&
-                                          !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen();
+                                          !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen();
                 if (active && optionsInput && ev.type == T::MouseWheel && ev.wheel != 0) {
                     optionsScroll = std::clamp(optionsScroll + (ev.wheel > 0 ? 1 : -1), -8, 8);
                 } else if (active && !netplay && !optionsInput && !usernamePrompt.IsOpen() && !modelGallery.IsOpen() && ev.type == T::MouseWheel && ev.wheel != 0 &&
@@ -2410,7 +2488,7 @@ int main(int argc, char** argv) {
                 if (active && optionsInput && ev.type == T::KeyDown && !ev.repeat &&
                     (ev.key == platform::Key::PageUp || ev.key == platform::Key::PageDown))
                     optionsTabDelta += ev.key == platform::Key::PageUp ? -1 : 1;
-                if (active && (controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || updatePrompt.IsOpen()) &&
+                if (active && (feedbackPage.IsOpen() || controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen() || updatePrompt.IsOpen()) &&
                     (ev.type == T::MouseMove || ev.type == T::MouseDown)) {
                     int ww, wh;
                     plat.ClientSize(&ww, &wh);
@@ -2427,7 +2505,7 @@ int main(int argc, char** argv) {
                         wiiMouse.reload |= ev.button == 3;
                     }
                 }
-                if (active && !netplay && !optionsInput && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() &&
+                if (active && !netplay && !optionsInput && !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() &&
                     !modelGallery.IsOpen() && world.GameMode() == 4 && world.Hud().nightShiftPage == 4 && ev.type == T::KeyDown) {
                     // Name typing owns printable keys, including Space/H/P, which otherwise trigger game actions.
                     if (ev.key == platform::Key::Backspace || (ev.ch >= 32 && ev.ch < 127)) {
@@ -2483,6 +2561,20 @@ int main(int argc, char** argv) {
                 applyDisplay();
             wii.Update();
             focusedGuns.UpdateFocus(active);  // drain background edges after polling; held buttons wait for release
+            if (networkDesync.Active()) {
+                auto mi = menuInput(g_keys & ~desyncPreviousKeys,keyboardPlayer());
+                if ((g_keys & ~desyncPreviousKeys) & play::kEscapeKey) mi.pressed |= 2;
+                desyncPreviousKeys = g_keys;
+                if (active && networkDesync.ReturnRequested(mi)) {
+                    net.Abandon();net.Reset();netplay=false;
+                    world.LeaveNetworkRoom();world.RequestTitle();
+                    networkDesync.Reset();menu.Close();optionsPage.Close();
+                    feedbackPage.Close();controllerPage.Close();wiiPage.Close();lightgunPage.Close(lightguns);
+                    g_keys=menuPrevKeys=0;
+                    clock.Reset(plat.Seconds());
+                }
+                if (guns) guns->BeginFrame();
+            }
             if (usernamePrompt.IsOpen()) {
                 // Local UI uses menu coordinates and stays responsive independently of the game clock.
                 auto mi = menuInput(g_keys & ~promptPrevKeys, keyboardPlayer());
@@ -2532,7 +2624,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if (active && !availableUpdate.empty() && !promptInputConsumed && !netplay && lobby.page == Lobby::kOff &&
-                (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() &&
+                (world.GameMode() == 3 || world.GameMode() == 4) && !menu.IsOpen() && !optionsPage.IsOpen() && !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() &&
                 !lightgunPage.IsOpen() && !modelGallery.IsOpen() && !usernamePrompt.IsOpen()) {
                 // Wait for a local front-end screen so a late response cannot interrupt a match or online lobby.
                 if (sndDriver) sndDriver->OnActivate(false);
@@ -2570,6 +2662,7 @@ int main(int argc, char** argv) {
                 applyVolumes();
         }
         if (netplay && net.CatchingUp()) steps = std::max(steps, 120);
+        if (networkDesync.Active()) steps = 0;
         const double replaySliceStart = plat.Seconds();
         for (int step = 0; step < steps; ++step) {
             if (netplay && net.CatchingUp() && step > 0 && plat.Seconds() - replaySliceStart > 0.012) break;
@@ -2606,14 +2699,14 @@ int main(int argc, char** argv) {
             // The pause menu opens with the world's pause (Game_UpdatePause 0x0040E500) and takes the input while it is
             // open; Resume feeds the world the start press the original resumes with.
             bool menuWasOpen = false, menuInjectStart = false, wiiOpenedThisFrame = false, lightgunOpenedThisFrame = false;
-            bool controllerOpenedThisFrame = false;
+            bool controllerOpenedThisFrame = false, feedbackOpenedThisFrame = false;
             bool namePromptWasOpen = usernamePrompt.IsOpen() || promptInputConsumed;
             if (!keyScript.empty())
                 while (keyScriptPos < keyScript.size() && keyScript[keyScriptPos].first <= frame + 1)
                     g_keys = keyScript[keyScriptPos++].second;
             const bool scoreCodeEligible = (active || headless) && !netplay && !net.CatchingUp() &&
                 lobby.page == Lobby::kOff && !namePromptWasOpen && !menu.IsOpen() && !optionsPage.IsOpen() &&
-                !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() && !modelGallery.IsOpen() &&
+                !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen() && !modelGallery.IsOpen() &&
                 play::ScoreDisplayCode::FrontEnd(world.GameMode(), world.Hud().nightShiftPage);
             const auto scoreInput = scoreDisplay.Update(g_keys, scoreCodeEligible);
             const uint32_t frameKeys = scoreInput.keys;
@@ -2643,7 +2736,7 @@ int main(int argc, char** argv) {
                 }
                 menuWasOpen = menu.IsOpen();
                 menuPausePlayer = hh.pausePlayer;
-                if (menuWasOpen && !menuClosing && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+                if (menuWasOpen && !menuClosing && !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                     auto mi = menuInput(frameKeys & ~menuPrevKeys, hh.pausePlayer);  // the pausing player's device first
                     for (int dev = 0; dev < 2 && guns; ++dev) {
                         const auto ps = guns->Player(dev);
@@ -2677,6 +2770,11 @@ int main(int argc, char** argv) {
                         wii.BeginFrame();
                         controllerOpenedThisFrame = true;
                     }
+                    if (deviceAction == play::DisplayMenu::DeviceAction::Feedback) {
+                        feedbackPage.Open();
+                        wii.BeginFrame();
+                        feedbackOpenedThisFrame = true;
+                    }
                     if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
                         wiiPage.Open();
                         wii.BeginFrame();
@@ -2709,7 +2807,42 @@ int main(int argc, char** argv) {
             }
             // The display page over the Options screen: opened when the world reports a new request; while open it
             // takes the keys and the device buttons (the world gets no input, so the screen stays as it is).
-            bool pageWasOpen = controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen();
+            bool pageWasOpen = feedbackPage.IsOpen() || controllerPage.IsOpen() || wiiPage.IsOpen() || lightgunPage.IsOpen();
+            if ((active || headless) && menuEnabled && feedbackPage.IsOpen() && !feedbackOpenedThisFrame) {
+                auto mi=menuInput(frameKeys & ~menuPrevKeys,0);
+                if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed|=2;
+                if(wiiMouse.trigger || (!mi.trigger && wiiMouse.pointer)) {
+                    mi.pointer=wiiMouse.pointer; mi.px=wiiMouse.px; mi.py=wiiMouse.py;
+                    mi.trigger|=wiiMouse.trigger;
+                }
+                mi.reload|=wiiMouse.reload;
+                optionsScroll=optionsTabDelta=0;
+                const auto before=feedbackSettings;
+                std::vector<uint32_t> deviceSounds;
+                const auto action=feedbackPage.Update(mi,feedbackSettings,&deviceSounds);
+                if(feedbackSettings!=before) {
+                    configureFeedback();
+                    for(auto& pulse:feedbackRumble) pulse.Stop();
+                    plat.StopGamepadRumble(); lastRumble={};
+                    if(!feedbackSettings.Save(feedbackSettingsPath))
+                        feedbackPage.Notice("Could not save feedback settings - check folder access");
+                }
+                feedbackSession();
+                if(!headless && feedbackPage.IsOpen() && action!=play::FeedbackMenu::Action::None) {
+                    game::WorldFeedback test;
+                    const int p=feedbackPage.SelectedPlayer();
+                    if(action==play::FeedbackMenu::Action::TestShot) test.shot[p]=true;
+                    else test.damage[p]=true;
+                    emitFeedback(test,true);
+                    const auto& profile=feedbackSettings.player[p];
+                    if(!profile.controllerStrength && profile.gun==input::feedback::GunType::Off)
+                        feedbackPage.Notice("Enable controller rumble or choose a light gun first");
+                    else if(profile.gun==input::feedback::GunType::Sinden && test.damage[p] && !profile.controllerStrength)
+                        feedbackPage.Notice("Sinden supports recoil; damage rumble needs a controller");
+                }
+                if(sndDriver) for(uint32_t id:deviceSounds) game::PlayOptionSound(*sndDriver,sndTable,id);
+                wiiMouse={};
+            }
             if ((active || headless) && menuEnabled && controllerPage.IsOpen() && !controllerOpenedThisFrame) {
                 auto mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 if ((frameKeys & ~menuPrevKeys) & play::kEscapeKey) mi.pressed |= 2;
@@ -2823,7 +2956,7 @@ int main(int argc, char** argv) {
                     lightgunPage.Notice("Could not save gun settings - check folder access");
                 wiiMouse = {};
             }
-            if (menuEnabled && !namePromptWasOpen && optionsPage.IsOpen() && !pageWasOpen && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
+            if (menuEnabled && !namePromptWasOpen && optionsPage.IsOpen() && !pageWasOpen && !feedbackPage.IsOpen() && !controllerPage.IsOpen() && !wiiPage.IsOpen() && !lightgunPage.IsOpen()) {
                 pageWasOpen = true;
                 const play::MenuInput mi = menuInput(frameKeys & ~menuPrevKeys, 0);
                 std::vector<uint32_t> pageSounds;
@@ -2847,6 +2980,10 @@ int main(int argc, char** argv) {
                 const auto deviceAction = optionsPage.TakeDeviceAction();
                 if (deviceAction == play::DisplayMenu::DeviceAction::Controllers) {
                     controllerPage.Open();
+                    wii.BeginFrame();
+                }
+                if (deviceAction == play::DisplayMenu::DeviceAction::Feedback) {
+                    feedbackPage.Open();
                     wii.BeginFrame();
                 }
                 if (deviceAction == play::DisplayMenu::DeviceAction::WiiRemotes) {
@@ -3455,7 +3592,7 @@ int main(int argc, char** argv) {
             if (namePromptWasOpen && !netplay) continue;
             world.SetPortLeaderboardRecording(!headless && script.empty() && keyScript.empty() && !net.CatchingUp() &&
                                               !net.ReplayPending() && !replayStep);
-            world.Step();
+            if (!networkDesync.Advance([&] { world.Step(); })) break;
             if (netplay) {
                 const uint32_t hash = WorldHash(world);
                 port::net::FrameInput applied[2];
@@ -3464,11 +3601,11 @@ int main(int argc, char** argv) {
                 net.RecordFrame(static_cast<uint32_t>(frame), applied, hash);
                 if (net.RecoveryFailed()) break;
                 net.ReportHash(static_cast<uint32_t>(world.Frame()), hash);
-                uint32_t df, ours, theirs;
-                if (!netDesyncReported && net.Desynced(&df, &ours, &theirs)) {
-                    printf("netplay: DESYNC at frame %u (ours %08X, theirs %08X)\n", df, ours, theirs);
-                    fflush(stdout);
-                    netDesyncReported = true;
+                observeDesync();
+                if (networkDesync.Active()) {
+                    net.Send();
+                    if (headless) return 1;
+                    break;
                 }
                 if (world.GameMode() == 3 && !net.CatchingUp()) {
                     net.Abandon();
@@ -3478,6 +3615,8 @@ int main(int argc, char** argv) {
                     std::filesystem::remove(kRejoinTicket, ignore);
                 }
             }
+            feedbackSession(netStalled,replayStep);
+            emitFeedback(play::RouteFeedback(world.Feedback(),world.Hud(),feedbackContext(netStalled,replayStep)));
             if (trace) {
                 static int lastMode = -1, lastSub = -1;
                 const auto& h = world.Hud();
@@ -3719,6 +3858,23 @@ int main(int argc, char** argv) {
             attractionAudio.Update(*attractionDriver, sndTable, attract,
                 !updatePrompt.IsOpen() && (activeNightShift || world.Hud().typingHome) && !netplay && world.Hud().nightShiftPage != 9 &&
                 (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff));
+        feedbackSession(netStalled);
+        const double feedbackNow=plat.Seconds();
+        for(int p=0;p<2;++p) {
+            if(!feedbackPage.IsOpen() && !focusedGuns.Player(p).gamepad) feedbackRumble[p].Stop();
+            const auto motors=feedbackRumble[p].Output(feedbackNow,feedbackSettings.player[p].controllerStrength);
+            if(rumbleDirty[p] || motors.low!=lastRumble[p].low || motors.high!=lastRumble[p].high) {
+                const bool sent=plat.RumbleGamepad(p,motors.low,motors.high,motors.milliseconds);
+                if(!sent && motors.milliseconds && feedbackPage.IsOpen())
+                    feedbackPage.Notice("Controller rumble unavailable - check the controller connection");
+            }
+            rumbleDirty[p]=false; lastRumble[p]=motors;
+            std::string status=feedbackSettings.player[p].gun==input::feedback::GunType::Sinden
+                                      ? sindenFeedback.Status(p) : gunFeedback.Status(p);
+            if(feedbackSettings.player[p].controllerStrength)
+                status=std::string(controllers.Connected(p)?"Controller connected / ":"Controller disconnected / ")+status;
+            feedbackPage.SetStatus(p,status);
+        }
         updateSystemCursor();  // pause/resume and menus apply before presentation throttling
         // --- render ---
         // Capture before render throttling/headless skips, so pausing always has
@@ -3901,7 +4057,7 @@ int main(int argc, char** argv) {
             (optionsPage.IsOpen() ? optionsPage : menu.Display()).ModernHud(volumes.display, patternHud);
             play::AppendNightShiftPanels(patternHud, sprites, viewportAspect);
             uiFont.Append(patternHud.menuText, sprites, port::ViewportXScale(viewportAspect));
-        } else if (uiFont.Available() && activeNightShift && (controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen())) {
+        } else if (uiFont.Available() && activeNightShift && (feedbackPage.IsOpen() || controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen())) {
             if (world.Hud().paused && !lastSceneDraws.empty())
                 vp = scene.BuildFromWorld(renderer, world, &lastSceneDraws);
             else if (attract.Get())
@@ -3913,14 +4069,16 @@ int main(int argc, char** argv) {
                 vp = game::Mat4::Identity();
             }
             game::WorldHud deviceHud;
-            if (controllerPage.IsOpen())
+            if (feedbackPage.IsOpen())
+                feedbackPage.ModernHud(feedbackSettings, deviceHud);
+            else if (controllerPage.IsOpen())
                 controllerPage.ModernHud(controllers, deviceHud);
             else if (lightgunPage.IsOpen())
                 lightgunPage.ModernHud(lightguns, plat.CurrentInput() == platform::Input::RawInput, deviceHud);
             else
                 wiiPage.ModernHud(wii, deviceHud);
             // Calibration targets and the gun-test sights must retain full contrast.
-            const bool aimCanvas = !controllerPage.IsOpen() && (lightgunPage.IsOpen() ? lightgunPage.CalibrationTarget() >= 0 || lightgunPage.Testing()
+            const bool aimCanvas = !feedbackPage.IsOpen() && !controllerPage.IsOpen() && (lightgunPage.IsOpen() ? lightgunPage.CalibrationTarget() >= 0 || lightgunPage.Testing()
                                                         : wiiPage.CalibrationStep() >= 0);
             play::AppendNightShiftPanels(deviceHud, sprites, viewportAspect, aimCanvas ? 100 : volumes.display.menuOpacity);
             uiFont.Append(deviceHud.menuText, sprites, port::ViewportXScale(viewportAspect));
@@ -3973,6 +4131,12 @@ int main(int argc, char** argv) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
             sprites = scene.MakeSpriteDraws(world.Hud().sprites, 0.001f, nullptr);
+        } else if (feedbackPage.IsOpen()) {
+            renderer.SetScene(assets, {});
+            vp = game::Mat4::Identity();
+            std::vector<game::SpriteDef> md;
+            feedbackPage.Sprites(assets.Exe(),feedbackSettings,md);
+            sprites=scene.MakeSpriteDraws(md,0.001f,nullptr);
         } else if (controllerPage.IsOpen()) {
             renderer.SetScene(assets, {});
             vp = game::Mat4::Identity();
@@ -4180,41 +4344,10 @@ int main(int argc, char** argv) {
             }
             typingHud.menuText.push_back({12, 436, details, .44f, 0xFFF1EBDE});
             typingHud.menuText.push_back({12, 460, "ESC PAUSE    BACKSPACE CANCEL WORD    F10 PAUSE    ALT+F2 TITLE", .38f, 0xFF99C8D1});
-            struct Box { float x,y,w; };
-            std::vector<Box> occupied;
-            const auto typingPrompts = world.PortTypingPrompts();
+            const std::array typingPrompts = {world.PortTypingPrompts(0), world.PortTypingPrompts(1)};
             const bool largeWords = world.PortTypingOptions().wordSize == game::TypingWordSize::Large;
-            const float wordScale = largeWords ? .65f : .5f;
-            // Prepared source mode submits its original HUD from TypingWordHud.
-            // This system-font overlay is only the asset-free fallback.
-            for (const auto& prompt : typingPrompts) {
-                const float width = prompt.projectile ? 42.f : std::clamp(18.f + float(prompt.text.size()) * (largeWords ? 10.f : 7.7f), 72.f, 614.f);
-                float x = std::clamp(prompt.x - width * .5f, 6.f, 634.f - width);
-                const float minimumY = question.empty() ? 48.f : 94.f;
-                float y = std::clamp(prompt.y + 18.f, minimumY, 396.f);
-                for (int attempt = 0; attempt < 16; ++attempt) {
-                    bool overlaps = false;
-                    for (const auto& b : occupied)
-                        if (x < b.x+b.w+4 && x+width+4 > b.x && std::abs(y-b.y) < 30) overlaps = true;
-                    if (!overlaps) break;
-                    y += 32;
-                    if (y > 396) y = minimumY + float(attempt % 3) * 7;
-                }
-                occupied.push_back({x,y,width});
-                const uint32_t edge = prompt.projectile ? 0xFFFFAD62 : prompt.waiting || prompt.selected ? 0xFFF0BF48 : prompt.boss ? 0xFFCC6269 : 0xFF66B8CA;
-                const float anchorX = std::clamp(prompt.x, 4.f, 636.f);
-                const float anchorY = std::clamp(prompt.y, 38.f, 427.f);
-                const float joinX = std::clamp(anchorX, x+3, x+width-3);
-                typingHud.menuPanels.push_back({joinX-0.5f,std::min(anchorY,y),joinX+0.5f,std::max(anchorY,y),edge});
-                typingHud.menuPanels.push_back({std::min(anchorX,joinX),anchorY-0.5f,std::max(anchorX,joinX),anchorY+0.5f,edge});
-                typingHud.menuPanels.push_back({anchorX-2,anchorY-2,anchorX+2,anchorY+2,edge});
-                typingHud.menuPanels.push_back({x-1, y-1, x+width+1, y+27, edge});
-                typingHud.menuPanels.push_back({x, y, x+width, y+26, 0xF509121D});
-                typingHud.menuText.push_back({x+8, y+3, prompt.text, prompt.projectile ? .6f : wordScale, 0xFFF4EFE2});
-                if (prompt.progress)
-                    typingHud.menuText.push_back({x+8, y+3, prompt.text.substr(0,prompt.progress), wordScale, 0xFF69E4A5});
-            }
-            if (typingPrompts.empty())
+            play::AppendTypingPromptOverlay(typingHud, typingPrompts, largeWords, !question.empty());
+            if (!world.Hud().typingCanSkip && typingPrompts[0].empty() && typingPrompts[1].empty())
                 typingHud.menuText.push_back({405, 9, world.Hud().player[0].lives > 0 ? "FOLLOW THE STORY" : "ENTER TO CONTINUE", .4f, 0xFF99C8D1});
             play::AppendNightShiftPanels(typingHud, sprites, viewportAspect, 100);
             if (uiFont.Available()) uiFont.Append(typingHud.menuText, sprites, port::ViewportXScale(viewportAspect));
@@ -4224,6 +4357,18 @@ int main(int argc, char** argv) {
                     game::MenuTextScaled(assets.Exe(),line.x,line.y-12*line.scale,line.text,0,line.scale,fallback);
                 const auto draws=scene.MakeSpriteDraws(fallback,.0001f,nullptr);
                 sprites.insert(sprites.end(),draws.begin(),draws.end());
+            }
+        }
+        if (!noHud && !previewHidden && world.Hud().typingCanSkip && !menu.IsOpen() &&
+            !optionsPage.IsOpen() && !usernamePrompt.IsOpen()) {
+            if (uiFont.Available()) {
+                uiFont.Append({{508, 14, "TYPE SKIP", .64f, 0xFFF1EBDE}}, sprites, port::ViewportXScale(viewportAspect));
+            } else {
+                std::vector<game::SpriteDef> hint;
+                game::MenuTextScaled(assets.Exe(), 508, 8, "TYPE SKIP", 0, .72f, hint);
+                for (auto& glyph : hint) glyph.flags |= 0x700;
+                const auto overlay = scene.MakeSpriteDraws(hint, .0001f, nullptr);
+                sprites.insert(sprites.end(), overlay.begin(), overlay.end());
             }
         }
         if (!noHud && !modelGallery.IsOpen() && !previewHidden && world.Frame() < scoreNoticeUntil &&
@@ -4262,6 +4407,12 @@ int main(int argc, char** argv) {
             const auto overlay = scene.MakeSpriteDraws(status, 0.0001f, nullptr);
             sprites.insert(sprites.end(), overlay.begin(), overlay.end());
         }
+        if (networkDesync.Active()) {
+            game::WorldHud failure;
+            networkDesync.ModernHud(failure);
+            play::AppendNightShiftPanels(failure,sprites,viewportAspect);
+            uiFont.Append(failure.menuText,sprites,port::ViewportXScale(viewportAspect));
+        }
         if (volumes.display.statistics && !noHud && !previewHidden && !modelGallery.IsOpen()) {
             std::vector<game::SpriteDef> stats;
             const float scoreSpace = scoreDisplay.Enabled() && world.GameMode() == 6 ? 24.0f : 0.0f;
@@ -4289,7 +4440,7 @@ int main(int argc, char** argv) {
         if (!updatePrompt.IsOpen()) play::AppendMenuGameFade(world.Hud(),sprites);
         if (!headless) presentMapping();  // the window may have been resized / toggled; the settings may have changed
         const bool outputResolutionMenu = !previewHidden &&
-            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen() ||
+            (world.PortTypingActive() || menu.IsOpen() || optionsPage.IsOpen() || feedbackPage.IsOpen() || controllerPage.IsOpen() || lightgunPage.IsOpen() || wiiPage.IsOpen() || modelGallery.IsOpen() || usernamePrompt.IsOpen() || updatePrompt.IsOpen() ||
              world.Hud().nightShiftPage >= 0 || !world.Hud().menuText.empty() || world.GameMode() == 12 ||
              world.NetworkLobby() || lobby.page != Lobby::kOff);
         // Menu readability is independent of scene resolution and the saved

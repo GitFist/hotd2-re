@@ -32,9 +32,6 @@ bool World::StartTypingDrill(int exercise,const TypingDrillController& profile,u
     impl_->frontEnd=false;
     if(!StartStage(config,error))return false;
     impl_->hud.gameType=config.gameType;
-    impl_->typing.setKeyObserver([world=impl_.get()](unsigned char expected,bool mistake) {
-        TypingDrillGameTypedKey(*world,expected,mistake);
-    });
     return true;
 }
 const TypingDrillGameState& World::TypingDrillGame() const {

@@ -8,6 +8,7 @@
 #include "game/typing_results.h"
 #include "game/sound_table.h"
 #include "game/mstack.h"
+#include "port/play/typing_prompt_overlay.h"
 
 namespace game {
 void TypingWordHud(World::Impl& world);
@@ -21,6 +22,84 @@ void TypingStrengthPostersHud(World::Impl&, uint32_t, uint32_t,
 namespace {
 void Require(bool condition, const char* message) {
     if (!condition) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
+}
+
+void SharedWordPresentation(const char* path) {
+    game::World::Impl w;
+    std::string error;
+    Require(w.typingReference.Load(path, &error), error.c_str());
+    w.typingReferenceActive = w.cfg.portTyping = true;
+    w.gameMode = 6; w.canShoot = 1;
+    for (auto& player : w.player) player.state = 5;
+    auto actor = std::make_unique<game::ActorTask>();
+    actor->typingOriginType = 0x41; actor->typingFlags = 8;
+    actor->viewPos[2] = -100;
+    w.RegisterTarget(actor.get());
+    w.ts.Create([](game::Task&) {}, std::move(actor));
+    w.TypingStep();
+    Require(w.typingCachedTargets.size() == 1, "fixture registers one shootable actor");
+    // Keep a predictable word so individual glyphs can be identified in the rendered frame.
+    const game::TypingWordRecord word{30, 0, "ABC", {}};
+    auto target = w.typingCachedTargets.begin()->second.first;
+    target.forcedWord = &word;
+    w.typing.reset(); w.typing2.reset();
+    w.typing.syncTargets({target});
+    w.typing2.syncTargets({target});
+    auto render = [&] {
+        ++w.frame;
+        w.draws.clear();
+        w.TypingStep();
+        const int corner = w.typingReference.SourceModel(0x129E);
+        Require(std::count_if(w.draws.begin(), w.draws.end(), [&](const auto& d) { return d.model == corner; }) == 1,
+                "both player passes submit just one frame for the shared word");
+    };
+    auto checkGlyph = [&](int raw, bool p1Typed, bool p2Typed) {
+        std::vector<const game::WorldDraw*> rows;
+        const int model = w.typingReference.SourceModel(raw);
+        for (const auto& draw : w.draws) if (draw.model == model) rows.push_back(&draw);
+        Require(rows.size() == 2 && rows[0]->world.m[13] != rows[1]->world.m[13], "the same glyph appears in two distinct rows");
+        if (rows[0]->world.m[13] < rows[1]->world.m[13]) std::swap(rows[0], rows[1]);
+        for (int player = 0; player < 2; ++player) {
+            Require(rows[player]->edit && rows[player]->edit->diffuseRgb, "word rows have visible glyph colors");
+            const auto& rgb = rows[player]->edit->color;
+            if (!(player ? p2Typed : p1Typed))
+                Require(rgb[0] == 1 && rgb[1] == 1 && rgb[2] == 1, "untyped letters remain white");
+            else
+                // Small HUD glyphs can saturate nonzero channels under the native lighting.
+                Require(rgb[player] == 1 && rgb[1 - player] == 0 && rgb[2] == 0,
+                        "typed letters use only the player's red or green channel");
+        }
+    };
+    w.typingCharacters2 = "AB";
+    render();
+    checkGlyph(7050, false, true); // A
+    checkGlyph(7055, false, true); // B
+    checkGlyph(7057, false, false); // C
+    w.typingCharacters = "A";
+    render();
+    checkGlyph(7050, true, true);
+    checkGlyph(7055, false, true);
+    w.typingCancel2 = true;
+    render();
+    checkGlyph(7050, true, false);
+}
+
+void SharedFallbackPresentation() {
+    game::PortTypingPrompt prompt;
+    prompt.serial = 7; prompt.token = 2; prompt.text = "ABC"; prompt.x = 320; prompt.y = 220;
+    std::array<std::vector<game::PortTypingPrompt>, 2> players{{{prompt}, {prompt}}};
+    players[0][0].progress = 1;
+    players[1][0].progress = 2;
+    game::WorldHud hud;
+    play::AppendTypingPromptOverlay(hud, players, false, false);
+    Require(std::count_if(hud.menuPanels.begin(), hud.menuPanels.end(), [](const auto& p) {
+        return p.color == 0xF509121D;
+    }) == 1, "fallback draws one word box for the shared actor");
+    const auto& text = hud.menuText;
+    Require(text.size() == 6 && text[0].text == "P1" && text[1].text == "ABC" && text[2].text == "A" &&
+            text[3].text == "P2" && text[4].text == "ABC" && text[5].text == "AB" && text[1].y < text[4].y &&
+            text[2].color == text[0].color && text[5].color == text[3].color && text[2].color != text[5].color,
+            "fallback shows the same word twice and the correct colored prefix on each labelled row");
 }
 
 void ContinuePresentation(const char* path) {
@@ -113,6 +192,8 @@ void DrillHudPhases(const char* path) {
 int main(int argc, char** argv) {
     const char* path = argc >= 2 ? argv[1] : std::getenv("HOTD2_TYPING_REFERENCE");
     Require(path && *path, "supply the prepared PC reference bank");
+    SharedWordPresentation(path);
+    SharedFallbackPresentation();
     ContinuePresentation(path);
     DrillHudPhases(path);
     game::World::Impl world;

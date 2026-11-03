@@ -1051,7 +1051,13 @@ void Session::Send() {
     Put32(p, inputEpoch_);
     // ack: the first frame still missing from the other side (everything below it has arrived)
     Put32(p, std::max(remoteNext_, config_.startFrame + config_.delay));
-    if (hashes_.empty()) {
+    if (desynced_) {
+        // Keep the first mismatched frame on the wire while the frontend is
+        // halted. A newer matching hash must not hide the failure from a peer
+        // that has not received the divergent frame yet.
+        Put32(p, desyncFrame_);
+        Put32(p, desyncOurs_);
+    } else if (hashes_.empty()) {
         Put32(p, 0xFFFFFFFFu);
         Put32(p, 0);
     } else {
@@ -1238,7 +1244,7 @@ void Session::BeginHistory(uint32_t initialHash) {
 }
 bool Session::HasTicket(const std::string& path) const { return !ReadTicket(path, build_).empty(); }
 bool Session::SaveTicket(const std::string& path) const {
-    if (!CanRejoin()) return false;
+    if (!CanRejoin() || desynced_) return false;
     std::vector<uint8_t> p{'H','2','R','J',1};
     Put32(p, build_); Put8(p, LocalPlayer()); Put32(p, relayRoom_);
     p.insert(p.end(), relayToken_.begin(), relayToken_.end());
@@ -1266,8 +1272,8 @@ void Session::SendResumeRequest(uint8_t type) {
     uint8_t ip[4]; uint16_t port; LocalEndpoint(ip, &port);
     p.insert(p.end(), ip, ip + 4); Put16(p, port); SendToLobby(p);
 }
-void Session::Abandon() {
-    if (CanRejoin() && historyStarted_ && recovery_ != Recovery::Receiving) SendResumeRequest(8);
+void Session::Abandon(bool retainRelay) {
+    if (!retainRelay && CanRejoin() && (historyStarted_ || desynced_) && recovery_ != Recovery::Receiving) SendResumeRequest(8);
     historyStarted_ = false;
 }
 bool Session::PlayingAlone() const { return recovery_ == Recovery::Solo || recovery_ == Recovery::Sending; }

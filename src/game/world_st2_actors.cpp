@@ -43,6 +43,16 @@ constexpr int kDrill21Hide[11] = {850,1020,1040,227,369,490,609,757,878,1018,106
 constexpr int kDrill21Sound[11] = {878,1018,1069,120,260,380,500,630,750,910,960};
 constexpr int kDrill21End[11] = {200,370,130,260,400,520,640,780,900,1050,1100};
 
+int Actor21PathId(const World::Impl& w, int index) {
+    // PC440780/4407E0 share4EE0B8 with Drill, including its first three
+    // campaign paths. Prepared cameras are not aliases for HOD2's paths.
+    return w.typingReferenceActive || PcDrill(w) ? kDrill21Path[index] : w.exe.S16(0x00565EF4 + uint32_t(index) * 2);
+}
+
+int Actor21Camera(const World::Impl& w, int native) {
+    return w.typingReferenceActive ? native + 0x4010 : native;
+}
+
 // 0x00401EC0(a, b, num, den): a moved toward b by num / (num + den) of the shorter way
 int AngleLerp(int a, int b, int num, int den) {
     const uint32_t d = static_cast<uint32_t>(b - a) & 0xFFFF;
@@ -113,7 +123,7 @@ void Actor21Draw(World::Impl& w, Actor21Task& a) {
 void Actor21Path(World::Impl& w, Actor21Task& a) {
     float p[3];
     int ang[3];
-    if (!EvalPath(w, w.exe.S16(0x00565EF4 + static_cast<uint32_t>(a.pathIdx) * 2), static_cast<float>(w.runner->camera.tick), p, ang)) return;
+    if (!EvalPath(w, Actor21PathId(w,a.pathIdx), static_cast<float>(w.runner->camera.tick), p, ang)) return;
     memcpy(a.pos, p, 12);
     memcpy(a.rot, ang, 12);
 }
@@ -122,7 +132,7 @@ void Actor21Path(World::Impl& w, Actor21Task& a) {
 void Actor21PathStep(World::Impl& w, Actor21Task& a) {
     float p[3];
     int ang[3];
-    if (!EvalPath(w, w.exe.S16(0x00565EF4 + static_cast<uint32_t>(a.pathIdx) * 2), static_cast<float>(w.runner->camera.tick), p, ang)) return;
+    if (!EvalPath(w, Actor21PathId(w,a.pathIdx), static_cast<float>(w.runner->camera.tick), p, ang)) return;
     for (int k = 0; k < 3; ++k) a.delta[k] = p[k] - a.pos[k];
     memcpy(a.pos, p, 12);
     memcpy(a.rot, ang, 12);
@@ -145,7 +155,7 @@ void TaskActor21(Task& t);
 
 // 0x00451D20: escaped (cam 0x39 tick > 0x121): follows the path until cam 0x39 tick 0x181
 void Actor21Escaped(World::Impl& w, Task& t, Actor21Task& a) {
-    if (w.runner->flags[0] == 1 || (w.runner->camera.camId == 0x39 && w.runner->camera.tick == 0x181)) {
+    if (w.runner->flags[0] == 1 || (w.runner->camera.camId == Actor21Camera(w,0x39) && w.runner->camera.tick == 0x181)) {
         w.EnemyDestroy(a);
         return;
     }
@@ -163,6 +173,20 @@ void Actor21Alive(World::Impl& w, Task& t, Actor21Task& a) {
         --w.attackers;
         w.EnemyDestroy(a);
         return;
+    }
+    if (w.typingReferenceActive && w.runner->camera.camId == 0x4049) {
+        // PC440331..44037E: this event camera permits the rider's word only
+        // during100..219. Flag200 bypasses the ordinary cutscene input gate.
+        if (w.runner->camera.tick == 100) a.typingFlags |= 0x200u;
+        if (w.runner->camera.tick == 220) {
+            a.typingFlags &= ~0x200u;
+            a.flags34 |= 0x100u;
+        }
+    }
+    if (w.typingReferenceActive && a.typingStrike) {
+        // PC440398: one completed word defeats this rescue encounter.
+        a.typingStrike = false;
+        a.hp = 0;
     }
     if (a.flags34 & 8) {
         for (int i = 0; i < 16; ++i) {
@@ -230,7 +254,7 @@ void Actor21Alive(World::Impl& w, Task& t, Actor21Task& a) {
     Actor21PathStep(w, a);
     Actor21Draw(w, a);
     ++a.anim.counter[0];
-    if (w.runner->camera.camId == 0x39 && w.runner->camera.tick > 0x121) {  // escaped
+    if (w.runner->camera.camId == Actor21Camera(w,0x39) && w.runner->camera.tick > 0x121) {  // escaped
         --w.liveEnemies;
         --w.attackers;
         if (a.slot120 != -1 && a.lock) w.lockOn.Remove(a.lock);
@@ -417,6 +441,13 @@ void TaskActor21(Task& t) {
 // 0x00452320: vehicle body + steered front wheel, then the wheel pair with the roll limited to +-0x3800
 void VehicleDraw(World::Impl& w, VehicleTask& v) {
     const uint32_t row = 0x00565F2C + static_cast<uint32_t>(v.broken) * 0x10;
+    // PC4EE0F0: the intact/broken body, front wheel and wheel pair. Unlike
+    // enemy skeleton draws, this helper has no semantic model binding scope.
+    static constexpr int sourceModels[2][4] = {{0x2D,0x2F,0x34,0x31},{0x2E,0x30,0x35,0x32}};
+    const auto model = [&](int part) {
+        return w.typingReferenceActive ? w.typingReference.SourceModel(sourceModels[v.broken][part])
+                                       : static_cast<int>(w.exe.U32(row + uint32_t(part)*4));
+    };
     auto bits = [](uint32_t u) {
         float f;
         memcpy(&f, &u, 4);
@@ -427,11 +458,11 @@ void VehicleDraw(World::Impl& w, VehicleTask& v) {
     mx::RotZ(m, v.rot[2]);
     mx::RotY(m, v.rot[1]);
     mx::RotX(m, v.rot[0]);
-    w.Draw(static_cast<int>(w.exe.U32(row)), m);
+    w.Draw(model(0), m);
     Mat4 q = m;
     mx::Translate(q, bits(0x4110EECC), bits(0x40CBC84B), bits(0x410F17C2));
     if (v.steerCount != 0) mx::RotY(q, v.steer);
-    w.Draw(static_cast<int>(w.exe.U32(row + 4)), q);
+    w.Draw(model(1), q);
     int n[3];
     NormalizeRot(v.rot, n);
     uint32_t roll = static_cast<uint32_t>(n[2]) & 0xFFFF, r = roll;
@@ -445,11 +476,11 @@ void VehicleDraw(World::Impl& w, VehicleTask& v) {
     q = m;
     mx::Translate(q, 0.0f, bits(0x404AB852), bits(0x415A61E5));
     if (v.wheels != 0) mx::RotX(q, v.wheelAngle);
-    w.Draw(static_cast<int>(w.exe.U32(row + 8)), q);
+    w.Draw(model(2), q);
     q = m;
     mx::Translate(q, 0.0f, bits(0x404AB852), bits(0xC117AE14));
     if (v.wheels != 0) mx::RotX(q, v.wheelAngle);
-    w.Draw(static_cast<int>(w.exe.U32(row + 12)), q);
+    w.Draw(model(3), q);
 }
 
 void TaskVehicle(Task& t) {
@@ -478,7 +509,7 @@ void TaskVehicle(Task& t) {
         }
         v.wheelAngle += 0x1000;
         const bool pcDrill = PcDrill(w);
-        const int path = pcDrill ? kDrill21Path[v.param] : w.exe.S16(0x00565EF4 + static_cast<uint32_t>(v.param) * 2);
+        const int path = Actor21PathId(w,v.param);
         float p[3];
         int ang[3];
         if (EvalPath(w, path, static_cast<float>(v.count), p, ang)) {
@@ -498,15 +529,18 @@ void TaskVehicle(Task& t) {
     if (v.fn == 0x004521B0) {  // on the cutscene paths 0x148 / 0x14E / 0x14D of cameras 0x38 / 0x39 / 0x3A
         v.wheelAngle += 0x1000;
         const int cam = w.runner->camera.camId, tick = w.runner->camera.tick;
-        int path = cam == 0x38 ? 0x148 : cam == 0x39 ? 0x14E : cam == 0x3A ? 0x14D : -1;
+        const int which = cam == Actor21Camera(w,0x38) ? 0 : cam == Actor21Camera(w,0x39) ? 1 : cam == Actor21Camera(w,0x3A) ? 2 : -1;
+        const int path = which < 0 ? -1 : w.typingReferenceActive ? kDrill21Path[which]
+                                                                               : which == 0 ? 0x148 : which == 1 ? 0x14E : 0x14D;
         if (path < 0) w.Note("vehicle 0x004521B0 outside cameras 0x38..0x3A (path from a stale register)");
-        const int end = path >= 0 ? static_cast<int>(w.exe.U32(0x00576D38 + static_cast<uint32_t>(path) * 4)) : 0;
-        if (cam == 0x39) {
+        const int end = path < 0 ? 0 : w.typingReferenceActive ? kDrill21End[which]
+                                                             : static_cast<int>(w.exe.U32(0x00576D38 + uint32_t(path) * 4));
+        if (which == 1) {
             if (tick >= end) {
                 v.broken = 1;
                 v.fn = 0x004522A0;
             }
-        } else if (cam == 0x3A) {
+        } else if (which == 2) {
             if (tick > 0x4F) v.wheels = 0;
             if (tick >= end) v.fn = 0x004522A0;
         }
@@ -528,7 +562,7 @@ void TaskVehicle(Task& t) {
     if (c > 0 && c < 0x28) {
         float p[3];
         int ang[3];
-        if (EvalPath(w, 0x153, static_cast<float>(c) + F32(w.exe, 0x004C43B0), p, ang)) v.steer = 0x4000 - ang[1];
+        if (EvalPath(w, w.typingReferenceActive ? 0x4175 : 0x153, static_cast<float>(c) + F32(w.exe, 0x004C43B0), p, ang)) v.steer = 0x4000 - ang[1];
     }
     VehicleDraw(w, v);
 }
@@ -593,7 +627,7 @@ void SpawnActor21(World::Impl& w, Task& t, const SpawnRecord& r) {
         TaskActor21(t);
         return;
     }
-    d->hp = w.exe.S16(0x00565F0C + static_cast<uint32_t>(w.rank) * 2);  // 0x0040A8A0 = rank
+    d->hp = w.typingReferenceActive ? 3 : w.exe.S16(0x00565F0C + static_cast<uint32_t>(w.rank) * 2);  // PC440097 / native rank table
     w.CountCivilian();  // 0x009A21BA / 0x009C9100[stage]
     d->pathIdx = 0;
     // 0x009A21BA / 0x009C9100[stage] spawn statistics: not modelled

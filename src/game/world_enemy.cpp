@@ -844,8 +844,9 @@ void World::Impl::EnemyVoice(EnemyTask& e, int which) {
 // Behaviours (table 0x00592AE8)
 // =====================================================================================================================
 
-void World::Impl::EnemyBehaviour(EnemyTask& e) {
-    switch (e.behaviour) {
+void World::Impl::EnemyBehaviour(EnemyTask& e, int selected) {
+    // Behaviour 42 dispatches the saved AI without replacing its wrapper state.
+    switch (selected < 0 ? e.behaviour : selected) {
     case 0: case 49: return;  // 0x0041EBB0
     case 1: EnemyBeh1(e); return;
     case 2: EnemyBeh2(e); return;
@@ -861,6 +862,7 @@ void World::Impl::EnemyBehaviour(EnemyTask& e) {
     case 34: EnemyBeh34(e); return;
     case 35: EnemyBeh35(e); return;
     case 45: EnemyBeh45(e); return;
+    case 42: EnemyBeh42(e); return;
     case 40: EnemyBeh40(e); return;
     case 9: EnemyBeh9(e); return;
     case 23: EnemyBeh23(e); return;

@@ -200,6 +200,7 @@ void SpecialTrigger(World::Impl& w, Task& t) {
         }
         P.pending = 1;  // 0x009A5C78 + p * 0x130
         P.firedThisFrame = true;
+        if (w.gameMode == 6 && w.demoFlag != 1) w.feedback.shot[p] = true;
         if (w.GlobalInt(0x009A5C48, 0) == 0) ++P.shots;
         if (it.weapon == 1 && it.b10[2] != 2) {  // the burst's later shots spread (+-63 x, +-47 y)
             const int sx = w.Rand(0x00414CE9) & 1;

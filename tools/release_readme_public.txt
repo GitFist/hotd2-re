@@ -2,8 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.01-a
-Complete download: HOTD2RE-1.8-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a
+Complete download: HOTD2RE-1.9-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation
@@ -16,6 +16,10 @@ This folder contains the port and any accompanying redistributable runtime compo
 Controls (mouse / touchpad / light gun): left button = trigger, right button = reload, middle button or Enter = start.
 Xbox/PlayStation controllers: configure each player in Options > Devices > Controllers.
 LB/L1 and RB/R1 switch settings categories; A/Cross selects and B/Circle goes back.
+Options > Devices > Feedback enables saved per-player controller rumble and light-gun
+recoil for OpenFIRE, GUN4IR, Blamcon, or Sinden through its driver. Outputs start Off.
+Select Test shot or Test damage to check your setup. Physical gun feedback still needs
+hardware testing; keep required tracking software running.
 Keyboard in menus: arrows, Enter (confirm), Esc / Backspace (back). Esc pauses/resumes during play and never quits.
 Score display: at the title or main menu, press Left, Left, Right, Right, Right,
 Left, Right, Enter. Repeat to turn it off. The setting lasts until you close the game.
@@ -68,7 +72,7 @@ folder and Windows PowerShell are required. --no-update-check disables the check
 Updates reuse unchanged files and download only changed program files. A verified
 full-client fallback is available automatically; update files need no manual download.
 Client-only updates do not include the Typing data. If it is missing, startup downloads
-it once (89.5 MB), with verification, progress and Cancel. The complete 1.7 ZIP
+it once (89.5 MB), with verification, progress and Cancel. The complete {{RELEASE_VERSION}} ZIP
 already includes it; the original Typing executable is not run. --no-update-check
 also skips this automatic content download.
 Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
@@ -145,7 +149,7 @@ Normal/roughness maps and mesh refinement need an explicitly authored installed 
 No original game assets, visual packs or vendor SDK source are included here.
 
 DEVICE SETUP
-Options > Game Options > Light Guns or Wii Remotes opens native setup; both are also on
+Options > Devices > Light Guns or Wii Remotes opens native setup; both are also on
 Pause. Classic retains Options > Light Guns / Wii Remotes. Light Guns assigns each gun,
 captures bindings, calibrates aim and tests both players. Online players configure their
 local gun as Player 1. Keep any required light-gun border enabled.

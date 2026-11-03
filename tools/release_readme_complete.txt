@@ -5,8 +5,8 @@ START PLAYING
 2. Open the hotd2re folder and double-click hotd2.exe.
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.01-a
-Complete download: HOTD2RE-1.8-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a
+Complete download: HOTD2RE-1.9-Windows-x64.zip
 This complete package includes the required game data. No separate installation or disc is needed.
 Keep the game and scenes folders next to hotd2.exe. Launch the top-level hotd2.exe.
 Requires Windows 10/11 with Direct3D 11 support. Optional graphics features have additional
@@ -114,7 +114,7 @@ Updates reuse unchanged files and download only changed program files. A verifie
 full-client fallback is available automatically; update files need no manual download.
 After updating an older installation, startup downloads the missing Typing data once
 (89.5 MB), with verification, progress and Cancel. The complete
-1.8 ZIP already includes this data. --no-update-check also skips the automatic content download.
+{{RELEASE_VERSION}} ZIP already includes this data. --no-update-check also skips the automatic content download.
 Version 1.1 is the baseline for future in-game updates. Older date-labeled builds and
 32-bit installations need one manual installation of the latest complete x64 package.
 Version 1.0 x64 can update through its selective path; if that fails, install manually.
@@ -159,6 +159,10 @@ CONTROLS AND DISPLAY
 Xbox/PlayStation controllers connect automatically, with up to two players.
 Options > Devices > Controllers has saved per-player sensitivity, deadzone and button mappings.
 LB/L1 and RB/R1 switch settings categories; A/Cross selects and B/Circle goes back.
+Options > Devices > Feedback enables saved per-player controller rumble and light-gun
+recoil for OpenFIRE, GUN4IR, Blamcon, or Sinden through its driver. Outputs start Off.
+Select Test shot or Test damage to check your setup. Physical gun feedback still needs
+hardware testing; keep required tracking software running.
 Prototype (local play): press F8 on the title or main menu. This hidden HOTD4 chapter-one
 adaptation uses HOTD2 assets, simplified rooms/encounters, two routes and a four-armed boss.
 Hold the trigger for its SMG, right-click to reload, and press G to throw a grenade.
@@ -182,7 +186,7 @@ At the end of a chapter, the results show each player's stage totals and the tea
 After three seconds, click, shoot, or press Enter to continue. Either online player can advance both games.
 Click, shoot, or press Enter to skip the ending credits. Qualifying scores still reach name entry;
 online players return to their shared lobby. Either player can skip.
-Native Wii Remotes: Options > Game Options > Wii Remotes, or Pause > Wii Remotes.
+Native Wii Remotes: Options > Devices > Wii Remotes, or Pause > Wii Remotes.
 Classic menus retain Options > Wii Remotes.
 Select Connect remotes and press red SYNC (or 1 + 2). A powered sensor bar and compatible
 Bluetooth adapter are required; for DolphinBar, use Mode 4 and sync with the bar first.
@@ -193,7 +197,7 @@ Native Wii support has automated coverage; real-hardware pairing and aiming are 
 
 Close the window or use Exit on the main menu to quit.
 Pause also offers separate music, gunshot, and sound-effect volumes.
-Mouse/touchpad input is enabled by default. Open Options > Game Options > Light Guns,
+Mouse/touchpad input is enabled by default. Open Options > Devices > Light Guns,
 or Pause > Light Guns. Classic menus retain Options > Light Guns.
 Choose LIGHT GUNS, then Assign Player 1 and pull that gun's trigger. Repeat for Player 2.
 Player settings offer button capture, four-target aim calibration, and Test both guns.

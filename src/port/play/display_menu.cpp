@@ -92,7 +92,7 @@ int VolumeIndex(int row) {
 }
 bool IsAction(int row) {
     return row == DisplayMenu::kResetGraphics || row == DisplayMenu::kResetGameplay || row == DisplayMenu::kLightguns ||
-           row == DisplayMenu::kWiiRemotes || row == DisplayMenu::kControllers || row == DisplayMenu::kCalibration || row == DisplayMenu::kUsername;
+           row == DisplayMenu::kWiiRemotes || row == DisplayMenu::kControllers || row == DisplayMenu::kFeedback || row == DisplayMenu::kCalibration || row == DisplayMenu::kUsername;
 }
 const char* Help(int r) {
     switch (r) {
@@ -252,6 +252,8 @@ const char* Help(int r) {
             return "Open Wii Remote player slots, button binding, calibration and aiming tests.";
         case DisplayMenu::kControllers:
             return "Set each controller's aim sensitivity, stick deadzone and gameplay buttons.";
+        case DisplayMenu::kFeedback:
+            return "Set native controller rumble and light-gun recoil separately for each local player.";
         default:
             return "Back returns to the previous menu.";
     }
@@ -267,7 +269,7 @@ const std::vector<int>& DisplayMenu::Rows(Page p) {
          kRayShadows, kBloom, kFog, kReflections, kCinematicFocus, kContrast, kSaturation, kColorGrade, kStatistics, kBack},
         {kUsername, kDifficulty, kLives, kContinues, kCrosshairP1, kCrosshairP2, kCrosshairs, kBlood, kResetGameplay, kBack},
         {kMasterVolume, kMusicVolume, kGunVolume, kEffectsVolume, kAttractionVolume, kBack},
-        {kLightguns, kWiiRemotes, kControllers, kBack},
+        {kLightguns, kWiiRemotes, kControllers, kFeedback, kBack},
         {kCrt, kCrtMask, kCrtCurvature, kCrtGlow, kBack},
         {kPack, kMaterialMaps, kMeshRefinement, kBack}};
     return rows[p >= 0 && p < kPageCount ? p : kDisplay];
@@ -445,7 +447,8 @@ const char* DisplayMenu::Label(int r) {
                                                  "Light Guns",
                                                  "Wii Remotes",
                                                  "Username",
-                                                 "Controllers"};
+                                                 "Controllers",
+                                                 "Feedback"};
     return r >= 0 && r < kRowCount ? names[r] : "";
 }
 void DisplayMenu::ApplyPreset(DisplaySettings& d, int p, const port::GraphicsCapabilities* caps) {
@@ -900,7 +903,8 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
         case kCrosshairP2: return "Style " + std::to_string(optionValues_.crosshair[row == kCrosshairP2] + 1);
         case kLightguns:
         case kWiiRemotes:
-        case kControllers: return "Open";
+        case kControllers:
+        case kFeedback: return "Open";
         case kResetGameplay:
         case kResetGraphics: return "Reset";
         default: break;
@@ -1164,12 +1168,13 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
         return true;
     }
     int delta = ((in.pressed & 0x80) ? 1 : 0) - ((in.pressed & 0x40) ? 1 : 0);
-    if (cursor_ == kLightguns || cursor_ == kWiiRemotes || cursor_ == kControllers || cursor_ == kCalibration || cursor_ == kUsername) {
+    if (cursor_ == kLightguns || cursor_ == kWiiRemotes || cursor_ == kControllers || cursor_ == kFeedback || cursor_ == kCalibration || cursor_ == kUsername) {
         if ((in.pressed & 0xC) || (in.trigger && over)) {
             if (cursor_ == kCalibration) calibration_ = 0;
             else if (cursor_ == kUsername) usernameEdit_ = true;
             else deviceAction_ = cursor_ == kLightguns ? DeviceAction::Lightguns :
-                                 cursor_ == kWiiRemotes ? DeviceAction::WiiRemotes : DeviceAction::Controllers;
+                                 cursor_ == kWiiRemotes ? DeviceAction::WiiRemotes :
+                                 cursor_ == kControllers ? DeviceAction::Controllers : DeviceAction::Feedback;
             sounds.push_back(game::kOptionSelectSound);
         }
         return false;

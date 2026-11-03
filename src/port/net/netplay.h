@@ -180,7 +180,10 @@ public:
     bool SaveTicket(const std::string& path) const;
     bool LoadTicket(const std::string& path, std::string* error);
     bool HasTicket(const std::string& path) const;
-    void Abandon();  // intentional end; Close instead suspends a resumable match
+    // Intentional end; Close instead suspends a resumable match. A desync
+    // screen retains the relay while it notifies the other peer, but makes
+    // its divergent replay history unavailable immediately.
+    void Abandon(bool retainRelay = false);
     void ContinueAlone(uint32_t frame);
     bool PlayingAlone() const;
     bool CatchingUp() const;

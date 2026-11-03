@@ -28,6 +28,65 @@ void Start(game::World& w,const char* dir,bool second=true) {
     Require(w.Load(dir,0,&error),error.c_str());w.Boot(cfg);
     Require(w.StartStage(cfg,&error),error.c_str());
 }
+void CutsceneCommand(const char* dir, int skipper) {
+    game::World world;
+    Start(world, dir, skipper == 1);
+    auto type = [&](std::string_view p1, std::string_view p2 = {}) {
+        std::array<game::WorldInput,2> inputs;
+        inputs[0].typingText = p1;
+        inputs[1].typingText = p2;
+        Step(world, inputs);
+    };
+    auto sceneOpen = [&] { return world.Hud().skippable && !world.Hud().canShoot; };
+    for (int frame = 0; frame < 2400 && !sceneOpen(); ++frame) type("sk", "sk");
+    Require(sceneOpen(), "Chapter 1 opens a scripted cutscene skip window");
+    Require(world.Hud().typingCanSkip, "the Typing skip hint opens with the cutscene");
+    std::printf("Chapter 1 cutscene accepts SKIP at frame %d for P%d\n", world.Frame(), skipper + 1);
+    type("ip", "ip");
+    Require(!world.Hud().skipping, "letters before the cutscene cannot complete SKIP");
+    if (skipper == 1) {
+        type("sk", "ip");
+        Require(!world.Hud().skipping, "two players cannot pool parts of SKIP");
+        type("x");
+    } else {
+        type("", "SKIP");
+        Require(!world.Hud().skipping, "an inactive second player cannot skip");
+    }
+    auto command = [&](std::string_view letters) {
+        if (skipper == 0) type(letters); else type("", letters);
+    };
+    command("sKx");
+    command("ip");
+    Require(!world.Hud().skipping, "a mistyped command does not skip the scene");
+    command("S");
+    command("ki");
+    Require(sceneOpen() && !world.Hud().skipping, "partial SKIP leaves the cutscene playing");
+    command("P");
+    for (int i = 0; i < 3 && !world.Hud().skipping; ++i) Step(world);
+    Require(world.Hud().skipping, "either active player can skip the actual Chapter 1 cutscene");
+    Require(!world.Hud().typingCanSkip, "the hint disappears once the cutscene is being skipped");
+    for (int p = 0; p < 2; ++p) {
+        const auto stats = world.PortTypingStats(p);
+        Require(stats.errors == 0 && stats.correctCharacters == 0, "cutscene input does not count as combat typing");
+    }
+    if (skipper != 0) return;
+    for (int i = 0; i < 4000; ++i) {
+        const auto prompts = world.PortTypingPrompts(0);
+        const auto selected = std::find_if(prompts.begin(), prompts.end(), [](const auto& p) { return p.selected; });
+        if (selected != prompts.end()) {
+            const auto before = world.PortTypingStats(0);
+            type("SKIP");
+            const auto after = world.PortTypingStats(0);
+            Require(!world.Hud().skipping &&
+                    after.correctCharacters + after.errors > before.correctCharacters + before.errors,
+                    "SKIP typed during combat is evaluated against the selected enemy word");
+            return;
+        }
+        const auto target = std::find_if(prompts.begin(), prompts.end(), [](const auto& p) { return !p.waiting; });
+        if (target != prompts.end()) type(target->text.substr(0, 1)); else Step(world);
+    }
+    Require(false, "skipping the intro resumes normal Chapter 1 typing combat");
+}
 void Same(const game::World& a,const game::World& b) {
     Require(a.Frame()==b.Frame()&&a.GameMode()==b.GameMode()&&a.RandState()==b.RandState(),"replay frame, mode and RNG stay equal");
     Require(a.Events().script==b.Events().script&&a.Events().scene==b.Events().scene&&
@@ -48,7 +107,7 @@ void Same(const game::World& a,const game::World& b) {
     for(size_t i=0;i<ae.size();++i)Require(ae[i].serial==be[i].serial&&ae[i].hp==be[i].hp&&ae[i].behaviour==be[i].behaviour&&
         ae[i].sub==be[i].sub&&ae[i].flags34==be[i].flags34&&ae[i].target==be[i].target,"replay preserves enemy damage, state and target ownership");
 }
-void OwnedAxe() {
+void OwnedAxe(bool simultaneous) {
     game::World::Impl w;
     w.cfg.portTyping=true;w.gameMode=6;w.canShoot=1;
     for(auto& p:w.player){p.state=5;p.lives=3;}
@@ -61,9 +120,18 @@ void OwnedAxe() {
     Require(axe!=nullptr,"real Johnny spawn creates an axe");
     axe->viewPos[2]=-10;w.RegisterTarget(axe);w.TypingStep();
     Require(w.typing.prompts().size()==1&&w.typing2.prompts().size()==1,"both controllers receive a registered projectile");
-    w.typingCharacters2=w.typing2.prompts().front().text;w.TypingStep();
-    Require(w.typing.stats().completedWords==0&&w.typing2.stats().completedWords==1,"P2 projectile completion leaves P1 statistics unchanged");
-    Require((axe->flags34&4u)&&!(axe->flags34&2u)&&axe->typingPlayer==1&&axe->hitNode[1]==1,"P2 completion delivers the native P2 hit flag and node");
+    const auto first=w.typing.prompts().front(),second=w.typing2.prompts().front();
+    Require(first.serial==second.serial&&first.token==second.token&&first.text==second.text,
+            "one projectile presents the identical word to P1 and P2");
+    w.typingCharacters2=Input(second.text);
+    if(simultaneous)w.typingCharacters=w.typingCharacters2;
+    w.TypingStep();
+    const auto p1=w.typing.stats().completedWords,p2=w.typing2.stats().completedWords;
+    Require(p1+p2==1,"one projectile awards one completion, even for simultaneous matching input");
+    if(!simultaneous)Require(p2==1,"P2 projectile completion leaves P1 statistics unchanged");
+    const int winner=p2?1:0;
+    Require((axe->flags34&6u)==(2u<<winner)&&axe->typingPlayer==winner&&axe->hitNode[winner]==1,
+            "only the winner delivers the native player hit flag and node");
     Require(w.typingPlayer==0,"P2 processing restores controller context");
 }
 void JoinAndContinue(const char* dir) {
@@ -111,7 +179,13 @@ void CampaignAndReplay(const char* dir) {
                 if(first!=prompts.end())inputs[p].typingText=Input(first->text,first->progress);
             }
         } else if(!cancelled) {
-            Require(std::any_of(p1.begin(),p1.end(),[](const auto& p){return p.selected&&p.progress>0;}),"P2 can select and partially type an actual campaign word");
+            const auto selectedP2=std::find_if(p1.begin(),p1.end(),[](const auto& p){return p.selected&&p.progress>0;});
+            Require(selectedP2!=p1.end(),"P2 can select and partially type an actual campaign word");
+            const auto sameP1=std::find_if(p0.begin(),p0.end(),[&](const auto& p){
+                return p.serial==selectedP2->serial&&p.token==selectedP2->token;
+            });
+            Require(sameP1!=p0.end()&&sameP1->text==selectedP2->text&&sameP1->progress==0,
+                    "the same campaign enemy has the same word and independent progress on both controllers");
             Require(a.PortTypingStats(0).correctCharacters==beforePartialP1,"P2 partial typing does not consume P1 characters");
             inputs[1].typingCancel=true;cancelled=true;
         } else {
@@ -145,13 +219,26 @@ void CampaignAndReplay(const char* dir) {
     for(int i=0;i<4000&&late.PortTypingPrompts(0).empty();++i)Step(late);
     Require(!late.PortTypingPrompts(0).empty(),"late-join fixture reaches an active authored encounter");
     std::array<game::WorldInput,2> join;join[1].held=join[1].pressed=8;Step(late,join);
-    bool joined=false;
-    for(int i=0;i<600;++i){Step(late);if(late.Hud().player[1].state==5){joined=true;break;}}
-    Require(joined,"real campaign accepts P2 joining after the stage starts");
+    bool sharedAfterJoin=false;
+    for(int i=0;i<600&&!sharedAfterJoin;++i) {
+        Step(late);
+        if(late.Hud().player[1].state!=5)continue;
+        const auto host=late.PortTypingPrompts(0);
+        for(const auto& guest:late.PortTypingPrompts(1)) {
+            const auto same=std::find_if(host.begin(),host.end(),[&](const auto& p){
+                return p.serial==guest.serial&&p.token==guest.token;
+            });
+            if(same==host.end())continue;
+            Require(same->text==guest.text,"late join reuses the active target's word");
+            sharedAfterJoin=true;
+        }
+    }
+    Require(sharedAfterJoin,"P2 joins the live campaign and sees the same encounter as P1");
 }
 }
 int main(int argc,char** argv) {
     if(argc<2){std::fprintf(stderr,"usage: typing_multiplayer_test <native-game-dir>\n");return 2;}
-    OwnedAxe();JoinAndContinue(argv[1]);CampaignAndReplay(argv[1]);
-    std::puts("PASS: independent P1/P2 campaign typing, P2 hit ownership, cancellation, late join, Continue and deterministic replay");
+    CutsceneCommand(argv[1],0);CutsceneCommand(argv[1],1);
+    OwnedAxe(false);OwnedAxe(true);JoinAndContinue(argv[1]);CampaignAndReplay(argv[1]);
+    std::puts("PASS: shared campaign words, independent progress, single hit ownership, cancellation, late join, Continue and deterministic replay");
 }

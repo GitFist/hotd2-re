@@ -199,6 +199,13 @@ struct PortHomeRoom {
     bool typing = false;
 };
 
+// Accepted gameplay events for local hardware feedback. Reset at every Step;
+// presentation telemetry only, excluded from deterministic state/checkpoints.
+struct WorldFeedback {
+    bool shot[2] = {};
+    bool damage[2] = {};
+};
+
 struct WorldHud {
     // Native Night Shift front end (640 x 480 logical coordinates). No live service data here.
     struct MenuPanel { float left, top, right, bottom; uint32_t color; };
@@ -228,6 +235,7 @@ struct WorldHud {
     int rank = 0;             // 0x009C8E96 (0..15)
     int shake = 0;            // 0x009CA0E4 vertical view offset after a hit (Player_HitShake 0x00415270)
     bool skippable = false;   // 0x009A2D7C: the running cutscene can be skipped (reload / off-screen shot)
+    bool typingCanSkip = false;
     bool skipping = false;    // 0x009A2D74
     uint32_t frameCounter = 0;  // 0x009A32A0 (the HUD animates the life torches with it: 0x004174A0)
     uint32_t flags5900 = 3;     // 0x009A5900 (bit 0: no cutscene, players join at once; bit 1: credit lines / join)
@@ -577,6 +585,7 @@ public:
     WorldCamera ContextNow() const;
     const std::vector<WorldDraw>& Draws() const;
     const WorldHud& Hud() const;
+    const WorldFeedback& Feedback() const;
     // Fog, the env blocks and the light table after the last frame (renderer state).
     const WorldLights& Lights() const;
     const Environment& Env() const;
