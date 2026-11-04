@@ -130,8 +130,7 @@ into the new hotd2re folder before starting it, replacing the supplied default s
   hotd2re_horde_records.txt  local Horde records, if present
   hotd2re_lightguns.ini      light-gun assignments, calibration and bindings, if present
   hotd2re_wii.ini            Wii Remote calibration and controls, if present
-Copy your installed visual-pack folders too if your settings select them. Keep the old
-folder as a backup until you have checked the new version. Both online players should
+Keep the old folder as a backup until you have checked the new version. Both online players should
 update together and create a new room. Never give your private rejoin ticket to another player.
 
 HORDE MODE
@@ -228,15 +227,13 @@ Image Preset > Original changes image options and downsampling only; it is not R
 Lighting: pixel lighting, supported smoke blending/contact shading, raster/ray shadows,
 bloom, volumetric fog, reflections and cutscene blur. These are optional effects.
 Performance: VSync, frame limit, supported tearing/latency controls and statistics.
-Packs: installed visual-pack choice, material detail and model smoothing. Material maps
-and smoothing require a compatible authored pack. Pack changes apply on the next launch.
 Color: brightness, gamma, contrast, saturation, color grading, Blood Color, HDR and test
 patterns. Blood Color switches Green/Red immediately and saves locally; online players
 choose independently.
 HDR uses scRGB and needs Windows HDR enabled; the original art remains SDR.
 Resolution: internal render scale, output matching/SSAA, dynamic resolution, downsampling
 and FSR 1 spatial upscaling. Render Scale 2x/3x/4x renders more pixels at runtime and
-needs no texture-pack download. A separate optional 2x texture pack replaces artwork.
+needs no texture-pack download.
 CRT: scanlines, phosphor masks, curvature and glow. Curvature is disabled for raw light
 guns and active frame generation so their input/display requirements remain intact.
 Advanced: renderer, supported vendor upscaling, upscale quality, frame generation and

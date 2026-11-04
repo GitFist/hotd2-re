@@ -114,20 +114,19 @@ duplicate submissions. Keep hotd2re_scores_pending.txt with your settings. Exist
 save records are not uploaded. Local records work offline.
 
 GRAPHICS AND DISPLAY
-Options shortcuts or Pause > Graphics Options provide Display, Image, Lighting,
-Performance, Packs, Color, Resolution, CRT and Advanced pages. Image Preset > Original,
+Options and Pause > Options provide Display, Graphics, Gameplay, Sound, Devices
+and CRT categories. Image Preset > Original,
 Clean and Enhanced change image choices and downsampling, not every graphics setting.
 Fullscreen includes borderless and exclusive choices. Resolution includes authored
 scale, match-output and 150%/200% output-relative SSAA. Higher settings cost GPU time
 and memory. Calibration cards help inspect black level, white, gamma and geometry.
-Render Scale 2x/3x/4x draws more pixels at runtime without a texture-pack download;
-the separate optional 2x texture pack replaces artwork.
+Render Scale 2x/3x/4x draws more pixels at runtime.
 Experimental widescreen can reveal original off-camera staging. Optional render-pose
 interpolation smooths presentation above 60 FPS with up to one tick of visual delay;
 gameplay remains at 60 Hz and aiming/HUD input remains immediate.
 
 Display > Reset All Graphics asks for confirmation and saves graphics defaults. It keeps
-the selected pack, menu theme, game rules, audio and controls. Some changes need restart.
+the menu theme, game rules, audio and controls. Some changes need restart.
 Night Shift's Display > Menu Opacity changes background strength while text stays readable;
 Classic labels it Night Shift only. During paused graphics changes, Hide UI or H reveals
 the actual scene without resuming. H, Show UI, Back/Reload, Enter or Start restores the UI.
@@ -141,12 +140,11 @@ Direct3D 11 and SDL_GPU offer the broad optional raster-effects paths. Native Di
 on Windows x64 enables supported vendor temporal reconstruction/frame generation and
 experimental directional DXR shadows. Options are checked against the active backend
 and GPU; every backend does not support every effect. Renderer, vendor reconstruction,
-frame generation, menu style and visual-pack choices require restart. Unavailable
+frame generation and menu style require restart. Unavailable
 SDK/GPU features report a fallback instead of pretending to run the selected effect.
 Advanced effects, DXR, frame generation and HDR are optional and Off by default.
 HDR uses linear scRGB and requires Windows HDR; original art retains its SDR range.
-Normal/roughness maps and mesh refinement need an explicitly authored installed pack.
-No original game assets, visual packs or vendor SDK source are included here.
+No original game assets or vendor SDK source are included here.
 
 DEVICE SETUP
 Options > Devices > Light Guns or Wii Remotes opens native setup; both are also on
