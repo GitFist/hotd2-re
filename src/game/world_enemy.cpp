@@ -465,7 +465,7 @@ void World::Impl::AdvanceNativeVisualEffects() {
 // is a RET stub. Keep its restoration entirely outside PC simulation tasks.
 void World::Impl::EmitNativePolygonBlood(const EnemyTask& enemy, int node) {
     if (gameMode != 6 || cfg.portTyping) return;
-    const EnemyNode& hit = enemy.anim.nodes[std::clamp(node, 0, 15)];
+    const EnemyNode& hit = enemy.anim.nodes[std::clamp(node, 0, 31)];
     Mat4 camera = cam.inverse;
     if (runner) {
         const auto& director = runner->camera;
@@ -479,6 +479,29 @@ void World::Impl::EmitNativePolygonBlood(const EnemyTask& enemy, int node) {
     mx::Translate(effect.world, position[0], position[1], position[2]);
     mx::Scale(effect.world, scale, scale, scale);
     nativeVisualEffects.push_back(effect);
+}
+
+// Naomi 0x0C052718 (Actor31's lethal hit) -> 0x0C02CD2A / 0x0C02CCE8.
+// The source emits on ticks 1/21/41/61/81, ending at 100 or when the owner
+// task ends. 0x0C0C1F0C is integer remainder, not random. Keep the tracker
+// outside simulation tasks and resolve its serial anew before reading a node.
+void World::Impl::StartNativeDeathBlood(int node) {
+    if (gameMode != 6 || cfg.portTyping) return;
+    nativeBloodEmitters.push_back({CurrentSerial(), std::clamp(node, 0, 31), 0});
+}
+
+void World::Impl::UpdateNativeDeathBlood() {
+    if (paused || nativeBloodEmitters.empty()) return;
+    const auto live = ts.Live();
+    for (auto& emitter : nativeBloodEmitters) {
+        const auto owner = std::find_if(live.begin(), live.end(), [&](const Task* task) {
+            return task->alive && task->serial == emitter.owner;
+        });
+        const auto* enemy = owner == live.end() ? nullptr : dynamic_cast<const EnemyTask*>((*owner)->data.get());
+        if (!enemy || emitter.ticks >= 100) { emitter.owner = 0; continue; }
+        if (++emitter.ticks % 20 == 1) EmitNativePolygonBlood(*enemy, emitter.node);
+    }
+    std::erase_if(nativeBloodEmitters, [](const NativeBloodEmitter& emitter) { return emitter.owner == 0; });
 }
 
 // Enemy_HitEffects 0x00454050
@@ -889,6 +912,7 @@ void World::Impl::EnemyBehaviour(EnemyTask& e, int selected) {
     case 13: EnemyBeh13(e); return;  // world_enemy_beh.cpp
     case 34: EnemyBeh34(e); return;
     case 35: EnemyBeh35(e); return;
+    case 44: EnemyBeh44(e); return;
     case 45: EnemyBeh45(e); return;
     case 42: EnemyBeh42(e); return;
     case 40: EnemyBeh40(e); return;

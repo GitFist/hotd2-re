@@ -20,8 +20,10 @@ if(WIN32)
 endif()
 
 # Optional asset pack lookup (HOTD2_ASSET_DIR; notes/agents/remaster.md), shared by the renderer and the audio backends.
-add_library(port_assets STATIC assets/asset_override.cpp)
-target_include_directories(port_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(port_assets STATIC assets/asset_override.cpp assets/naomi_audio.cpp render/png_read.cpp)
+target_include_directories(port_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
+add_executable(naomi_audio_test ${PROJECT_SOURCE_DIR}/tests/naomi_audio_test.cpp)
+target_link_libraries(naomi_audio_test PRIVATE port_assets game_sound)
 
 # Optional startup release check, independent of SDL and deterministic game / net state.
 add_library(port_update STATIC update/update_check.cpp update/update_install.cpp update/typing_content.cpp)
@@ -59,7 +61,7 @@ endif()
 
 # Asset loading + the backend-neutral model / sprite renderer on top of the native decoders in src/game.
 add_library(port_render STATIC render/asset_store.cpp assets/naomi_visuals.cpp render/model_renderer.cpp render/naomi_flash_sort.cpp render/render_pose.cpp scene/scene.cpp render/front_screens.cpp
-                               render/png_read.cpp render/ui_font.cpp)
+                               render/ui_font.cpp)
 target_include_directories(port_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(port_render PUBLIC game port_assets)
 
@@ -153,6 +155,7 @@ if(WIN32)
   target_include_directories(port_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(port_audio PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(port_audio PUBLIC game_sound port_assets xaudio2 ole32)
+  target_link_libraries(naomi_audio_test PRIVATE port_audio)
 
   # input_test.exe - two-player crosshair test for mice / light guns (Win32 raw input, no SDL).
   add_executable(input_test WIN32 tools/input_test.cpp)
@@ -163,6 +166,8 @@ if(HOTD2_SDL3)
   add_library(port_audio_sdl STATIC audio/sdl_audio_backend.cpp)
   target_include_directories(port_audio_sdl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(port_audio_sdl PUBLIC game_sound port_assets hotd2_sdl3)
+  target_link_libraries(naomi_audio_test PRIVATE port_audio_sdl)
+  target_compile_definitions(naomi_audio_test PRIVATE HOTD2_TEST_SDL)
   # Channel semantics of the SDL sound backend on SDL's disk audio driver (tests/sdl_audio_test.cpp).
   add_executable(sdl_audio_test ${CMAKE_SOURCE_DIR}/tests/sdl_audio_test.cpp)
   target_link_libraries(sdl_audio_test PRIVATE port_audio_sdl)

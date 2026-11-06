@@ -8,6 +8,8 @@ Muzzle flashes use the correct warm/blue player artwork, native texture-driven o
 
 Blood restores the separate 58-frame opaque polygonal effect whose PC function was an empty stub, the native 64×64 pool texture, and the original ripple mesh sequence. Existing translucent blood sheets retain their source alpha modes and use native depth/sorting behavior. The additional effect has its own visual lifetime; it does not allocate simulation tasks or consume gameplay randomness.
 
+Release 2.1 also restores the leaping and knife-throwing enemies' death bleeding: five bursts, 20 gameplay frames apart, stopping when the body is removed. This shared routine covers Chapters 1, 2, 4, 5 and 6, pauses with gameplay, and leaves PC rendering and multiplayer simulation unchanged.
+
 Original stage-object bindings restore source geometry where the section tables prove the complete object correspondence. This includes the chapter-five structure whose PC version replaced thousands of frame triangles with flat cutout cards. Regrouped surfaces retain exact native UVs and artwork only when the source correspondence is unambiguous.
 
 ## Content
@@ -21,6 +23,8 @@ python tools/import_naomi_visuals.py --rom "PATH\hotd2.zip" --pc-game "PATH\game
 The importer uses NumPy and verifies the source chip hashes. The bank is discovered beside `Hod2.exe` in the game data directory. An isolated test can instead pass `--naomi-visuals "PATH\naomi_visuals.bank"`; `--graphics-mode pc|naomi` overrides the initial selection. Naomi startup requires a valid bank and reports missing or damaged data without overwriting the saved graphics-mode preference. Unconfigured diagnostic screenshots retain the PC reference unless Naomi or an explicit settings file is requested.
 
 Release 2.0 includes the verified bank in the complete x64 ZIP. Existing clients continue using the compatible client-only updater; after restart, the new executable downloads missing Naomi data once (100 MB) with visible progress, cancellation, a pinned size and SHA-256, and an atomic install. Existing banks and saved PC/Naomi preferences are preserved. The bank is hosted on the companion update release; it is excluded from the client-only ZIP and selective file index.
+
+Release 2.1 includes the corrected Judgment burning-car material and geometry. Its client upgrades the exact verified 2.0 bank to the new bank atomically; cancellation or a failed download preserves the old bank, and modified banks are not overwritten. The separate Naomi Arcade audio bank is also downloaded once on normal launch and included in the complete package.
 
 Scripted/diagnostic launches, explicit bank overrides and `--no-update-check` do not start the automatic download. A cancelled or failed required download can be retried by launching normally, or avoided by installing the complete ZIP. The complete-package tool accepts `--naomi-visuals` and refuses banks that differ from the client's pinned release data.
 

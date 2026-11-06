@@ -4,7 +4,7 @@
 
 A native Windows port of **The House of the Dead 2** and **The Typing of the Dead**, with online co-op and modern controls.
 
-**[Download 2.0 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.05-a/HOTD2RE-2.0-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.05-a)
+**[Download 2.1 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.06-a/HOTD2RE-2.1-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.06-a)
 
 ## Features
 
@@ -14,6 +14,7 @@ A native Windows port of **The House of the Dead 2** and **The Typing of the Dea
 - **Controls:** keyboard, mouse, touch, Xbox/PlayStation controllers, light guns and Wii Remotes.
 - **Native feedback:** controller rumble and light-gun recoil with per-player settings.
 - **Graphics:** Naomi artwork, models, lighting and effects, with PC graphics also available.
+- **Audio:** original Naomi Arcade music with correct loops and restored looping sound effects.
 - **Extras:** music library and model viewer.
 
 ## Screenshots
@@ -32,7 +33,7 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-2.0-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.05-a/HOTD2RE-2.0-Windows-x64.zip)**.
+1. Download **[HOTD2RE-2.1-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.06-a/HOTD2RE-2.1-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 

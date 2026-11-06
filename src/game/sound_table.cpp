@@ -67,6 +67,12 @@ const TypingReferenceSound* SoundTable::TypingSound(uint32_t id) const {
     return typing_ ? typing_->Sound(id) : nullptr;
 }
 
+const NaomiSound* SoundTable::FindNaomiSound(int index) const {
+    if (naomi_) for (const auto& music : *naomi_)
+        if (music.index == static_cast<uint32_t>(index)) return &music;
+    return nullptr;
+}
+
 // 0x0041CFD0
 SoundRequest ResolveSound(const SoundTable& table, uint32_t id, const SoundContext& ctx) {
     SoundRequest r;
@@ -117,6 +123,11 @@ SoundRequest ResolveSound(const SoundTable& table, uint32_t id, const SoundConte
         }
         r.channel = kSndAutoChannel;
         r.dupId = id;
+        if (r.loop) if (const auto* sound = table.FindNaomiSound(static_cast<int>(id))) {
+            r.fallbackPath = r.path; r.fallbackLoop = r.loop;
+            r.path = sound->path;
+            r.region = sound->region;
+        }
         return r;
     }
     case 1: {
@@ -129,6 +140,20 @@ SoundRequest ResolveSound(const SoundTable& table, uint32_t id, const SoundConte
         r.channel = kSndBgmChannel;
         r.loop = !BgmPlaysOnce(id);
         r.setCurrentBgm = true;
+        // Arcade, its results/ending and attract use the original AICA render.
+        // Extras' explicit standard recordings map by filename; _AR selections
+        // and Original gameplay keep their PC arrangement. Typing resolves above.
+        int nativeIndex = -1;
+        if (ctx.altFlag == 0 && ctx.gameState != 0 && i < SoundTable::kBgmCountB) nativeIndex = i;
+        else if (i >= SoundTable::kBgmCountB)
+            for (size_t j = 0; j < table.BgmB().size(); ++j)
+                if (t[i] == table.BgmB()[j]) { nativeIndex = static_cast<int>(j); break; }
+        if (const auto* music = table.FindNaomiSound(nativeIndex)) {
+            r.fallbackPath = r.path; r.fallbackLoop = r.loop;
+            r.path = music->path;
+            r.region = music->region;
+            r.loop = r.region.endFrame != 0;
+        }
         return r;
     }
     case 2: {

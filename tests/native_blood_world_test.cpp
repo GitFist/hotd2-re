@@ -7,12 +7,16 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "game/mstack.h"
 #include "game/world_internal.h"
+#include "game/world_config_io.h"
+#include "route_planner.h"
 
 namespace {
 int checks = 0;
@@ -176,6 +180,84 @@ struct Script {
     }
 };
 
+void DeathBloodFixtures() {
+    auto w = std::make_unique<game::World::Impl>();
+    w->gameMode = 6; w->rng.state = 0x12345678;
+    w->runner = std::make_unique<game::EventRunner>(w->mem, *w, &w->env, &w->exe);
+    w->runner->camera.activeCtx = 1;
+    auto camera = game::Mat4::Translate(100, -25, 70);
+    std::memcpy(w->runner->camera.ctx[1].camera, camera.m, sizeof(camera.m));
+    w->cam.inverse = game::Mat4::Translate(-999, 500, 600);
+    auto create = [&]() {
+        auto* owner = w->ts.Create([](game::Task& task) {
+            static_cast<game::World::Impl*>(task.user)->StartNativeDeathBlood(23);
+        }, std::make_unique<game::EnemyTask>());
+        owner->user = w.get();
+        return owner;
+    };
+    auto* owner = create();
+    auto& node = owner->As<game::EnemyTask>().anim.nodes[23];
+    node.radius = 5; node.hit[1] = -3; node.hit[2] = -20;
+    const auto nextTask = w->ts.NextSerial();
+    w->ts.Run(owner);
+    Require(w->nativeBloodEmitters.size() == 1, "lethal-hit callback starts one presentation tracker");
+    const std::set<int> sourceTicks = {1, 21, 41, 61, 81};
+    uint64_t lastVisual = 0;
+    for (int tick = 1; tick <= 159; ++tick) {
+        node.hit[0] = static_cast<float>(tick);
+        if (tick == 20) {
+            w->paused = true;
+            const int phase = w->nativeVisualEffects.front().frame;
+            for (int pause = 0; pause < 12; ++pause) {
+                w->AdvanceNativeVisualEffects(); w->UpdateNativeDeathBlood();
+            }
+            Require(w->nativeBloodEmitters.front().ticks == 19 && w->nativeVisualEffects.front().frame == phase,
+                    "pause freezes both recurring emission and already visible blood");
+            w->paused = false;
+        }
+        w->AdvanceNativeVisualEffects(); w->UpdateNativeDeathBlood();
+        int born = 0;
+        for (const auto& effect : w->nativeVisualEffects) if (effect.serial > lastVisual) {
+            ++born; lastVisual = effect.serial;
+            Require(effect.frame == 0 && effect.duration == 58, "each death burst begins the complete 58-frame animation");
+            Require(std::fabs(effect.world.m[12] - (100 + tick)) < 0.0001f &&
+                    std::fabs(effect.world.m[13] + 28) < 0.0001f && std::fabs(effect.world.m[14] - 50) < 0.0001f,
+                    "each burst follows the current hit node, including node indices above 15, through the active camera");
+            Require(std::fabs(effect.world.m[0] - 0.3999999761581421f * 5) < 0.0001f,
+                    "death burst keeps the source hit-radius scale");
+        }
+        Require(born == (sourceTicks.count(tick) ? 1 : 0), "source death-emission timing and finite duration", tick);
+        Require(w->rng.state == 0x12345678 && w->randCalls.empty() && w->ts.NextSerial() == nextTask &&
+                w->ts.Live().size() == 1 && w->draws.empty() && w->sounds.empty(),
+                "death presentation preserves RNG, simulation tasks, PC draws and sounds", tick);
+    }
+    Require(w->nativeBloodEmitters.empty() && w->nativeVisualEffects.empty(), "death blood completely expires");
+
+    // Losing the body must stop future emission without removing existing bursts
+    // or following a replacement allocation. No retained actor pointers are used.
+    w->ts.Run(owner); w->UpdateNativeDeathBlood();
+    Require(w->nativeVisualEffects.size() == 1, "replacement fixture starts with a visible burst");
+    owner->fn = [](game::Task& task) { static_cast<game::World::Impl*>(task.user)->ts.KillCurrent(); };
+    w->ts.Run(owner); w->ts.FreeDead();
+    create(); w->UpdateNativeDeathBlood();
+    Require(w->nativeBloodEmitters.empty() && w->nativeVisualEffects.size() == 1,
+            "freed owner cancels future bursts, preserves existing burst and does not attach to a replacement actor");
+    for (int i = 0; i < 58; ++i) w->AdvanceNativeVisualEffects();
+    Require(w->nativeVisualEffects.empty(), "orphaned burst expires safely");
+
+    owner = create();
+    for (int mode : {3, 5, 7, 10, 11}) {
+        w->gameMode = mode; w->ts.Run(owner);
+        Require(w->nativeBloodEmitters.empty(), "death blood is excluded from demos and menus");
+    }
+    w->gameMode = 6; w->cfg.portTyping = true; w->ts.Run(owner);
+    Require(w->nativeBloodEmitters.empty(), "Typing retains its existing effects");
+    w->cfg.portTyping = false; w->ts.Run(owner); w->UpdateNativeDeathBlood();
+    w->SetGameMode(6);
+    Require(w->nativeBloodEmitters.empty() && w->nativeVisualEffects.empty(), "mode reset discards death trackers and bursts");
+    std::printf("PASS death-blood source timing, moving nodes, pause, owner removal, resets and simulation isolation\n");
+}
+
 void Replay(const char* directory, const char* scriptPath) {
     game::World native, emptyEffects;
     std::string error;
@@ -255,11 +337,90 @@ void Replay(const char* directory, const char* scriptPath) {
     std::printf("PASS real chapter-one polygon blood: %d births, first frame %d, last birth %d; 2700 identical PC/network frames\n",
                 births, first, lastBirth);
 }
+
+// Follow real campaign events and fire ordinary gun inputs. Stop shooting at
+// the first Actor31 death so its subsequent bursts cannot be confused with
+// another enemy's hit blood. Chapters 1/2, 4 and 5/6 exercise the different
+// skeletons sharing this callback, including Chapter 6's knife throwers.
+void Actor31Replay(const char* directory, int chapter, bool coop, bool baseline, const char* capture = nullptr) {
+    game::World world;
+    std::string error;
+    Require(world.Load(directory, chapter - 1, &error), error.c_str());
+    game::WorldConfig cfg;
+    cfg.eventMode = chapter - 1; cfg.scene = 0; cfg.gameMode = 6;
+    cfg.portFeatures = true; cfg.playerState[0] = 0;
+    if (coop) cfg.playerState[1] = 0;
+    cfg.seedCounter = 12345; cfg.livesSetting = 99;
+    Require(world.StartStage(cfg, &error), error.c_str());
+    plan::Planner planner; planner.Init();
+    std::map<uint32_t, int> previousHp;
+    uint32_t victim = 0;
+    int death = -1, kind = -1, gone = -1, bursts = 0;
+    Hash simulation;
+    for (int frame = 1; frame <= 18000; ++frame) {
+        const auto previousButtons = planner.held;
+        if (!victim) {
+            plan::Line line{}; planner.Decide(world, frame, &line);
+        } else planner.held = 0;
+        world.SetInput(0, game::MakeWorldInput(planner.x, planner.y, planner.held, previousButtons));
+        world.Step();
+        simulation.Add(NetworkHash(world)); simulation.Add(TaskHash(world));
+        std::set<uint32_t> actors;
+        for (const auto& task : world.Tasks()) if (task.fn == 0x00449910) actors.insert(task.serial);
+        bool present = false;
+        for (const auto& enemy : world.Enemies(true)) {
+            if (!actors.count(enemy.serial)) continue;
+            if (!victim && previousHp.count(enemy.serial) && previousHp[enemy.serial] > 0 && enemy.hp <= 0) {
+                victim = enemy.serial; death = frame; kind = enemy.kind;
+            }
+            if (enemy.serial == victim) present = true;
+            previousHp[enemy.serial] = enemy.hp;
+        }
+        if (!victim) continue;
+        if (!present && gone < 0) gone = frame;
+        int born = 0;
+        for (const auto& effect : world.NativeVisualEffects()) {
+            if (effect.frame != 0) continue;
+            ++born;
+            for (float value : effect.world.m) Require(std::isfinite(value), "death blood has a finite placement", frame);
+        }
+        const int age = frame - death;
+        const bool expected = present && age < 100 && age % 20 == 0;
+        if (!baseline) Require(born == (expected ? 1 : 0), "Actor31 death emits at source ticks 1/21/41/61/81 only while alive", frame);
+        bursts += born;
+        if (age == 160) {
+            Require(world.NativeVisualEffects().empty(), "Actor31 death effects finish without lingering", frame);
+            if (capture) {
+                Require(game::SaveWorldConfig(cfg, std::string(capture) + ".cfg"), "save optional visual-replay configuration");
+                std::ofstream script(std::string(capture) + ".txt");
+                for (const auto& line : planner.lines) script << line << '\n';
+                script << death + 1 << " 0 " << planner.x << ' ' << planner.y << " 0\n";
+                Require(bool(script), "save optional visual-replay inputs");
+            }
+            std::printf("%s chapter %d %s Actor31 kind %X: death %d, removed %d, bursts %d, simulation %08X\n",
+                        baseline ? "BASELINE" : "PASS", chapter, coop ? "coop" : "solo", kind, death, gone, bursts, simulation.value);
+            return;
+        }
+    }
+    std::fprintf(stderr, "chapter %d stopped at scene %d, frame %d\n", chapter, world.Events().scene, world.Frame());
+    Require(false, "real campaign reaches an Actor31 death");
+}
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) { std::fprintf(stderr, "usage: native_blood_world_test <game directory> <original input script>\n"); return 2; }
+    if (argc < 3 || argc > 4) {
+        std::fprintf(stderr, "usage: native_blood_world_test <game directory> <original input script | --actor31 | --actor31-baseline> [capture prefix]\n");
+        return 2;
+    }
+    if (std::string(argv[2]) == "--actor31" || std::string(argv[2]) == "--actor31-baseline") {
+        const bool baseline = std::string(argv[2]) == "--actor31-baseline";
+        if (!baseline) { TriggerFixtures(); DeathBloodFixtures(); }
+        for (int chapter : {1, 2, 4, 5, 6}) Actor31Replay(argv[1], chapter, false, baseline, chapter == 6 && argc == 4 ? argv[3] : nullptr);
+        Actor31Replay(argv[1], 6, true, baseline);
+        return 0;
+    }
     TriggerFixtures();
+    DeathBloodFixtures();
     Replay(argv[1], argv[2]);
     std::printf("PASS native polygon blood trigger/lifetime: %d checks\n", checks);
 }

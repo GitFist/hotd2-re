@@ -252,6 +252,20 @@ bool ZlibInflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, si
     return Inflate(data + 2, size - 2, out, sizeHint);
 }
 
+bool ZlibInflateExact(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t expectedSize) {
+    out.clear();
+    if (size < 6 || !expectedSize || (data[0] & 0x0f) != 8 || (data[0] >> 4) > 7 ||
+        ((data[0] << 8) | data[1]) % 31 || (data[1] & 0x20) ||
+        !Inflate(data + 2, size - 6, out, expectedSize, expectedSize) || out.size() != expectedSize) return false;
+    uint32_t a = 1, b = 0;
+    for (uint8_t value : out) { a = (a + value) % 65521; b = (b + a) % 65521; }
+    const uint32_t expected = (uint32_t(data[size - 4]) << 24) | (uint32_t(data[size - 3]) << 16) |
+                              (uint32_t(data[size - 2]) << 8) | data[size - 1];
+    if (((b << 16) | a) == expected) return true;
+    out.clear();
+    return false;
+}
+
 static bool ReadPngImpl(const uint8_t* data, size_t size, PngImage& out, std::string* error, size_t maxRgbaBytes) {
     static const uint8_t sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
     if (size < 8 || memcmp(data, sig, 8) != 0) return Fail(error, "not a PNG");

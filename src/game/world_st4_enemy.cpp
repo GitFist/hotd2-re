@@ -111,6 +111,108 @@ int JumpMotion(World::Impl& w, EnemyTask& e, int step) {
     }
 }
 
+// 0x0045E330 (behaviour 52): a crawling enemy's leap at the player. This is also
+// reached by the Chapter 2 civilian's crawlers after their rescue has failed.
+void Beh52(World::Impl& w, EnemyTask& e) {
+    auto entry = [&] {
+        return w.exe.U32(w.exe.U32(0x00592F18 + 4 * e.anim.kind) + 4 * e.variant) + e.attack131A * 0x10;
+    };
+    switch (e.sub) {
+    case 0: {
+        e.flags34 |= 0x10020000;
+        const int r = w.Rand(0x0045E393);
+        const uint32_t table = w.exe.U32(w.exe.U32(0x00592DC0 + 4 * e.anim.kind) + 4 * e.variant);
+        e.attack131A = static_cast<int8_t>(w.exe.S16(table + (((r >> 4) % 10) + (e.lostParts & 7) * 10) * 4) & 0xFF);
+        if (!(e.flags136C & 0x40000)) {
+            memcpy(e.savedPos, e.pos, 12);
+            e.flags136C |= 0x40000;
+        }
+        ++e.sub;
+        [[fallthrough]];
+    }
+    case 1: {
+        w.EnemyFaceTarget(e);
+        const float dx = e.pos[0] - e.faceTarget[0], dz = e.pos[2] - e.faceTarget[2];
+        if (std::sqrt(dx * dx + dz * dz) > F32(w.exe, entry() + 4)) {
+            const int motion = w.exe.S16(entry() + 2);
+            if (e.anim.motion[0] != motion) w.AnimBlendTo(e, motion, 0, 10);
+            return;
+        }
+        ++e.sub;
+        [[fallthrough]];
+    }
+    case 2: {
+        // 0x0045A690(mode 0, variant 4): jump to the selected player's point
+        // in the camera frame; co-op uses opposite two-unit horizontal offsets.
+        const float side = w.route == 1 ? 0.0f : static_cast<float>((1 - 2 * e.target) * 2);
+        const float local[3] = { -side, -3.0f, -12.5f };
+        mx::Transform(w.cam.inverse, local, e.faceTarget);
+        memcpy(e.jumpStart, e.pos, 12);
+        memcpy(e.jumpTarget, e.faceTarget, 12);
+        const float dx = e.pos[0] - e.faceTarget[0], dz = e.pos[2] - e.faceTarget[2];
+        const int frames = static_cast<int>(std::sqrt(dx * dx + dz * dz) * 2.0f);
+        e.counter1334 = frames - frames % 2;  // 0x0044DC70, multiplier 2
+        e.counter1330 = e.jump1360 = 0;
+        SetJumpTable(w, e, 0x00593180);
+        w.EnemyVoice(e, 3);
+        ++e.sub;
+        [[fallthrough]];
+    }
+    case 3: {
+        if (e.counter1330 > e.counter1334 / 4 && e.variant == 4 &&
+            (e.flags136C & 0x2000000) && (e.flags136C & 0x1000000)) {
+            e.flags136C &= ~0x1000000u;
+            w.Note("enemy 0x0045D9F0 not ported");  // same body-piece hook as normal approach
+        }
+        if (JumpMotion(w, e, 1) == 1) return;
+        // 0x00456490: the ordinary enemy attack's part mask and player damage.
+        const uint32_t attack = entry();
+        const uint16_t mask = static_cast<uint16_t>(w.exe.S16(attack + 0xC));
+        if ((e.target == 0 || e.target == 1) && ((e.lostParts & 7) & mask) != mask) {
+            const int kind = w.exe.S16(attack + 0xA);
+            if (e.flags34 & 0x2000000) {
+                w.PlayerTakeHit(e.target, 0, kind);
+                w.EnemyDespawn(e);
+                return;
+            }
+            w.PlayerTakeHit(e.target, 1, kind);
+        }
+        ++e.sub;
+        [[fallthrough]];
+    }
+    case 4: {
+        if (!e.anim.ended) return;
+        for (int i = 0; i < 3; ++i) e.acc[i] = e.vel[i] = 0.0f;
+        e.acc[1] = -0.027222221717238426f;  // 0xBCDF0123
+        Mat4 m = Mat4::Identity();
+        mx::RotY(m, w.cam.yaw);
+        const float local[3] = { 0.0f, 0.0f, -0.3f };
+        float back[3];
+        mx::Transform(m, local, back);
+        e.vel[0] = back[0];
+        e.vel[2] = back[2];
+        ++e.sub;
+        [[fallthrough]];
+    }
+    case 5: {
+        e.vel[1] += e.acc[1];
+        int material = 0;
+        const float floor = w.FloorHeight(e.pos[0], e.pos[1], e.pos[2], &material);
+        if (e.pos[1] + e.vel[1] > floor) return;
+        e.pos[1] = floor;
+        e.vel[1] *= -0.25f;
+        w.Sound(0x2916A9);
+        if (std::fabs(e.vel[1]) <= 0.15f) {
+            for (int i = 0; i < 3; ++i) e.acc[i] = e.vel[i] = 0.0f;
+            e.flags34 &= ~0x20000u;
+            e.behaviour = 4;
+            e.sub = 0;
+        }
+        return;
+    }
+    }
+}
+
 // 0x00458A70 (behaviour 30): wait (P s32 6 frames, or P byte 2 == 0x16: until the camera tick equals it), crouch
 // (motion 0x10C / 0x39F by skeleton 0 / other, until tick 0x21 / 0x2C), then jump from the position to P float 1..3
 // in P s32 4 frames with the motion table 0x00567898 / 0x00567958 (step P s32 5); landing: dust hook 0x00592BC8 +
@@ -379,6 +481,7 @@ bool World::Impl::EnemyBehaviourSt4(EnemyTask& e) {
     case 43: Beh43(*this, e); return true;
     case 17: Beh17(*this, e); return true;
     case 30: Beh30(*this, e); return true;
+    case 52: Beh52(*this, e); return true;
     default: return false;
     }
 }

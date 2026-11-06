@@ -36,8 +36,12 @@ inline void PlaySoundEvent(SoundDriver& driver, const SoundTable& table, const W
         const auto request = ResolveSound(table, s.id, {s.gameMode, s.gameType});
         // Dreamcast HOD2DC: SND.AFS entry 8, sample 2, playback 0x37 (command A9 17 4D 00).
         // The intro plays once; only the final 3620 frames sustain until the existing motor-off cue.
-        if (request.action == SoundAction::PlayFile && request.channel == kSndAutoChannel && !request.stopLoopedSe)
-            driver.PlayFile(request.path, true, request.channel, request.dupId, {9542, 13162, 22050});
+        if (request.action == SoundAction::PlayFile && request.channel == kSndAutoChannel && !request.stopLoopedSe) {
+            if (!driver.PlayFile(request.path, true, request.channel, request.dupId,
+                                request.region.endFrame ? request.region : SoundLoopRegion{9542, 13162, 22050}) &&
+                !request.fallbackPath.empty())
+                driver.PlayFile(request.fallbackPath, true, request.channel, request.dupId, {9542, 13162, 22050});
+        }
         break;
     }
     case World::kPreviewMusicStart:

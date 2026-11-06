@@ -5,12 +5,13 @@
 #include <string>
 
 namespace port::update {
-inline constexpr uint64_t kNaomiContentBytes = 100214497;
+inline constexpr uint64_t kNaomiContentBytes = 100214744;
 inline constexpr const char* kNaomiContentSha256 =
-    "e44b7df12a657c84611324971e87875ec66f5cfd10b5356c960e24a6383c7883";
+    "3eac6163eeb37e8b81180e96d91285bf727b78a4640d99d244d9fe6f5c27ad5f";
 
 // Uses the same bounded, verified, cancellable transaction as Typing content.
-// Existing banks are preserved; scripted launches and overrides are caller-gated.
+// Replaces only the verified previous official bank; other existing banks are
+// preserved. Scripted launches and overrides are caller-gated.
 bool EnsureNaomiContent(const std::string& gameDirectory, std::string* error = nullptr);
 namespace detail {
 bool ValidateNaomiContentBank(const std::string& path, std::string* error = nullptr);

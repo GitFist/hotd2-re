@@ -643,6 +643,7 @@ void World::Impl::BeginFrame() {
 
 void World::Impl::StartStage(const WorldConfig& c) {
     nativeVisualEffects.clear();
+    nativeBloodEmitters.clear();
     prototype.reset();
     cfg = c;
     typingChallenge = TypingChallengeCtl{};

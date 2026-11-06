@@ -358,6 +358,24 @@ def naomi_visuals_info(path, source_dir):
                 bytes=size, sha256=digest)
 
 
+def naomi_audio_info(path, source_dir):
+    path = require_file(path)
+    size = path.stat().st_size
+    if not 1048 <= size <= 512 * 1024 * 1024:
+        raise ValueError("Invalid prepared Naomi audio bank size")
+    source = require_file(source_dir / "src/port/update/naomi_audio_content.h").read_text(encoding="utf-8")
+    sizes = re.findall(r'\bkNaomiAudioContentBytes\s*=\s*(\d+)\s*;', source)
+    hashes = re.findall(r'\bkNaomiAudioContentSha256\s*=\s*"([0-9a-f]{64})"\s*;', source)
+    digest = sha256(path)
+    if len(sizes) != 1 or len(hashes) != 1 or size != int(sizes[0]) or digest != hashes[0]:
+        raise ValueError("Naomi audio bank does not match the client's pinned size and SHA-256")
+    with path.open('rb') as stream:
+        if struct.unpack('<8sII', stream.read(16)) != (b'H2NAUDIO', 1, 43):
+            raise ValueError("Invalid prepared Naomi audio bank header")
+    privacy_check(path)
+    return dict(path="game/naomi_audio.bank", format="H2NAUDIO", version=1, bytes=size, sha256=digest)
+
+
 def write_manifest(package_dir, metadata):
     def files():
         return sorted(path for path in package_dir.rglob("*") if path.is_file())
@@ -451,7 +469,7 @@ def write_file_assets(package_dir, out, info):
 
 
 def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, game_manifest=None,
-                  typing_reference=None, naomi_visuals=None):
+                  typing_reference=None, naomi_visuals=None, naomi_audio=None):
     source_dir, exe, out = source_dir.resolve(strict=True), exe.resolve(strict=True), out.resolve()
     if out.exists():
         raise ValueError("Output already exists. Choose a fresh -Out directory; existing files are never removed")
@@ -459,6 +477,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         raise ValueError("Prepared Typing reference is original game data and is allowed only in complete packages")
     if naomi_visuals is not None and kind != "complete":
         raise ValueError("Prepared Naomi visuals are original game data and are allowed only in complete packages")
+    if naomi_audio is not None and kind != "complete":
+        raise ValueError("Prepared Naomi audio is original game data and is allowed only in complete packages")
     info = executable_info(exe, source_dir, architecture)
     notices = require_file(source_dir / "THIRD_PARTY_NOTICES.txt")
     scene = require_file(source_dir / "scenes/st1_play.scene")
@@ -467,10 +487,15 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     if (source_dir / "LICENSE").is_file():
         licenses.append((require_file(source_dir / "LICENSE"), "LICENSE-native-code.txt"))
     game, game_metadata, typing_metadata, naomi_metadata = [], None, None, None
+    audio_metadata = None
     if kind == "complete":
         if game_dir is None:
             raise ValueError("Complete-local packaging requires explicit -GameDir")
         game_dir = game_dir.resolve(strict=True)
+        if naomi_audio is None and (source_dir / "src/port/update/naomi_audio_content.h").exists():
+            naomi_audio = game_dir / "naomi_audio.bank"
+            if not naomi_audio.is_file():
+                raise ValueError("Complete packages for this client require --naomi-audio or game/naomi_audio.bank")
         if naomi_visuals is None and (source_dir / "src/port/update/naomi_content.h").exists():
             naomi_visuals = game_dir / "naomi_visuals.bank"
             if not naomi_visuals.is_file():
@@ -484,6 +509,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
             typing_metadata = typing_reference_info(typing_reference)
         if naomi_visuals is not None:
             naomi_metadata = naomi_visuals_info(naomi_visuals, source_dir)
+        if naomi_audio is not None:
+            audio_metadata = naomi_audio_info(naomi_audio, source_dir)
     elif kind != "public":
         raise ValueError("Unknown package kind")
     revision = source_revision(source_dir)
@@ -519,6 +546,11 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         shutil.copy2(naomi_visuals, destination)
         if destination.stat().st_size != naomi_metadata["bytes"] or sha256(destination) != naomi_metadata["sha256"]:
             raise ValueError("Prepared Naomi visual bank changed during packaging")
+    if audio_metadata is not None:
+        destination = package_dir / audio_metadata["path"]
+        shutil.copy2(naomi_audio, destination)
+        if destination.stat().st_size != audio_metadata["bytes"] or sha256(destination) != audio_metadata["sha256"]:
+            raise ValueError("Prepared Naomi audio bank changed during packaging")
     (package_dir / "game").mkdir(exist_ok=True)
     if kind == "public":
         (package_dir / "game/PUT_YOUR_GAME_FILES_HERE.txt").write_text("Copy your own House of the Dead 2 installation here: Hod2.exe and its data folders.\n", encoding="ascii")
@@ -535,6 +567,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         metadata["typingReference"] = typing_metadata
     if naomi_metadata is not None:
         metadata["naomiVisuals"] = naomi_metadata
+    if audio_metadata is not None:
+        metadata["naomiAudio"] = audio_metadata
     write_manifest(package_dir, metadata)
     privacy_check(package_dir)
     if kind == "public":
@@ -564,6 +598,7 @@ def main():
     parser.add_argument("--game-manifest", type=Path)
     parser.add_argument("--typing-reference", type=Path, help="complete packages only: complete prepared TOTDREF1 v5 bank")
     parser.add_argument("--naomi-visuals", type=Path, help="complete packages only: runtime-pinned H2NVIS01 v2 bank")
+    parser.add_argument("--naomi-audio", type=Path, help="complete packages only: runtime-pinned H2NAUDIO v1 bank")
     args = parser.parse_args()
     default_build = "build-x64" if args.architecture == "x64" else "build"
     exe = args.exe or REPO / default_build / "src/port/Release/hotd2.exe"
@@ -572,7 +607,8 @@ def main():
     try:
         archive = stage_package(kind=args.kind, architecture=args.architecture, exe=resolve(exe), source_dir=resolve(args.source_root),
                                 out=resolve(out), game_dir=resolve(args.game_dir), game_manifest=resolve(args.game_manifest),
-                                typing_reference=resolve(args.typing_reference), naomi_visuals=resolve(args.naomi_visuals))
+                                typing_reference=resolve(args.typing_reference), naomi_visuals=resolve(args.naomi_visuals),
+                                naomi_audio=resolve(args.naomi_audio))
         print(f"Package: {archive.name} ({archive.stat().st_size} bytes); SHA256 manifest written")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:

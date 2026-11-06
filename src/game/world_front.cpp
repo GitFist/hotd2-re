@@ -83,6 +83,7 @@ int ModernMenuRowAt(const ExeImage& exe, int x, int y) {
 void World::Boot(const WorldConfig& c) {
     Impl& w = *impl_;
     w.nativeVisualEffects.clear();
+    w.nativeBloodEmitters.clear();
     w.nativeVisualSerial = 0;
     w.cfg = c;
     w.cfg.carry.valid = false;

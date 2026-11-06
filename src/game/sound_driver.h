@@ -44,7 +44,7 @@ public:
 
 class SoundDriver {
 public:
-    struct LoopRegion { uint32_t startFrame, endFrame, sampleRate; };
+    using LoopRegion = SoundLoopRegion;
     explicit SoundDriver(SoundBackend& backend) : b_(backend) {
         for (uint8_t& c : cat_) c = kSfx;
     }

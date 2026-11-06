@@ -26,5 +26,7 @@ bool ReadPngLimited(const uint8_t* data, size_t size, size_t maxRgbaBytes, PngIm
 // zlib stream (2-byte header, deflate data, adler32 ignored) -> bytes. Returns false on malformed input. sizeHint:
 // the expected output size (the buffer is sized to it ahead; 0 = unknown).
 bool ZlibInflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t sizeHint = 0);
+// Exact bounded output and Adler-32 verification, for compressed audio assets.
+bool ZlibInflateExact(const uint8_t* data, size_t size, std::vector<uint8_t>& out, size_t expectedSize);
 
 }  // namespace port

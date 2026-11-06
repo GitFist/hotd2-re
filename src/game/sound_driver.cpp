@@ -195,7 +195,8 @@ bool SoundDriver::PreviewMusic(const SoundTable& table, uint32_t id, bool restar
         previewMusicPaused_ = previewResumeOnActivate_ = false;
         return b_.Play(kSndBgmChannel, false);
     }
-    if (!PlayFile(request.path, false, kSndBgmChannel, 0xFFFFFFFF)) return false;
+    if (!PlayFile(request.path, false, kSndBgmChannel, 0xFFFFFFFF) &&
+        (request.fallbackPath.empty() || !PlayFile(request.fallbackPath, false, kSndBgmChannel, 0xFFFFFFFF))) return false;
     previewMusicId_ = curBgm_ = id;
     return true;
 }
@@ -218,7 +219,8 @@ bool SoundDriver::PreviewEffect(const SoundTable& table, uint32_t id) {
     if (request.action != SoundAction::PlayFile || request.channel == kSndBgmChannel || request.stopLoopedSe)
         return false;
     // Dedicated channel prevents gameplay ring reuse or a voice/SE stop command from altering the selected music.
-    return PlayFile(request.path, false, kPreviewEffectChannel, 0xFFFFFFFF);
+    return PlayFile(request.path, false, kPreviewEffectChannel, 0xFFFFFFFF) ||
+        (!request.fallbackPath.empty() && PlayFile(request.fallbackPath, false, kPreviewEffectChannel, 0xFFFFFFFF));
 }
 
 void SoundDriver::StopPreviews() {
@@ -236,7 +238,8 @@ void SoundDriver::PlayGameSound(const SoundTable& table, uint32_t id, const Soun
     switch (r.action) {
     case SoundAction::PlayFile:
         if (r.stopLoopedSe) StopLoopedSe();
-        PlayFile(r.path, r.loop, r.channel, r.dupId);
+        if (!PlayFile(r.path, r.loop, r.channel, r.dupId, r.region) && !r.fallbackPath.empty())
+            PlayFile(r.fallbackPath, r.fallbackLoop, r.channel, r.dupId);
         if (r.setCurrentBgm) curBgm_ = id & ~kTypingSoundFlag;
         break;
     case SoundAction::StopBgm:

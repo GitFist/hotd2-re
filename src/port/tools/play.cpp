@@ -121,6 +121,7 @@
 #include "update/update_install.h"
 #include "update/typing_content.h"
 #include "update/naomi_content.h"
+#include "update/naomi_audio_content.h"
 
 namespace {
 
@@ -213,20 +214,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "2.0";
+const char* const kReleaseVersion = "2.1";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026110520;
-const char* const kBuildName = "2026 11 05 A";
+constexpr uint32_t kBuildId = 2026110600;
+const char* const kBuildName = "2026 11 06 A";
 #else
-constexpr uint32_t kBuildId = 2026110521;
-const char* const kBuildName = "2026 11 05 NS32 A";
+constexpr uint32_t kBuildId = 2026110601;
+const char* const kBuildName = "2026 11 06 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 11 05 A";
+const char* const kUpdateBuildName = "2026 11 06 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -1068,6 +1069,11 @@ int main(int argc, char** argv) {
             if (volumes.display.graphics.naomiGraphics) return contentError.empty() ? 0 : 1;
         }
     }
+    if (allowContentDownload) {
+        std::string contentError;
+        if (!port::update::EnsureNaomiAudioContent(dir, &contentError) && !contentError.empty())
+            std::fprintf(stderr, "Arcade audio data could not be installed; using PC recordings. %s\n", contentError.c_str());
+    }
     static port::AssetStore assets;
     static port::ModelRenderer renderer;
     port::SceneDef def;
@@ -1802,6 +1808,8 @@ int main(int argc, char** argv) {
 
     game::ExeImage sndExe;
     game::SoundTable sndTable;
+    port::NaomiAudio naomiAudio;
+    if (naomiAudio.Load(dir + "/naomi_audio.bank")) sndTable.SetNaomiSound(&naomiAudio.Sounds());
     std::unique_ptr<port::AudioOutput> sndBackend;
     std::unique_ptr<game::SoundDriver> sndDriver;
     if (audio && !headless && sndExe.Load(dir + "/Hod2.exe") && sndTable.Load(sndExe) &&
@@ -1810,12 +1818,14 @@ int main(int argc, char** argv) {
     if (audio && !headless && !sndDriver) fprintf(stderr, "audio: %s\n", err.empty() ? "cannot read the sound tables" : err.c_str());
     sndTable.SetTypingReference(assets.PreparedTypingReference());
     if (sndBackend) sndBackend->SetTypingReference(assets.PreparedTypingReference());
+    if (sndBackend) sndBackend->SetNaomiAudio(&naomiAudio);
 
     // The menu scenery has its own sound channels: gameplay and Extras commands must never stop or replace them.
     std::unique_ptr<port::AudioOutput> attractionBackend;
     std::unique_ptr<game::SoundDriver> attractionDriver;
     if (sndDriver && activeNightShift) {
         attractionBackend = plat.CreateAudio(common.audio, dir, &err);
+        if (attractionBackend) attractionBackend->SetNaomiAudio(&naomiAudio);
         if (attractionBackend) attractionDriver = std::make_unique<game::SoundDriver>(*attractionBackend);
         else fprintf(stderr, "attraction audio: %s\n", err.c_str());
     }

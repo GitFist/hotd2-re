@@ -646,6 +646,31 @@ $payload = Expand-VerifiedFileUpdate -Root $Root -IndexPath $Index -ExpectedSha2
             release.verified_game_entries(directory, metadata)
         self.assertFalse(list(self.root.rglob("*.zip")))
 
+    def test_audio_bank_complete_staging_and_legacy_updater_separation(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = self.root / 'audio.bank'
+        bank.write_bytes(struct.pack('<8sII', b'H2NAUDIO', 1, 43) + bytes(1032))
+        pin = self.source / 'src/port/update/naomi_audio_content.h'
+        pin.parent.mkdir(exist_ok=True)
+        pin.write_text(f'constexpr uint64_t kNaomiAudioContentBytes = {bank.stat().st_size};\n'
+                       f'constexpr const char* kNaomiAudioContentSha256 = "{release.sha256(bank)}";\n')
+        with self.assertRaisesRegex(ValueError, 'require --naomi-audio'):
+            self.package(kind='complete', game_dir=directory, game_manifest=metadata)
+        with self.assertRaisesRegex(ValueError, 'original game data.*complete packages'):
+            self.package(naomi_audio=bank)
+        self.assertIsNone(release.PUBLIC_MANAGED_PATH.fullmatch('game/naomi_audio.bank'))
+        original = bank.read_bytes()
+        bank.write_bytes(original[:-1] + b'!')
+        with self.assertRaisesRegex(ValueError, 'pinned size and SHA-256'):
+            release.naomi_audio_info(bank, self.source)
+        bank.write_bytes(original)
+        shutil.copy2(bank, directory / 'naomi_audio.bank')
+        archive = self.package(kind='complete', game_dir=directory, game_manifest=metadata)
+        with zipfile.ZipFile(archive) as contents:
+            self.assertEqual(contents.read('hotd2re/game/naomi_audio.bank'), original)
+            manifest = json.loads(contents.read('hotd2re/PACKAGE-MANIFEST.json'))
+            self.assertEqual(manifest['naomiAudio'], release.naomi_audio_info(bank, self.source))
+
     def naomi_bank(self, payload=b"synthetic Naomi fixture"):
         bank = self.root / "visuals.bank"
         bank.write_bytes(struct.pack("<8s6I", b"H2NVIS01", 2, len(payload), zlib.crc32(payload), 1, 0, 0) + payload)

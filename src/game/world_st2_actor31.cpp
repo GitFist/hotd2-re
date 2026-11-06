@@ -1458,6 +1458,7 @@ void Hits(World::Impl& w, Actor31Task& a) {
             }
         } else {
             a.flags136C |= 0x200000;
+            w.StartNativeDeathBlood(w.hitSlot[p]);
             a.sub = 0;
             a.behaviour = 2;
             w.EnemyVoice(a, w.hitSlot[p] == 2 ? 2 : 1);

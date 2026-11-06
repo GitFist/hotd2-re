@@ -465,6 +465,139 @@ void World::Impl::EnemyBeh40(EnemyTask& e) {
     if (!(e.flags34 & 0x40000000) && e.anim.motion[0] != e.headPitch) AnimBlendTo(e, e.headPitch, 0, 10);
 }
 
+// Behaviour 44 (0x0045C2E0): the Chapter 2 crawlers take turns leaping at their
+// civilian's head. Without this handler the approach motion keeps translating
+// them through the civilian and out of the room, leaving the rescue unresolved.
+void World::Impl::EnemyBeh44(EnemyTask& e) {
+    if (!e.parent || !e.parent->civilian) return;
+    CivTask& civ = static_cast<CivTask&>(*e.parent);
+    // The original converts the last drawn node-2 model-view matrices back to
+    // world space, with a local (0, 1, 2.5) offset on the civilian's head.
+    Mat4 targetMatrix = cam.inverse;
+    mx::MulLeft(targetMatrix, civ.anim.nodes[2].mv);
+    mx::Translate(targetMatrix, 0.0f, 1.0f, 2.5f);
+    float target[3], head[3];
+    mx::GetTranslation(targetMatrix, target);
+    Mat4 headMatrix = cam.inverse;
+    mx::MulLeft(headMatrix, e.anim.nodes[2].mv);
+    mx::GetTranslation(headMatrix, head);
+    auto stop = [&] {
+        e.vel[0] = e.vel[1] = e.vel[2] = e.acc[1] = 0.0f;
+    };
+    constexpr float gravity = -0.040833331644535065f;  // 0xBD2740DA
+    switch (e.sub) {
+    case 0:
+        if (civ.c.child64) {
+            if (e.anim.motion[0] != 0x41F) AnimBlendTo(e, 0x41F, 0, 10);
+            e.headPitch = 0x41F;
+            if (EnemyParentDead(e) && e.behaviour != 0x28) {
+                e.f1354 = e.behaviour;
+                e.attackLimit = e.sub;
+                e.behaviour = 0x2D;
+                e.sub = 0;
+            }
+            return;
+        }
+        if (civ.flags34 & 0x4000000) {
+            EnemyScriptEnd(e);
+            return;
+        }
+        civ.c.child64 = &e;
+        ++e.sub;
+        [[fallthrough]];
+    case 1:
+        e.flags34 |= 0x10000000;
+        AnimBlendTo(e, 0x41C, 0, 10);
+        e.acc[1] = 0.0f;
+        ++e.sub;
+        return;
+    case 2:
+        e.vel[1] += e.acc[1];
+        EnemyTurnTo(e, target[0], target[2], 0x1A0);
+        if (e.anim.tick[0] == 10) {
+            e.flags34 |= 0x20000;
+            e.flags136C |= 0x100000;
+            e.acc[1] = gravity;
+            const float speed = F32(exe, 0x0055E1FC);  // 1 / 30
+            e.vel[0] = (target[0] - head[0]) * speed;
+            e.vel[2] = (target[2] - head[2]) * speed;
+            e.vel[1] = (target[1] - head[1]) * speed - F32(exe, 0x00567988);
+        } else if (e.anim.tick[0] == MotionTicks(e.anim.motion[0]) - 1) {
+            e.flags34 |= 0x4000;
+            ++e.sub;
+        }
+        return;
+    case 3: {
+        e.vel[1] += e.acc[1];
+        // 0x0045BC10 uses the crawler's head here, rather than its actor origin.
+        Mat4 m = Mat4::Identity();
+        mx::RotY(m, -e.rot[1]);
+        mx::RotZ(m, -e.rot[2]);
+        mx::RotX(m, -e.rot[0]);
+        const float delta[3] = { target[0] - head[0], target[1] - head[1], target[2] - head[2] };
+        float local[3];
+        mx::Transform(m, delta, local);
+        if (local[2] > 0.0f) {
+            AnimBlendTo(e, 0x41D, 0, 1);
+            e.flags34 &= ~0x4000u;
+            stop();
+            civ.flags34 |= 0x4000000;
+            Sound(0xD16A9);
+            ++e.sub;
+        } else if (e.vel[1] < 0.0f) {
+            if (head[1] <= target[1]) {
+                e.vel[1] = e.acc[1] = 0.0f;
+                e.pos[1] += target[1] - head[1];
+            } else {
+                int material = 0;
+                const float floor = FloorHeight(e.pos[0], e.pos[1] + 100.0f, e.pos[2], &material);
+                if (floor >= e.pos[1]) {
+                    e.pos[1] = floor;
+                    e.vel[1] = e.acc[1] = 0.0f;
+                }
+            }
+        }
+        return;
+    }
+    case 4:
+        if (e.anim.tick[0] == 2) {
+            AnimBlendTo(e, 0x41A, 0, 1);
+            ++e.sub;
+        }
+        return;
+    case 5:
+        if (e.anim.tick[0] == 10) {
+            const double angle = static_cast<float>(static_cast<double>(e.rot[1]) * mx::kToRad);
+            e.acc[1] = gravity;
+            e.vel[1] = 0.5f;
+            e.vel[0] = static_cast<float>(std::sin(angle) * 0.5f);
+            e.vel[2] = static_cast<float>(std::cos(angle) * 0.5f);
+            e.flags34 |= 0x4000;
+            ++e.sub;
+        }
+        return;
+    case 6: {
+        e.vel[1] += e.acc[1];
+        if (e.vel[1] >= 0.0f) return;
+        int material = 0;
+        const float floor = FloorHeight(e.pos[0], e.pos[1] + 100.0f, e.pos[2], &material);
+        if (floor <= e.pos[1]) return;
+        if (e.vel[1] < -0.4f) {
+            e.vel[0] *= 0.6f;
+            e.vel[1] *= -0.6f;
+            e.vel[2] *= 0.6f;
+        } else {
+            e.flags34 &= ~0x10024000u;
+            e.flags136C &= ~0x100000u;
+            stop();
+            civ.c.child64 = nullptr;
+            EnemyScriptEnd(e);
+        }
+        return;
+    }
+    }
+}
+
 // Behaviour 45 (0x0045C7D0): idle rand() % 11 + 10 frames (motion set entry 0), then back to the saved behaviour
 void World::Impl::EnemyBeh45(EnemyTask& e) {
     if (e.sub == 0) {

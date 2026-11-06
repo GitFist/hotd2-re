@@ -361,6 +361,7 @@ void World::Impl::UpdateRank() {
 void World::Impl::StageFrame() {
     AdvanceNativeVisualEffects();
     ts.RunFrame();  // Task_RunFrom 0x004A7240
+    UpdateNativeDeathBlood();  // Follow this frame's posed nodes, including a new lethal hit.
     UpdateRank();
     if (rankTimerOn) ++rankTimer;
     for (Player& P : player)
@@ -370,6 +371,7 @@ void World::Impl::StageFrame() {
 // Game_SetState 0x0040E850 (0x007C17A0) applied at the end of the frame by Game_ApplyState 0x0040E860
 void World::Impl::SetGameMode(int m) {
     nativeVisualEffects.clear();
+    nativeBloodEmitters.clear();
     if (m != 6 && prototype) { prototype.reset(); animLight = 1; }
     if (m == 3 || m == 4 || m == 15) RandomizerBegin(*this, false);
     stageResults = {};

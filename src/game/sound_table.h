@@ -22,6 +22,12 @@ namespace game {
 class ExeImage;
 class TypingReference;
 struct TypingReferenceSound;
+struct SoundLoopRegion { uint32_t startFrame = 0, endFrame = 0, sampleRate = 0; };
+struct NaomiSound {
+    uint32_t index = 0; // 0..19: standard BGM table index; larger: verified PC effect ID
+    std::string path;
+    SoundLoopRegion region;
+};
 constexpr uint32_t kTypingSoundFlag = 0x40000000u;
 
 struct SeEntry {
@@ -50,6 +56,8 @@ public:
     bool Load(const ExeImage& exe);
     void SetTypingReference(const TypingReference* reference) { typing_ = reference; }
     const TypingReferenceSound* TypingSound(uint32_t id) const;
+    void SetNaomiSound(const std::vector<NaomiSound>* sounds) { naomi_ = sounds; }
+    const NaomiSound* FindNaomiSound(int index) const;
 
     const std::vector<SeEntry>& Se() const { return se_; }
     const std::vector<VoiceEntry>& Voices() const { return voices_; }
@@ -66,6 +74,7 @@ private:
     std::vector<std::string> bgmA_, bgmB_;
     std::vector<uint32_t> loopIds_, loopOffIds_;
     const TypingReference* typing_ = nullptr;
+    const std::vector<NaomiSound>* naomi_ = nullptr;
 };
 
 // Game state that Snd_PlayGameSound reads.
@@ -96,6 +105,9 @@ struct SoundRequest {
     std::string path;           // relative to the game dir, as the game builds it ("Sound\SE\...")
     int channel = kSndAutoChannel;
     bool loop = false;
+    SoundLoopRegion region;
+    std::string fallbackPath;   // existing PC recording if a prepared sound cannot be opened
+    bool fallbackLoop = false;
     bool stopLoopedSe = false;  // "_OFF" id: Snd_StopLoopedSe 0x004AC220 runs before the play
     uint32_t dupId = 0xFFFFFFFF;  // id passed to Snd_PlayFile (used to reuse a cached buffer), -1 if none
     bool setCurrentBgm = false; // 0x009C8FB8 = id (BGM) ...

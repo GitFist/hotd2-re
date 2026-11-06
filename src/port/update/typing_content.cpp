@@ -1,5 +1,6 @@
 #include "update/typing_content.h"
 #include "update/naomi_content.h"
+#include "update/naomi_audio_content.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,6 +29,8 @@ struct Content {
     const wchar_t* description;
     uint64_t bytes;
     const char* sha256;
+    uint64_t previousBytes = 0;
+    const char* previousSha256 = nullptr;
 };
 constexpr Content kTyping{
     L"typing_reference.bank",
@@ -36,9 +39,15 @@ constexpr Content kTyping{
     kTypingContentBytes, kTypingContentSha256};
 constexpr Content kNaomi{
     L"naomi_visuals.bank",
-    L"/GitFist/hotd2-re/releases/download/updates-v2026.11.05-a/hotd2re-naomi-visuals-v2.bank",
+    L"/GitFist/hotd2-re/releases/download/updates-v2026.11.06-a/hotd2re-naomi-visuals-v3.bank",
     ".naomi-visuals-", L"HOTD2RE - Naomi graphics", L"Naomi graphics data",
-    kNaomiContentBytes, kNaomiContentSha256};
+    kNaomiContentBytes, kNaomiContentSha256,
+    100214497, "e44b7df12a657c84611324971e87875ec66f5cfd10b5356c960e24a6383c7883"};
+constexpr Content kNaomiAudio{
+    L"naomi_audio.bank",
+    L"/GitFist/hotd2-re/releases/download/updates-v2026.11.06-a/hotd2re-naomi-audio-v1.bank",
+    ".naomi-audio-", L"HOTD2RE - Arcade audio", L"Arcade music and sound data",
+    kNaomiAudioContentBytes, kNaomiAudioContentSha256};
 struct File {
     HANDLE value = INVALID_HANDLE_VALUE;
     explicit File(HANDLE handle) : value(handle) {}
@@ -155,15 +164,28 @@ void Validate(HANDLE file,const Content& content,const std::atomic<bool>* cancel
     if (total!=content.bytes || !hash.Matches(content.sha256))
         throw std::runtime_error("The downloaded Game data failed SHA-256 verification.");
 }
+bool IsPreviousOfficialBank(const Directory& directory) {
+    if (!directory.content.previousSha256) return false;
+    File file(CreateFileW((directory.path/directory.content.bank).c_str(),GENERIC_READ,FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_SEQUENTIAL_SCAN,nullptr));
+    Content previous=directory.content;
+    previous.bytes=previous.previousBytes;previous.sha256=previous.previousSha256;
+    try { Validate(file.value,previous);return true; }
+    catch (const std::exception&) { return false; } // Unknown/custom data is never replaced.
+}
 void Commit(Directory& directory,OwnedStage& stage,const std::atomic<bool>& cancelled) {
     Validate(stage.file.value,directory.content,&cancelled);
     if (cancelled.load()) throw std::runtime_error("Game data installation was cancelled.");
     const std::wstring target=(directory.path/directory.content.bank).wstring();
     std::vector<uint8_t> storage(sizeof(FILE_RENAME_INFO)+target.size()*sizeof(wchar_t));
     auto* rename=reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
-    rename->ReplaceIfExists=FALSE;rename->RootDirectory=nullptr;
+    // Recheck the old official fingerprint after downloading. The atomic rename
+    // leaves it intact on cancellation, bad downloads, or an installation error.
+    rename->ReplaceIfExists=directory.Exists() && IsPreviousOfficialBank(directory);
+    rename->RootDirectory=nullptr;
     rename->FileNameLength=DWORD(target.size()*sizeof(wchar_t));
     std::copy(target.begin(),target.end(),rename->FileName);
+    if (cancelled.load()) throw std::runtime_error("Game data installation was cancelled.");
     if (!SetFileInformationByHandle(stage.file.value,FileRenameInfo,rename,DWORD(storage.size())))
         throw std::runtime_error("Game data could not be installed; any existing bank was preserved.");
     stage.committed=true;
@@ -277,7 +299,7 @@ bool EnsureContent(const Content& content,const std::string& gameDirectory,std::
     if (error) error->clear();
     try {
         Directory directory(gameDirectory,content);
-        if (directory.Exists()) return true;
+        if (directory.Exists() && !IsPreviousOfficialBank(directory)) return true;
         Progress progress;
         const HINSTANCE instance=GetModuleHandleW(nullptr);
         WNDCLASSW type{};type.lpfnWndProc=WindowProc;type.hInstance=instance;
@@ -334,14 +356,19 @@ bool EnsureContent(const Content& content,const std::string& gameDirectory,std::
 
 bool EnsureTypingContent(const std::string& directory,std::string* error) { return EnsureContent(kTyping,directory,error); }
 bool EnsureNaomiContent(const std::string& directory,std::string* error) { return EnsureContent(kNaomi,directory,error); }
+bool EnsureNaomiAudioContent(const std::string& directory,std::string* error) { return EnsureContent(kNaomiAudio,directory,error); }
 namespace detail {
 bool ValidateTypingContentBank(const std::string& path,std::string* error) { return ValidateContentBank(kTyping,path,error); }
 bool ValidateNaomiContentBank(const std::string& path,std::string* error) { return ValidateContentBank(kNaomi,path,error); }
+bool ValidateNaomiAudioContentBank(const std::string& path,std::string* error) { return ValidateContentBank(kNaomiAudio,path,error); }
 bool CommitTypingContent(const std::string& directory,const std::string& filename,const std::atomic<bool>& cancelled,std::string* error) {
     return CommitContent(kTyping,directory,filename,cancelled,error);
 }
 bool CommitNaomiContent(const std::string& directory,const std::string& filename,const std::atomic<bool>& cancelled,std::string* error) {
     return CommitContent(kNaomi,directory,filename,cancelled,error);
+}
+bool CommitNaomiAudioContent(const std::string& directory,const std::string& filename,const std::atomic<bool>& cancelled,std::string* error) {
+    return CommitContent(kNaomiAudio,directory,filename,cancelled,error);
 }
 } // namespace detail
 } // namespace port::update
@@ -349,11 +376,14 @@ bool CommitNaomiContent(const std::string& directory,const std::string& filename
 namespace port::update {
 bool EnsureTypingContent(const std::string&,std::string*) { return true; }
 bool EnsureNaomiContent(const std::string&,std::string*) { return true; }
+bool EnsureNaomiAudioContent(const std::string&,std::string*) { return true; }
 namespace detail {
 bool ValidateTypingContentBank(const std::string&,std::string*) { return false; }
 bool ValidateNaomiContentBank(const std::string&,std::string*) { return false; }
+bool ValidateNaomiAudioContentBank(const std::string&,std::string*) { return false; }
 bool CommitTypingContent(const std::string&,const std::string&,const std::atomic<bool>&,std::string*) { return false; }
 bool CommitNaomiContent(const std::string&,const std::string&,const std::atomic<bool>&,std::string*) { return false; }
+bool CommitNaomiAudioContent(const std::string&,const std::string&,const std::atomic<bool>&,std::string*) { return false; }
 }
 }
 #endif

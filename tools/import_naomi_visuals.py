@@ -209,6 +209,7 @@ BOSS6_SIGNED_NORMAL_SOURCES=((133, 133, '4f9d0d74caca319f619ea9a65855c40e9316102
 # (header/materials/strip controls/ordered vertices), not just bounding boxes.
 LIVE_RIGID_SOURCE_GROUPS=(
  ('boat_normals','komono_7.bin','komono_7.bin',((2,1),(7,6),(9,8)),21,'a6a1a6450d7306125fc2a4821f17c33b0f60e003da1af9ff37867061725de343','b305215cabe2376e64a00254991c4e62bc54f2ca49998680514dd209a9cc3686'),
+ ('judgment_burning_cars','char_adv04.bin','car_1.bin',((8,8),),20,'c19adac06b4f11b1bea32722ab0e3e02283721eaaca636be278541d93691b43a','29e3ed22033bad45453114d0e84494d83121f1e0b79f9a16b8bc6dd204894cd3'),
  ('boat_shadow','common.bin','common.bin',((201,480),),20,'f065d1924415c30a25485d87965951965ff2b6454b480fa1d2c7efd0a60c55d8','a07014f5f7bb385daf342d0c1ee7cf5774cb1c08bab84391f56d5a34926b58c7'),
  ('glass_fragments','garasu.bin','garasu.bin',tuple((i,i+72)for i in range(40)),20,'3625fb7e432785b398fea8bb2350099662f33e1d0e7a33f960777dc60fd530f3','d4dc79dcc1cfbd623d079693e489cc57af73a6aebc5fd49fa7b8d4c6f78def69'),
  ('bridge6','st6_01.bin','st5.bin',((10,72),),20,'7ea5d282dac50c632f98882b375119a51e85c04dd28c746b6d01653a20f32cd4','e253bdfd011c5bd1f8f1a233b73d29dc992c21fa0ea84fc2b98815c7a3d73a8c'),
@@ -1229,6 +1230,17 @@ def main():
         if struct.unpack('<I',original(address,4))[0]!=value:raise ValueError('Original prop task selection differs')
     for address,value in((0x0C0770EC,0xD7F),(0x0C071E38,0x11D3),(0x0C098BEA,0x1B63),(0x0C033D22,0x19F7)):
         if struct.unpack('<H',original(address,2))[0]!=value:raise ValueError('Original rigid effect source ID differs')
+    # The TWO burning cars before Judgment are Actor28, not the later parked
+    # Actor33 cars. Original constructor table[type28] selects03B730, whose
+    # unconditional model125 write and stored-model draw prove RED car_1[8].
+    # Its small authored export differences defeated the generic mesh matcher,
+    # which incorrectly selected same-shape gray parked car_1[11] surfaces.
+    if struct.unpack('<I',original(0x0C13BE18+0x28*4,4))[0]!=0x0C03B730 or original(0x0C03B756,10)!=bytes.fromhex('4c907de3f3650475360e')or original(0x0C03B90C,8)!=bytes.fromhex('759046db0b4b8e04'):raise ValueError('Original Judgment burning-car source callback differs')
+    # The other user of PCmodel51 is Actor27 after burning. Both its normal
+    # tick190 transition and skip-to190 path likewise select125, so a whole-ID
+    # binding is safe rather than needing an actor-specific resource exception.
+    if struct.unpack('<I',original(0x0C13BE18+0x27*4,4))[0]!=0x0C03BA60 or any(struct.unpack('<H',original(a,2))[0]!=v for a,v in((0x0C03BA80,0xE375),(0x0C03BAA0,0xE37D),(0x0C03BAF8,0xE17D))):raise ValueError('Original alternate burning-car role differs')
+    if struct.unpack('<4H',exe.bytes(0x00589AE0,8))!=(0x145,671,0x146,667)or struct.unpack('<4H',original(0x0C1329A8,8))!=(0x120,671,0x121,667):raise ValueError('Original Judgment burning-car path roles differ')
     # Original SpawnTrail0861F4 creates callback0860E8 and explicitly stores
     # model0542 (boss5[411], driver0), NOT the same-shape0541/full-intensity
     # copy. Lifetime startsFF, decrements6, and the callback draws stored+13EC.
@@ -1246,7 +1258,7 @@ def main():
     for po,no,pc_id,native_id in static_records:
         a=pc_event[po:po+40];b=program[no:no+40]
         if len(a)!=40 or a[:34]!=b[:34]or a[36:]!=b[36:]or struct.unpack_from('<I',a)[0]!=65 or a[37]!=12 or struct.unpack_from('<H',a,34)[0]!=pc_id or struct.unpack_from('<H',b,34)[0]!=native_id:raise ValueError('Original static prop authored record differs')
-    source_lists={'komono_7.bin':41,'common.bin':1,'garasu.bin':26,'st5.bin':154,'komono_st6.bin':47,'eff_2.bin':9,'hito_buru.bin':103,'boss1q.bin':130,'boss5.bin':137}
+    source_lists={'komono_7.bin':41,'common.bin':1,'garasu.bin':26,'st5.bin':154,'komono_st6.bin':47,'eff_2.bin':9,'hito_buru.bin':103,'boss1q.bin':130,'boss5.bin':137,'car_1.bin':21}
     def native_model_ids(bank):
         fi=source_lists[bank];at=struct.unpack('<I',original(0x0C104D94+fi*4,4))[0];count=struct.unpack('<H',original(0x0C1050A0+fi*2,2))[0]
         return struct.unpack('<'+'H'*count,original(at,count*2))
@@ -1256,8 +1268,8 @@ def main():
             bits=np.ascontiguousarray(v,dtype=np.float32).view(np.uint32).astype(np.int64)
             return np.where(bits&0x80000000,0xFFFFFFFF-bits,bits|0x80000000)
         return int(np.max(np.abs(ordered(a)-ordered(b))))
-    expected_source_ids={'boat_normals':([4199,4204,4206],[4506,4511,4513]),'boat_shadow':([4305],[4563]),'glass_fragments':(list(range(3237,3277)),list(range(3455,3495))),'bridge6':([6420],[7011]),'static_kind12':([6300,6302,6304],[6871,6873,6875]),'identical_st6_props':([6328,6332,6333],[6919,6922,6919]),'orb_spark':(list(range(6064,6069)),list(range(6647,6652))),'magician_afterimage':([1509],[1346]),'civilian_limbs':([3689,3690],[3941,3942])}
-    live_rigid_bindings=[]
+    expected_source_ids={'boat_normals':([4199,4204,4206],[4506,4511,4513]),'judgment_burning_cars':([51],[125]),'boat_shadow':([4305],[4563]),'glass_fragments':(list(range(3237,3277)),list(range(3455,3495))),'bridge6':([6420],[7011]),'static_kind12':([6300,6302,6304],[6871,6873,6875]),'identical_st6_props':([6328,6332,6333],[6919,6922,6919]),'orb_spark':(list(range(6064,6069)),list(range(6647,6652))),'magician_afterimage':([1509],[1346]),'civilian_limbs':([3689,3690],[3941,3942])}
+    live_rigid_bindings=[];stale_burning_car_meshes=[]
     for group,pc,native,pairs,proof,pc_hash,native_hash in LIVE_RIGID_SOURCE_GROUPS:
         if pc not in semantic_pc:semantic_pc[pc]=models((args.pc_game/'pol'/pc).read_bytes())[0]
         if native not in semantic_native:semantic_native[native]=models(npol[native])[0]
@@ -1271,7 +1283,7 @@ def main():
             p=pm[part];source=nm[npart]
             # Only the explicitly authored static card and original civilian
             # export have larger deltas. No generic correspondence gate changes.
-            limits=(.43,.00003,1e-5)if group=='static_kind12'else(.001,.0006,.001)if group=='civilian_limbs'else(1e-5,4e-6,1e-5)
+            limits=(.018,.009,.0007)if group=='judgment_burning_cars'else(.43,.00003,1e-5)if group=='static_kind12'else(.001,.0006,.001)if group=='civilian_limbs'else(1e-5,4e-6,1e-5)
             if p['top']!=source['top']or any(delta(p['v'][:,a:b],source['v'][:,a:b])>lim for(a,b),lim in zip(((0,3),(3,6),(6,8)),limits))or not supported_model(source,native,nd):raise ValueError('Verified live rigid ordered geometry differs: '+group)
             if any(tuple(c for c,_,_ in a.strips)!=tuple(c for c,_,_ in b.strips)for a,b in zip(p['meshes'],source['meshes'])):raise ValueError('Verified live rigid strip controls differ: '+group)
             if group=='boat_normals':
@@ -1280,6 +1292,17 @@ def main():
                     if q['top']==p['top']and delta(p['v'][:,:3],q['v'][:,:3])<=1e-6 and delta(p['v'][:,6:],q['v'][:,6:])<=1e-5 and normal_ulp(p['v'][:,3:6],q['v'][:,3:6])<=1:found.append(ni)
                 if found!=[npart]:raise ValueError('Boat complete signed-normal source is not unique within1ULP')
             modelmap[pc,part]=(native,npart,proof);modelMaterialIndices[pc,part]=[((m.material[9]&255)^128)-128 for m in source['meshes']]
+            if group=='judgment_burning_cars':
+                for key,value in list(meshmap.items()):
+                    if key[:2]==(pc,part)and value[:2]!=(native,npart):stale_burning_car_meshes.append(dict(pcBank=pc,pcPart=part,pcMesh=key[2],oldNativeBank=value[0],oldNativePart=value[1],oldNativeMesh=value[2]));del meshmap[key]
+                for key,contexts in list(higher_contexts.items()):
+                    if key[0]!=pc:continue
+                    higher_contexts[key]=[c for c in contexts if c[0]!=part or(key[2],c[2])==(native,npart)]
+                    if not higher_contexts[key]:del higher_contexts[key]
+                for mi,(a,b)in enumerate(zip(p['meshes'],source['meshes'])):
+                    meshmap[pc,part,mi]=(native,npart,mi,proof)
+                    pt,nt=a.material[8],b.material[8]
+                    if pt!=0xFFFFFFFF and nt!=0xFFFFFFFF and nd[native][nt]['w']*nd[native][nt]['h']>pd[pc][pt]['w']*pd[pc][pt]['h']:higher_contexts[pc,pt,native,nt].append((part,mi,npart,mi))
             live_rigid_bindings.append(dict(group=group,pcId=pc_model_ids[pc][part],pcBank=pc,pcPart=part,nativeBank=native,nativePart=npart,nativeId=native_ids[npart],evidence=proof,vertices=len(source['v']),maxPositionDelta=delta(p['v'][:,:3],source['v'][:,:3]),maxNormalDelta=delta(p['v'][:,3:6],source['v'][:,3:6]),maxUvDelta=delta(p['v'][:,6:],source['v'][:,6:])))
     # PC668 occurs ONLY at nodes2/8 of PCkind44 across all86 PC rigs. Original
     # Nativekind49 has737 at node2 but747 at node8, so there is deliberately NO
@@ -1700,6 +1723,7 @@ def main():
         'verified_emperor_signed_normal_sources':boss6_normal_bindings,
         'verified_magician_rigid_sources':magician_rigid_bindings,
         'verified_live_rigid_sources':live_rigid_bindings,'verified_mount_node_sources':mount_role_bindings,
+        'removed_misidentified_burning_car_mesh_bindings':stale_burning_car_meshes,
         'verified_judgment_rigid_sources':judgment_rigid_bindings,
         'verified_authored_skin_uv':verified_skin_uv,
         'verified_spatial_stage_objects':spatial_stage_bindings,'additional_stage_sources':spatial_stage_extras,

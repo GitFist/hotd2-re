@@ -9,6 +9,7 @@
 #include <fstream>
 
 #include "assets/asset_override.h"  // GamePath, SoundPath (the asset pack's copy of a WAV when it has one)
+#include "assets/naomi_audio.h"
 #include "game/sound_driver.h"
 #include "game/typing_reference.h"
 
@@ -19,9 +20,11 @@ public:
     virtual const char* Name() const = 0;
     virtual bool Init(const std::string& gameDir) = 0;  // paths given to Open are relative to gameDir
     void SetTypingReference(const game::TypingReference* reference) { typing_ = reference; }
+    void SetNaomiAudio(const NaomiAudio* audio) { naomi_ = audio; }
 
 protected:
     bool ReadSoundBytes(const std::string& gameDir, const std::string& path, std::vector<uint8_t>& out) const {
+        if (path.rfind("NaomiSound/", 0) == 0) return naomi_ && naomi_->Read(path, out);
         if (path.rfind("TypingSound/",0) == 0) {
             const auto* data = typing_ ? typing_->SoundData(path) : nullptr;
             if (!data) return false;
@@ -34,6 +37,7 @@ protected:
     }
 private:
     const game::TypingReference* typing_ = nullptr;
+    const NaomiAudio* naomi_ = nullptr;
 };
 
 }  // namespace port
