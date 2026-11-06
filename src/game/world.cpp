@@ -1,4 +1,5 @@
 #include "game/world.h"
+#include "game/world_nightshift.h"
 
 #include <algorithm>
 #include <cmath>
@@ -617,6 +618,7 @@ void World::Impl::UpdateCamera() {
 // =====================================================================================================================
 
 void World::Impl::BeginFrame() {
+    typingInstructionFade = 0;
     if (cfg.portTyping) { hud.menuPanels.clear(); hud.menuText.clear(); }
     projCenterFrame[0] = projCenter[0];  // Proj_Setup 0x004184C0 at the frame start
     projCenterFrame[1] = projCenter[1];
@@ -640,6 +642,7 @@ void World::Impl::BeginFrame() {
 }
 
 void World::Impl::StartStage(const WorldConfig& c) {
+    nativeVisualEffects.clear();
     prototype.reset();
     cfg = c;
     typingChallenge = TypingChallengeCtl{};
@@ -754,7 +757,7 @@ void World::Impl::StartStage(const WorldConfig& c) {
         // 3 (boss mode) 0x004E2224[stage], else 0x004E21F4[stage]
         uint32_t list = exe.U32(0x004E21F4 + 4 * static_cast<uint32_t>(cfg.eventMode));
         if (gameMode == 6 && cfg.gameType == 2) {
-            const int diff = runner ? runner->cfg.playerVariant : 0;
+            const int diff = cfg.eventMode == 6 && modes ? modes->lessonDiff : runner ? runner->cfg.playerVariant : 0;
             list = cfg.scene == 3 ? exe.U32(0x004E228C + 4 * static_cast<uint32_t>(diff))
                                   : exe.U32(0x004E223C + 4 * static_cast<uint32_t>(cfg.scene));
         } else if (gameMode == 6 && cfg.gameType == 3) {
@@ -768,6 +771,7 @@ void World::Impl::StartStage(const WorldConfig& c) {
     }
     for (const auto& [m, uv] : waterUv) modelEdits.erase(m);  // the reloaded models: the file's data again
     waterUv.clear();
+    for (int m : {0x157E, 0x157D, 0x157B}) modelEdits.erase(m); // car reflection starts from the reloaded glass
     targets.clear();
     targetCopy.clear();
     // ---- Task_InitRoot(0x00460710): every task is a child of the root, created in this order
@@ -784,6 +788,9 @@ void World::Impl::StartStage(const WorldConfig& c) {
             rc.demoIndex = typingAttractDemo;
         }
         rc.gameType = cfg.gameType;  // 0x009CA08C (world_modes*.cpp)
+        // Challenge retries rebuild the VM, but the selected level persists.
+        // Keep script variants and actor speeds in step with the lesson UI.
+        if (cfg.gameType == 2 && cfg.eventMode == 6 && modes) rc.playerVariant = modes->lessonDiff;
         rc.route = 0;    // 0x009C8E84 / 0x009C8E80: updated from the players before every VM run (TaskEvent)
         rc.players = 0;
         runner->camera.SetCameraBank(&cameraBank);
@@ -1822,26 +1829,53 @@ void World::SetPortVolumes(const int v[5]) {
 }
 PortGameOptions World::GetPortGameOptions() const {
     PortGameOptions result;
-    const auto& w = *impl_;
+    auto& w = *impl_;
     if (!w.modes || !w.modes->save.Valid()) return result;
+    result.typing = w.front.typingHome || w.cfg.portTyping;
+    result.editable = w.cfg.portFeatures && w.frontEnd && !w.cfg.portNetworkRoom && !RandomizerActive(w) &&
+                      !PortTypingDrillPlaying() && (w.gameMode == 3 || w.gameMode == 4 || w.gameMode == 12);
+    if (result.typing) {
+        if (result.editable) LoadTypingMenuSettings(w);
+        const auto unlocks = w.typing.originalProgress().unlocks();
+        result.livesMask = result.creditsMask = 0;
+        for (int value : TypingLifeOptions((unlocks & 1) != 0)) result.livesMask |= 1u << value;
+        for (int value : TypingContinueOptions((unlocks & 2) != 0, w.cfg.portFeatures || (unlocks & 32) != 0)) result.creditsMask |= 1u << value;
+        const auto& rules = w.cfg.typingOptions;
+        result.difficulty = int(rules.difficulty);
+        result.lives = rules.startingLives;
+        result.credits = rules.continues;
+        if (result.lives < 1 || result.lives > 5 || !(result.livesMask & (1u << result.lives))) result.lives = 3;
+        if (result.credits < 0 || result.credits > 9 || !(result.creditsMask & (1u << result.credits))) result.credits = 3;
+        result.freePlayUnlocked = (result.creditsMask & 1) != 0;
+        return result;
+    }
     const auto& save = w.modes->save;
     result.difficulty = std::clamp<int>(save.U8(SaveData::kDifficulty), 0, 4);
     result.lives = std::clamp<int>(save.U8(SaveData::kLives), 0, 4) + 1;
     result.credits = save.S8(SaveData::kCredits) == -1 ? 0 : std::clamp<int>(save.U8(SaveData::kCredits), 1, 9);
     for (int p = 0; p < 2; ++p)
         result.crosshair[p] = std::clamp<int>(save.U8(SaveData::kPlayerCfg + p * 0x7C), 0, 3);
-    result.freePlayUnlocked = (save.U8(SaveData::kFlags) & 7) == 7;
-    result.editable = w.cfg.portFeatures && w.frontEnd && !w.cfg.portNetworkRoom && !RandomizerActive(w) &&
-                      (w.gameMode == 3 || w.gameMode == 4 || w.gameMode == 12);
+    result.freePlayUnlocked = w.cfg.portFeatures || (save.U8(SaveData::kFlags) & 7) == 7;
+    if (result.freePlayUnlocked) result.creditsMask |= 1;
     return result;
 }
 bool World::SetPortGameOptions(const PortGameOptions& options) {
     const auto current = GetPortGameOptions();
     if (!current.editable || options.difficulty < 0 || options.difficulty > 4 || options.lives < 1 || options.lives > 5 ||
-        options.credits < 0 || options.credits > 9 || (options.credits == 0 && !current.freePlayUnlocked) ||
+        options.credits < 0 || options.credits > 9 || !(current.livesMask & (1u << options.lives)) ||
+        !(current.creditsMask & (1u << options.credits)) ||
         options.crosshair[0] < 0 || options.crosshair[0] > 3 || options.crosshair[1] < 0 || options.crosshair[1] > 3)
         return false;
     auto& w = *impl_;
+    if (current.typing) {
+        const auto before = w.cfg.typingOptions;
+        w.cfg.typingOptions.difficulty = TypingDifficulty(options.difficulty);
+        w.cfg.typingOptions.startingLives = options.lives;
+        w.cfg.typingOptions.continues = options.credits;
+        if (SaveTypingMenuSettings(w)) return true;
+        w.cfg.typingOptions = before;
+        return false;
+    }
     auto& m = *w.modes;
     m.save.SetU8(SaveData::kDifficulty, static_cast<uint8_t>(options.difficulty));
     m.save.SetU8(SaveData::kLives, static_cast<uint8_t>(options.lives - 1));
@@ -1860,6 +1894,14 @@ bool World::SetPortGameOptions(const PortGameOptions& options) {
 bool World::ResetPortGameOptions() {
     auto options = GetPortGameOptions();
     if (!options.editable) return false;
+    if (options.typing) {
+        const TypingRulesOptions defaults;
+        options.difficulty = int(defaults.difficulty);
+        options.lives = defaults.startingLives;
+        options.credits = defaults.continues;
+        if (!(options.creditsMask & (1u << options.credits))) options.credits = 3;
+        return SetPortGameOptions(options);
+    }
     // DefaultSettings also contains old device calibration. Read its defaults from a copy, then reset only the
     // preferences this page owns so an attached gun and the player's progression are never erased by this action.
     auto defaults = impl_->modes->save;
@@ -1930,6 +1972,7 @@ WorldCamera World::ContextNow() const {
     return w;
 }
 const std::vector<WorldDraw>& World::Draws() const { return impl_->draws; }
+const std::vector<NativeVisualEffect>& World::NativeVisualEffects() const { return impl_->nativeVisualEffects; }
 const WorldHud& World::Hud() const { return impl_->hud; }
 const WorldFeedback& World::Feedback() const { return impl_->feedback; }
 const std::vector<World::RandCall>& World::RandCalls() const { return impl_->randCalls; }
@@ -1943,12 +1986,14 @@ std::vector<World::TaskInfo> World::Tasks() const {
     return out;
 }
 const std::vector<WorldEventOp>& World::EventOps() const { return impl_->ops; }
-std::vector<World::EnemyInfo> World::Enemies(bool civilians) const {
+std::vector<World::EnemyInfo> World::Enemies(bool civilians, bool bosses) const {
     std::vector<EnemyInfo> out;
     for (Task* t : impl_->ts.Live()) {
         if (!t->data) continue;
         const WTask* w = static_cast<const WTask*>(t->data.get());
-        if (w->fn != fn::kEnemy && w->fn != fn::kEnemyCreate && !(civilians && (w->fn == 0x0048A920 || w->fn == 0x0048A3E0 || w->fn == 0x00449910))) continue;  // (+ actor 0x31: traces)
+        if (w->fn != fn::kEnemy && w->fn != fn::kEnemyCreate &&
+            !(civilians && (w->fn == 0x0048A920 || w->fn == 0x0048A3E0 || w->fn == 0x00449910)) &&
+            !(bosses && dynamic_cast<const EnemyTask*>(w) && !static_cast<const EnemyTask*>(w)->civilian)) continue;
         const EnemyTask& e = static_cast<const EnemyTask&>(*w);
         EnemyInfo i{};
         i.serial = t->serial;

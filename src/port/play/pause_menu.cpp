@@ -29,6 +29,7 @@ const char* const kLabels[play::PauseMenu::kRowCount] = {"Resume", "Options", "R
 bool Settings::Load(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
+    bool hasNaomiGraphics = false;
     for (std::string line; std::getline(f, line);) {
         const size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
@@ -76,6 +77,12 @@ bool Settings::Load(const std::string& path) {
             display.renderScale = std::clamp(v, 1, 4);
         else if (key == "blood")
             port::ParseBloodColor(val, display.bloodColor);
+        else if (key == "naomi_blood")
+            port::ParseBloodColor(val, display.naomiBloodColor);
+        else if (key == "naomi_graphics") {
+            hasNaomiGraphics = true;
+            boolean(graphics.naomiGraphics);
+        }
         else if (key == "msaa" && integer && (numeric == 1 || numeric == 2 || numeric == 4))
             graphics.msaa = numeric;
         else if (key == "anisotropy" && integer && (numeric == 1 || numeric == 2 || numeric == 4 || numeric == 8 || numeric == 16))
@@ -175,11 +182,18 @@ bool Settings::Load(const std::string& path) {
             number(display.menuOpacity, 25, 100);
         else if (key == "crosshairs")
             boolean(display.showCrosshairs);
-        else if (key == "assets")
-            assets = val;
         else if (key == "lobby")
             lobby = val;
     }
+    // Older profiles predate the explicit graphics-mode choice. Migrate only
+    // the absent key; a saved PC choice or malformed present key keeps its
+    // established load semantics, including when this object is reused.
+    if (!hasNaomiGraphics) display.graphics.naomiGraphics = true;
+    // Old profiles exposed two glow controls and two independent upscalers.
+    // Retain their chosen intensity, but run just one of each effect.
+    display.graphics.bloom = std::max(display.graphics.bloom, display.graphics.crtGlow);
+    display.graphics.crtGlow = 0;
+    if (display.temporalUpscaler) display.graphics.spatialUpscaler = 0;
     return true;
 }
 
@@ -197,17 +211,18 @@ bool Settings::Save(const std::string& path) const {
         f << "scale=" << display.windowScale << "\n";
     f << "aspect=" << (display.stretch ? "stretch" : "4:3") << "\ncrt=" << display.crt << "\nrender=" << display.renderScale << "\n";
     f << "blood=" << port::BloodColorName(display.bloodColor) << "\n";
+    f << "naomi_blood=" << port::BloodColorName(display.naomiBloodColor) << "\nnaomi_graphics=" << display.graphics.naomiGraphics << "\n";
     f << "viewport=" << display.viewport << "\n";
     const auto& g = display.graphics;
     f << "msaa=" << g.msaa << "\nanisotropy=" << g.anisotropy << "\ntexture_filter=" << g.textureFilter << "\npost_aa=" << g.postAA
-      << "\nspatial_upscaler=" << g.spatialUpscaler << "\nsharpening=" << g.sharpening << "\nalpha_coverage=" << g.alphaToCoverage
+      << "\nspatial_upscaler=" << (display.temporalUpscaler ? 0 : g.spatialUpscaler) << "\nsharpening=" << g.sharpening << "\nalpha_coverage=" << g.alphaToCoverage
       << "\nvsync=" << g.syncInterval << "\nallow_tearing=" << g.allowTearing << "\nlow_latency=" << g.lowLatency
       << "\ndownsample=" << g.downsample << "\nbrightness=" << g.brightness << "\ngamma=" << g.gamma << "\ncontrast=" << g.contrast
-      << "\nsaturation=" << g.saturation << "\nbloom=" << g.bloom << "\ncolor_grade=" << g.colorGrade
+      << "\nsaturation=" << g.saturation << "\nbloom=" << std::max(g.bloom, g.crtGlow) << "\ncolor_grade=" << g.colorGrade
       << "\nper_pixel_lighting=" << g.perPixelLighting << "\nsoft_particles=" << g.softParticles << "\nmaterial_maps=" << g.materialMaps
       << "\nambient_occlusion=" << g.ambientOcclusion << "\nshadow_maps=" << g.shadowMaps << "\nvolumetric_fog=" << g.volumetricFog
       << "\nreflections=" << g.reflections << "\ncinematic_focus=" << g.cinematicFocus << "\nmesh_refinement=" << g.meshRefinement
-      << "\ncrt_mask=" << g.crtMask << "\ncrt_curvature=" << g.crtCurvature << "\ncrt_glow=" << g.crtGlow
+      << "\ncrt_mask=" << g.crtMask << "\ncrt_curvature=" << g.crtCurvature
       << "\nresolution_mode=" << display.resolutionMode << "\ndynamic_resolution=" << display.dynamicResolution
       << "\ngpu_budget_fps=" << display.gpuBudgetFps << "\nrenderer=" << display.renderer
       << "\ntemporal_upscaler=" << display.temporalUpscaler << "\ntemporal_quality=" << display.temporalQuality
@@ -217,7 +232,6 @@ bool Settings::Save(const std::string& path) const {
       << "\nhdr_paper_white=" << g.hdrPaperWhite << "\noutput_resolution_hud=" << g.outputResolutionHud << "\ntemporal_aa=" << g.temporalAA
       << "\nfps_overlay=" << display.statistics << "\nmenu=" << (display.nightShift ? "nightshift" : "classic")
       << "\nmenu_opacity=" << display.menuOpacity << "\ncrosshairs=" << display.showCrosshairs << "\n";
-    if (!assets.empty()) f << "assets=" << assets << "\n";
     if (!lobby.empty()) f << "lobby=" << lobby << "\n";
     if (!username.empty()) f << "username=" << username << "\n";
     f.close();  // report write/flush errors before callers accept a newly saved username

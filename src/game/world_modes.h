@@ -214,6 +214,11 @@ void SpawnCreatureKomono68(World::Impl& w, const SpawnRecord& r);      // 0x0046
 // world_st1b_boss.cpp
 bool SpawnMount23(World::Impl& w, Task& t, const SpawnRecord& r);  // actor 0x23 from its own record (training lesson 4)
 
+// Enemy Sweep's individual small enemies (their campaign variants move in groups).
+void SpawnTrainBat(World::Impl& w, const SpawnRecord& r);  // actor 0x47, world_st1b_bats.cpp
+const float* TrainBatPosition(const ActorTask& actor);
+void SpawnTrainBird(World::Impl& w, Task& t, const SpawnRecord& r);  // actor 0x48, world_st3_birds.cpp
+
 // world_modes_story.cpp
 bool SpawnStory(World::Impl& w, Task& t, SpawnTask& s);  // mode-11 title card 0x00434DA0, actor type 0x50 (0x004997E0)
 

@@ -562,6 +562,15 @@ bool SpawnModes(World::Impl& w, Task& t, SpawnTask& s) {
     case 0x23:  // training lesson 4: the mount alone (variant 2, world_st1b_boss.cpp)
         if (w.runner->cfg.gameType != 2) return false;
         return SpawnMount23(w, t, s.rec);
+    case 0x47:  // Enemy Sweep: one leech crossing the alley
+        if (w.runner->cfg.gameType != 2) return false;
+        SpawnTrainBat(w, s.rec);
+        w.ts.KillCurrent();
+        return true;
+    case 0x48:  // Enemy Sweep: one flying enemy and its carried body
+        if (w.runner->cfg.gameType != 2) return false;
+        SpawnTrainBird(w, t, s.rec);
+        return true;
     case 0x1A: case 0x1B:  // training: the lessons' spawners (world_modes_train.cpp)
         if (w.runner->cfg.gameType != 2) return false;
         return SpawnLessonActor(w, t, s);

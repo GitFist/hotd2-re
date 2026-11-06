@@ -105,9 +105,19 @@ void OriginalWorldCosmetics(const char* dir,const char* bank) {
     Require((game::TypingOriginalSharedFlags(world)&0xC0)==0x40,
             "the other player's later costume pickup replaces the shared previous costume");
     world.hud.menuText.clear();world.hud.menuPanels.clear();
+    world.canShoot=1;
     game::TypingOriginalHud(world);
-    Require(world.hud.menuPanels.size()==2 && std::all_of(world.hud.menuPanels.begin(),world.hud.menuPanels.end(),
-        [](const auto& panel){return panel.top>=430;}),"both inventories occupy the footer below source life icons");
+    const int holder=world.typingReference.SourceModel(0x1BA5);
+    Require(world.hud.menuPanels.empty() && std::count_if(world.draws.begin(),world.draws.end(),
+        [&](const auto& draw){return draw.model==holder;})==8,"two players have four real 3D inventory holders each");
+    game::TypingOriginalPickup(world,0,17);world.draws.clear();game::TypingOriginalHud(world);
+    const int item=world.typingReference.SourceModel(7084);
+    Require(std::any_of(world.draws.begin(),world.draws.end(),[&](const auto& draw){return draw.model==item && draw.world.m[12]<0;}),
+            "stocked item uses its original model in P1's inventory");
+    world.cfg.typingOriginal=false;world.draws.clear();game::TypingOriginalHud(world);
+    Require(world.draws.empty(),"Arcade does not display Original inventory");
+    world.cfg.typingOriginal=true;world.flags5900|=0x10;game::TypingOriginalHud(world);
+    Require(world.draws.empty(),"cutscenes hide the inventory");
 }
 }
 int main(int argc,char** argv) {

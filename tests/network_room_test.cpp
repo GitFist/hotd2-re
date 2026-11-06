@@ -25,7 +25,7 @@ static void Tap(game::World& w, int p, uint32_t bits) {
 static void ShootDifficulty(game::World& w, int p) {
     Input(w, 0, 0); Input(w, 1, 0);
     game::WorldInput gun;
-    gun.kind = 1; gun.x = 320; gun.y = 310;  // Difficulty's displayed row.
+    gun.kind = 1; gun.x = 320; gun.y = 334;  // Difficulty's displayed row.
     gun.fired = true; gun.pressed = gun.held = 4;
     w.SetInput(p, gun); w.Step(); Step(w);
 }
@@ -42,7 +42,7 @@ static bool HasMenuText(const game::World& w, const char* text, bool ignoreCase 
 static void ModernRoom(const game::World& w, const char* difficulty) {
     Require(w.Hud().nightShiftPage == 10 && !w.Hud().menuPanels.empty() && !w.Hud().menuText.empty(),
             "connected room exposes the Night Shift panel and text presentation");
-    for (const char* label : {"ARCADE", "ORIGINAL", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "TYPING ORIGINAL", "LEAVE ROOM", "DIFFICULTY"})
+    for (const char* label : {"ARCADE", "ORIGINAL", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "TYPING ORIGINAL", "TYPING ARCADE", "LEAVE ROOM", "DIFFICULTY"})
         Require(HasMenuText(w, label), "modern room retains its mode, difficulty and leave labels");
     Require(HasMenuText(w, difficulty, true), "modern room displays the effective shared difficulty");
     int selected = 0;
@@ -96,11 +96,11 @@ int main(int argc, char** argv) {
     Require(w.NetworkLobby() && w.Hud().menuCursor == 2, "blank room shot cannot start the focused mode");
     Aim(w, 320, 142);
     Require(w.Hud().menuCursor == 0, "moving room pointer selects Arcade again");
-    for (int i = 0; i < 7; ++i) Tap(w, 0, 0x20);
-    Require(w.Hud().menuCursor == 7, "difficulty follows the seven mode rows including Typing Original");
+    for (int i = 0; i < 8; ++i) Tap(w, 0, 0x20);
+    Require(w.Hud().menuCursor == 8, "difficulty follows the eight mode rows including both Typing modes");
     ModernRoom(w, "NORMAL");
     Tap(w, 1, 0xCC); ShootDifficulty(w, 1);
-    Require(w.NetworkLobby() && w.Hud().menuCursor == 7 && w.GetPortGameOptions().difficulty == 2,
+    Require(w.NetworkLobby() && w.Hud().menuCursor == 8 && w.GetPortGameOptions().difficulty == 2,
             "guest keyboard and gun cannot change difficulty or start a game");
     Tap(w, 0, 0x80);
     Require(w.GetPortGameOptions().difficulty == 3 && w.NetworkLobby(), "host right selects Hard without starting");
@@ -118,23 +118,22 @@ int main(int argc, char** argv) {
     Require(w.GetPortGameOptions().difficulty == 4, "difficulty wraps backward");
     Tap(w, 0, 0x40);  // Hard for the following games.
     Tap(w, 0, 0x20);
-    Require(w.Hud().menuCursor == 8, "Leave follows Difficulty");
+    Require(w.Hud().menuCursor == 9, "Leave follows Difficulty");
     Tap(w, 0, 0x20);
-    for (int choice : {0, 1, 2, 3, 5, 6, 0}) {
+    for (int choice : {0, 1, 2, 3, 5, 6, 7, 0}) {
         for (int i = 0; i < choice; ++i) { Input(w, 0, 0x20); w.Step(); Step(w); }
         Require(w.Hud().menuCursor == choice, "host navigates room");
         ModernRoom(w, "HARD");
         Input(w, 0, 4); w.Step(); Step(w, 500);
         Require(w.GameMode() == 6, "selected mode starts");
         Require(w.Hud().nightShiftPage != 10,"connected-room page clears when the selected game starts");
-        if (choice == 6) {
-            bool original[2]={};int itemSlots=0;
-            for (const auto& text:w.Hud().menuText) {
-                original[0]|=text.text.rfind("1P ORIGINAL",0)==0;
-                original[1]|=text.text.rfind("2P ORIGINAL",0)==0;
-                if (text.text.size()>3&&text.text[0]=='F'&&text.text[1]>='1'&&text.text[1]<='4'&&text.text[2]==':') ++itemSlots;
-            }
-            Require(original[0]&&original[1]&&itemSlots==8,"both Typing players receive Original inventory HUDs");
+        if (choice == 6 || choice == 7) {
+            // Let the opening cutscene finish before checking the gameplay inventory.
+            for (int frame=0;frame<2600 && !w.Hud().canShoot;++frame) Step(w);
+            const int holders=int(std::count_if(w.Draws().begin(),w.Draws().end(),[](const auto& draw) {
+                return draw.fn==0x004ACB40;
+            }));
+            Require(choice==6?holders>=8:holders==0,"only Original gives both players 3D inventory slots");
             Require(!HasMenuText(w,"MULTIPLAYER LOBBY")&&!HasMenuText(w,"YOUR PARTY")&&
                 std::none_of(w.Hud().menuPanels.begin(),w.Hud().menuPanels.end(),[](const auto& panel) {
                     return panel.left==184&&panel.right==600&&panel.top>=130&&panel.top<365;
@@ -142,7 +141,7 @@ int main(int argc, char** argv) {
         } else Require(w.Hud().menuPanels.empty()&&w.Hud().menuText.empty(),
                        "room presentation clears when the selected gun game starts");
         Require(w.Hud().gameType == ((choice == 1 || choice == 5) ? 1 : (choice == 2 || choice == 3) ? 3 : 0), "correct mode type");
-        Require(w.PortTypingActive() == (choice == 6), "Typing Original is selectable and isolated from gun modes");
+        Require(w.PortTypingActive() == (choice == 6 || choice == 7), "Typing Original is selectable and isolated from gun modes");
         Require((w.Hud().randomizerSeed != 0) == (choice == 5), "randomizer is isolated from other modes");
         Require(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5, "both reserved players start together");
         Require(w.Draws().size() > 5, "mode has scene geometry");
@@ -184,8 +183,8 @@ int main(int argc, char** argv) {
         for (auto* world : {&a, &b}) {
             if (f == 700) world->RequestTitle();
             uint32_t host = 0;
-            if ((f >= 20 && f <= 32 && f % 2 == 0) || (f >= 720 && f <= 732 && f % 2 == 0)) host = 0x20;
-            if ((f >= 60 && f <= 72 && f % 2 == 0) || (f >= 750 && f <= 762 && f % 2 == 0)) host = 0x10;
+            if ((f >= 20 && f <= 34 && f % 2 == 0) || (f >= 720 && f <= 734 && f % 2 == 0)) host = 0x20;
+            if ((f >= 60 && f <= 74 && f % 2 == 0) || (f >= 750 && f <= 764 && f % 2 == 0)) host = 0x10;
             if (f == 40 || f == 42 || f == 48 || f == 50) host = 0x80;
             if (f == 44 || f == 740 || f == 742) host = 0x40;
             if (f == 46 || f == 100 || f == 800) host = 4;

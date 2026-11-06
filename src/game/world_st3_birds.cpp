@@ -10,6 +10,7 @@
 
 #include "game/mstack.h"
 #include "game/world_internal.h"
+#include "game/world_modes.h"
 
 namespace game {
 
@@ -57,6 +58,7 @@ struct BirdTask : EnemyTask {
 
 struct BirdBodyTask : EnemyTask {  // 0x0042F660 companion
     int8_t group = 0, idx = 0;
+    bool training = false;
 };
 
 struct BirdFxTask : WTask {
@@ -275,7 +277,51 @@ void TaskDive(Task& t) {  // 0x0042ED50 (variant 2)
     w.RegisterTarget(&b);
 }
 
-void TaskBirdBody(Task& t) {  // 0x0042F660
+void TaskTrainBird(Task& t) {  // 0x0042F420: Enemy Sweep's single flying enemy
+    World::Impl& w = *CurrentWorld();
+    BirdTask& b = t.As<BirdTask>();
+    w.actor8E4C = &b;
+    w.LightChar();
+    w.AnimDraw(b);
+    w.LightScene();
+    ++b.anim.counter[0];
+    if (b.state == 1) {
+        if (b.flags34 & 8) {
+            w.Sound((w.Rand(0x0042F5D0) & 1) == 0 ? 0x4C17A9u : 0x4B17A9u);
+            b.state = 2;
+            b.timer = 0;
+        }
+        b.pos[2] -= w.modes->lessonDiff * F32(w.exe, 0x004E3100) + F32(w.exe, 0x004C4C58);
+        if (b.pos[2] < F32(w.exe, 0x0055D2DC)) { Remove(w, b); return; }
+    } else if (b.state == 2) {
+        b.v[1] -= F32(w.exe, 0x0055D2CC);
+        b.pos[1] += b.v[1];
+        b.pos[2] = (b.pos[2] - F32(w.exe, 0x004C4C58)) + b.v[2];
+        if (b.rot[0] < 0x8000) b.rot[0] += 0x200;
+        b.rot[1] += 0x800;
+        if (b.pos[1] < w.ground) {
+            b.state = 3;
+            b.timer = 0;
+            w.SpawnSplash43E4C0(b.rot[1], b.pos[0], w.ground + F32(w.exe, 0x004C4CC8), b.pos[2], .5f);
+        }
+    } else if (b.state == 3) {
+        b.pos[1] -= F32(w.exe, 0x004C4CB0);
+        if (b.timer++ > 60) {
+            --w.liveEnemies;
+            --w.attackers;
+            Remove(w, b);
+            return;
+        }
+    }
+    memcpy(b.body, b.pos, 12);
+    w.SyncLock(b);
+    w.lockOn.Register(b.lock, w.playerPos);
+    const float p[3] = {b.pos[0], static_cast<float>(b.pos[1] + F64(w.exe, 0x004ECB70)), b.pos[2]};
+    mx::Transform(w.cam.view, p, b.viewPos);
+    w.RegisterTarget(&b);
+}
+
+void TaskBirdBody(Task& t) {  // 0x0042F660 (campaign) / 0x0042F7F0 (Enemy Sweep)
     World::Impl& w = *CurrentWorld();
     BirdBodyTask& c = t.As<BirdBodyTask>();
     BirdTask* m = Slot(w, c.group, c.idx);
@@ -284,6 +330,7 @@ void TaskBirdBody(Task& t) {  // 0x0042F660
         w.EnemyDestroy(c);
         return;
     }
+    if (c.training && (m->flags34 & 0x10000)) return;
     {  // camera matrix * member node 1 model-view, translated (0, 1, 2): the world point (approximated through the
        // native world node matrix)
         Mat4 q = m->anim.nodes[1].world;
@@ -302,7 +349,7 @@ void TaskBirdBody(Task& t) {  // 0x0042F660
         }
     c.anim.counter[0] = m->anim.counter[0];
     w.AnimDraw(c);
-    w.EnemyShadow(c);
+    if (!c.training) w.EnemyShadow(c);
 }
 
 void Common(World::Impl& w, EnemyTask& e, int kind, int motion) {
@@ -316,16 +363,41 @@ void Common(World::Impl& w, EnemyTask& e, int kind, int motion) {
     e.nodeCb = 0x00411050;  // 0x0042E020: the node's model
 }
 
-void SpawnBody(World::Impl& w, const BirdTask& b) {  // 0x0042E060
-    BirdBodyTask* c = w.NewTask<BirdBodyTask>(TaskBirdBody, 0x0042F660);
+void SpawnBody(World::Impl& w, const BirdTask& b, bool training = false) {  // 0x0042E060 / 0x0042E1B0
+    BirdBodyTask* c = w.NewTask<BirdBodyTask>(TaskBirdBody, training ? 0x0042F7F0 : 0x0042F660);
     Common(w, *c, 0x1F, 0x406);
     c->flags34 = 0x80001;
     c->anim.counter[0] = 0;
     c->group = b.group;
     c->idx = b.idx;
+    c->training = training;
 }
 
 }  // namespace
+
+void SpawnTrainBird(World::Impl& w, Task& t, const SpawnRecord& r) {  // 0x0042E0F0
+    auto b = std::make_unique<BirdTask>();
+    b->fn = 0x0042F420;
+    b->record = r;
+    memcpy(b->pos, r.pos, 12);
+    memcpy(b->rot, r.rot, 12);
+    Common(w, *b, 0x1E, 0x407);
+    b->flags34 = (b->flags34 & ~0x80u) | 0x90000;
+    b->state = 1;
+    b->rot[2] = 0;
+    b->radius = 4.0f;
+    b->lock = &w.lockTargets[w.nextLockTarget++];
+    w.SyncLock(*b);
+    w.lockOn.AddDirect(b->lock);
+    b->slot120 = static_cast<int8_t>(b->lock->slot);
+    ++w.attackers;
+    ++w.liveEnemies;
+    Slot(w, 0, 0) = b.get();
+    w.actor8E4C = b.get();
+    SpawnBody(w, *b, true);
+    t.data = std::move(b);
+    t.fn = TaskTrainBird;
+}
 
 void World::Impl::SpawnBirds(Task& t, SpawnTask& s) {  // 0x0042D9C0
     const SpawnRecord& r = s.rec;

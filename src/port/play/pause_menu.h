@@ -31,14 +31,12 @@ struct Settings {
     // "fullscreen=0|1", "scale=1|2|3|fit", "aspect=4:3|stretch", "crt=0..3", "render=1..4"
     // (display_menu.h)
     DisplaySettings display;
-    // "assets=<dir>": an optional asset pack (port::SetAssetDir; HOTD2_ASSET_DIR wins). notes/agents/remaster.md.
-    std::string assets;
     // "lobby=<host:port>": the online lobby server (play.cpp kDefaultLobby when absent; HOTD2_LOBBY / --lobby win).
     std::string lobby;
     // Public leaderboard display name. Empty means first-launch setup is required.
     std::string username;
     bool Load(const std::string& path);   // a missing file or key keeps the default
-    bool Save(const std::string& path) const;  // writes input= / assets= only when set
+    bool Save(const std::string& path) const;  // writes input= only when set
     bool operator==(const Settings& o) const {
         return music == o.music && guns == o.guns && sfx == o.sfx && master == o.master && attraction == o.attraction && display == o.display && username == o.username;
     }

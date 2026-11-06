@@ -6,7 +6,7 @@
 // (WorldHud::portDisplayRequests). Pure state machine (tests/pause_menu_test.cpp); the caller applies the settings
 // (notes/agents/display.md): window / fullscreen through the platform layer, the present mapping and the internal
 // resolution through the GPU device.
-//   A single options screen groups settings into Display, Graphics, Gameplay, Sound, Devices, CRT and Packs.
+//   A single options screen groups settings into Display, Graphics, Gameplay, Sound, Devices and CRT.
 //   Long categories scroll within a fixed viewport; tabs, Back and Hide UI remain available. Saved settings retain
 //   their existing keys and the caller applies gameplay edits through the world's persistent settings API.
 //   Keyboard: Up / Down move, Left / Right change a value, Enter / Space on a value = next value, on Back = close,
@@ -34,10 +34,13 @@ struct DisplaySettings {
     bool stretch = false;   // false: the 4:3 image centred with bars; true: stretched to the window
     int viewport = 0;       // 0 original, 1 16:9, 2 21:9, 3 32:9, 4 current window. Wider framing is experimental.
     port::BloodColor bloodColor = port::BloodColor::Red;  // local cosmetic choice
+    port::BloodColor naomiBloodColor = port::BloodColor::Red;
     int crt = 0;            // 0 off, 1..3 scanline strength
     int renderScale = 2;    // internal resolution of the frame: 1..4 x 640x480 (1 = the original; default 2 = the 2x window's
                             // own pixels, at least as sharp as the earlier 960x720 default)
-    port::GraphicsOptions graphics;
+    // Both games share the selected graphics profile. Raw renderer options
+    // remain PC by default for standalone tools and reference comparisons.
+    port::GraphicsOptions graphics{.naomiGraphics = true};
     bool integerScale = false;
     int frameCap = 60;  // presentation only: 0,30,60,120,144,165,240. Simulation remains 60 Hz.
     int monitor = 0;    // 0 current display, otherwise one-based enumerated monitor; missing displays fall back safely
@@ -54,9 +57,85 @@ struct DisplaySettings {
     int frameGeneration = 0;           // optional DLSS FG, native D3D12; restart required
     bool renderInterpolation = false;  // render-only intermediate poses, up to one simulation tick of visual delay
     bool rayShadows = false;
+    port::BloodColor EffectiveBloodColor() const { return graphics.naomiGraphics ? naomiBloodColor : bloodColor; }
+    port::BloodColor& EffectiveBloodColor() { return graphics.naomiGraphics ? naomiBloodColor : bloodColor; }
     bool operator==(const DisplaySettings&) const = default;
     bool operator!=(const DisplaySettings& o) const { return !(*this == o); }
 };
+
+inline port::GraphicsOptions SupportedGraphicsOptions(port::GraphicsOptions g, const port::GraphicsCapabilities& caps) {
+    if (g.msaa == 4 && !caps.msaa4) g.msaa = caps.msaa2 ? 2 : 1;
+    if (g.msaa == 2 && !caps.msaa2) g.msaa = 1;
+    if (!caps.msaa2 && !caps.msaa4) g.alphaToCoverage = false;
+    int af = 1;
+    for (int value : {2, 4, 8, 16})
+        if (value <= caps.maxAnisotropy && value <= g.anisotropy) af = value;
+    g.anisotropy = af;
+    if ((g.postAA == 2 && !caps.smaa) || (g.postAA == 3 && !caps.cmaa2)) g.postAA = 0;
+    if (!caps.temporalAA) g.temporalAA = false;
+    if (!caps.spatialFSR1) g.spatialUpscaler = 0;
+    if (!caps.outputResolutionHud) g.outputResolutionHud = false;
+    if (!caps.softParticles) g.softParticles = 0;
+    if (!caps.materialMaps) g.materialMaps = false;
+    if (!caps.ambientOcclusion) g.ambientOcclusion = 0;
+    if (!caps.shadowMaps) g.shadowMaps = 0;
+    if (!caps.sceneEffects) g.volumetricFog = g.reflections = g.cinematicFocus = 0;
+    if (!caps.hdrOutput) g.hdrOutput = false;
+    if (!caps.tearing) g.allowTearing = false;
+    if (!caps.lowLatency) g.lowLatency = false;
+    return g;
+}
+
+// Device fallbacks still apply to presentation options. The Naomi scene policy
+// is temporary and must not overwrite the saved PC choices or mode selection.
+inline port::GraphicsOptions PreserveNaomiPreferences(const port::GraphicsOptions& requested,
+                                                     const port::GraphicsOptions& applied) {
+    auto saved = applied;
+    if (requested.naomiGraphics) {
+        saved.naomiGraphics = true;
+        saved.msaa = requested.msaa;
+        saved.alphaToCoverage = requested.alphaToCoverage;
+        saved.perPixelLighting = requested.perPixelLighting;
+        saved.materialMaps = requested.materialMaps;
+        saved.ambientOcclusion = requested.ambientOcclusion;
+        saved.shadowMaps = requested.shadowMaps;
+        saved.volumetricFog = requested.volumetricFog;
+        saved.reflections = requested.reflections;
+        saved.softParticles = requested.softParticles;
+        saved.cinematicFocus = requested.cinematicFocus;
+        saved.meshRefinement = requested.meshRefinement;
+        saved.textureFilter = requested.textureFilter;
+        saved.anisotropy = requested.anisotropy;
+    }
+    return saved;
+}
+
+// Keep unsupported requests in the saved profile. Only device failures on
+// supported features may change a choice; switching renderers is temporary.
+inline port::GraphicsOptions PreserveGraphicsPreferences(const port::GraphicsOptions& requested,
+                                                        const port::GraphicsOptions& applied,
+                                                        const port::GraphicsCapabilities& caps) {
+    auto saved = PreserveNaomiPreferences(requested, applied);
+    const auto supported = SupportedGraphicsOptions(requested, caps);
+    if (supported.msaa != requested.msaa) saved.msaa = requested.msaa;
+    if (supported.alphaToCoverage != requested.alphaToCoverage) saved.alphaToCoverage = requested.alphaToCoverage;
+    if (supported.anisotropy != requested.anisotropy) saved.anisotropy = requested.anisotropy;
+    if (supported.postAA != requested.postAA) saved.postAA = requested.postAA;
+    if (supported.temporalAA != requested.temporalAA) saved.temporalAA = requested.temporalAA;
+    if (supported.spatialUpscaler != requested.spatialUpscaler) saved.spatialUpscaler = requested.spatialUpscaler;
+    if (supported.outputResolutionHud != requested.outputResolutionHud) saved.outputResolutionHud = requested.outputResolutionHud;
+    if (supported.softParticles != requested.softParticles) saved.softParticles = requested.softParticles;
+    if (supported.materialMaps != requested.materialMaps) saved.materialMaps = requested.materialMaps;
+    if (supported.ambientOcclusion != requested.ambientOcclusion) saved.ambientOcclusion = requested.ambientOcclusion;
+    if (supported.shadowMaps != requested.shadowMaps) saved.shadowMaps = requested.shadowMaps;
+    if (supported.volumetricFog != requested.volumetricFog) saved.volumetricFog = requested.volumetricFog;
+    if (supported.reflections != requested.reflections) saved.reflections = requested.reflections;
+    if (supported.cinematicFocus != requested.cinematicFocus) saved.cinematicFocus = requested.cinematicFocus;
+    if (supported.hdrOutput != requested.hdrOutput) saved.hdrOutput = requested.hdrOutput;
+    if (supported.allowTearing != requested.allowTearing) saved.allowTearing = requested.allowTearing;
+    if (supported.lowLatency != requested.lowLatency) saved.lowLatency = requested.lowLatency;
+    return saved;
+}
 
 // Input of one frame for the port's menus (the pause menu and this page).
 struct MenuInput {
@@ -75,7 +154,7 @@ struct MenuInput {
 class DisplayMenu {
    public:
     enum Page {
-        kDisplay = 0, kGraphics, kGameplay, kSound, kDevices, kRetro, kPacks, kPageCount,
+        kDisplay = 0, kGraphics, kGameplay, kSound, kDevices, kRetro, kPageCount,
         // Source aliases for callers that previously selected one of the separate graphics pages.
         kClarity = kGraphics, kLighting = kGraphics, kPerformance = kDisplay, kColor = kDisplay,
         kResolution = kGraphics, kTemporal = kGraphics
@@ -109,13 +188,10 @@ class DisplayMenu {
         kMonitor,
         kStatistics,
         kMenuStyle,
-        kPack,
         kTearing,
         kLowLatency,
-        kUpscaler,
         kViewport,
         kSoftParticles,
-        kMaterialMaps,
         kAmbientOcclusion,
         kHdrOutput,
         kPaperWhite,
@@ -129,13 +205,11 @@ class DisplayMenu {
         kGpuBudget,
         kCrtMask,
         kCrtCurvature,
-        kCrtGlow,
         kCalibration,
         kRenderer,
         kTemporalUpscaler,
         kTemporalQuality,
         kFrameGeneration,
-        kMeshRefinement,
         kRenderInterpolation,
         kIndependentUi,
         kRayShadows,
@@ -158,6 +232,7 @@ class DisplayMenu {
         kUsername,
         kControllers,
         kFeedback,
+        kGraphicsMode,
         kRowCount
     };
 
@@ -166,11 +241,14 @@ class DisplayMenu {
         int audio[5] = {5, 5, 5, 5, 5};  // music, guns, effects, master, attraction
         int difficulty = 2, lives = 3, credits = 5, crosshair[2] = {};
         bool freePlayUnlocked = false, gameplayEditable = true;
+        bool typing = false;
+        uint32_t livesMask = 0x3E, creditsMask = 0x3FF;
         std::string username;
         bool operator==(const OptionValues&) const = default;
     };
     enum class DeviceAction { None, Lightguns, WiiRemotes, Controllers, Feedback };
-    void SetOptionValues(const OptionValues& values) { optionValues_ = values; }
+    void SetOptionValues(const OptionValues& values);
+    void SetGraphicsMode(bool naomi);
     const OptionValues& OptionValuesState() const { return optionValues_; }
     bool TakeOptionChange(OptionValues* values) {
         if (!optionChanged_ || !values) return false;
@@ -193,11 +271,6 @@ class DisplayMenu {
         deviceAction_ = DeviceAction::None;
         return action;
     }
-
-    struct PackChoice {
-        std::string name, path, detail;
-        bool valid = true;
-    };
 
     void Open();
     void Close() {
@@ -245,26 +318,24 @@ class DisplayMenu {
     void SetTemporalInputActive(bool active) { temporalInputActive_ = active; }
     void SetRaytracingAvailable(bool available) { raytracingAvailable_ = available; }
     void SetFrameGenerationActive(bool active) { frameGenerationActive_ = active; }
-    void SetActivePackFeatures(size_t materialMaps, size_t refinedModels) {
-        activeMaterialMaps_ = materialMaps;
-        activeRefinedModels_ = refinedModels;
+    void SetNaomiAvailability(bool available, std::string detail = {}) {
+        naomiAvailable_ = available;
+        naomiDetail_ = std::move(detail);
     }
-    void SetActivePackName(std::string name) { activePackName_ = std::move(name); }
     std::string RowHelp(const DisplaySettings& d, int row) const;
     void SetRenderDimensions(int width, int height) {
         renderWidth_ = width;
         renderHeight_ = height;
     }
     int CalibrationPattern() const { return calibration_; }
-    void SetPacks(std::vector<PackChoice> packs, const std::string& currentPath);
-    bool TakePackChange(std::string* path);
-    std::string SelectedPackPath() const { return packs_.empty() ? std::string{} : packs_[pack_].path; }
     void SetStatus(const std::string& status) { status_ = status; }
 
     // Layout in cells (16 x 24 px); RowAt: the row under a pointer at game pixel (px, py), -1 = none.
-    static float RowY(int row, Page page = kDisplay, int scroll = 0);
-    static int RowAt(float px, float py, Page page = kDisplay, int scroll = 0);
-    static const std::vector<int>& Rows(Page page);
+    static float RowY(int row, Page page = kDisplay, int scroll = 0, bool naomi = false, bool typing = false);
+    static int RowAt(float px, float py, Page page = kDisplay, int scroll = 0, bool naomi = false, bool typing = false);
+    static const std::vector<int>& Rows(Page page, bool naomi = false, bool typing = false);
+    const std::vector<int>& CurrentRows() const { return Rows(page_, naomiMode_, optionValues_.typing); }
+    float RowTop(int row) const { return RowY(row, page_, scroll_, naomiMode_, optionValues_.typing) * 24 + 10; }
     static int TabAt(float px, float py);
     static float TabLeft(int page);
     static float TabWidth(int page);
@@ -287,15 +358,14 @@ class DisplayMenu {
     OptionValues optionValues_;
     DeviceAction deviceAction_ = DeviceAction::None;
     bool nightShiftActive_ = true;
+    bool naomiMode_ = false;
     int cursor_ = kFullscreen;
     Page page_ = kDisplay;
     int scroll_ = 0;
     void KeepCursorVisible();
+    void RefreshRows();
     game::MenuPointerFocus pointer_;
     std::vector<std::string> monitors_;
-    std::vector<PackChoice> packs_;
-    int pack_ = 0;
-    bool packChanged_ = false;
     std::string status_;
     bool Disabled(int row, const DisplaySettings&) const;
     std::string ShownValue(const DisplaySettings&, int row) const;
@@ -304,8 +374,8 @@ class DisplayMenu {
     bool temporalInputActive_ = false;
     bool raytracingAvailable_ = false;
     bool frameGenerationActive_ = false;
-    size_t activeMaterialMaps_ = 0, activeRefinedModels_ = 0;
-    std::string activePackName_ = "Original";
+    bool naomiAvailable_ = false;
+    std::string naomiDetail_;
     int renderWidth_ = 0, renderHeight_ = 0, calibration_ = -1;
 };
 

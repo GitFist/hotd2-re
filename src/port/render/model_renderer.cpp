@@ -1,7 +1,10 @@
 #include "model_renderer.h"
 #include "mesh_refinement.h"
+#include "naomi_flash_sort.h"
+#include "naomi_vertex_lighting.h"
 
 #include "game/crt_qsort.h"
+#include "game/anim.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +15,32 @@
 namespace port {
 
 namespace {
+
+// Opt-in diagnostic fixture, independent of C++ padding/ABI. All integers and
+// IEEE float bits are little endian; NSORT003 retains the unculled triangles
+// plus each source's actual clip projection/cull and conservative guard band.
+bool WriteNaomiSortFixture(const char* path,const std::vector<NaomiFlashTriangle>& triangles,
+                          const GpuDrawList& list,const std::vector<size_t>& draws,float guardX,float guardY) {
+    auto* file=std::fopen(path,"wb");if(!file)return false;
+    bool ok=std::fwrite("NSORT003",1,8,file)==8;
+    const auto word=[&](uint64_t value,unsigned bytes) {
+        unsigned char data[8];for(unsigned k=0;k<bytes;++k)data[k]=static_cast<unsigned char>(value>>(8*k));
+        ok=std::fwrite(data,1,bytes,file)==bytes && ok;
+    };
+    const auto values=[&](const float* data,size_t count) {
+        for(size_t i=0;i<count;++i){uint32_t bits;std::memcpy(&bits,data+i,4);word(bits,4);}
+    };
+    word(triangles.size(),4);
+    word(draws.size(),4);values(&guardX,1);values(&guardY,1);
+    for(size_t index:draws){word(index,4);values(list.model[list.draws[index].constants].projection,16);word(list.draws[index].state.cull,4);}
+    for(const auto& triangle:triangles) {
+        word(triangle.sourceDraw,4);word(triangle.sequence,8);word(triangle.additive?1:0,4);
+        for(const auto& v:triangle.vertices) {
+            values(v.pos,3);values(v.normal,3);values(v.uv,2);values(v.color,3);values(v.specular,3);
+        }
+    }
+    return std::fclose(file)==0 && ok;
+}
 
 // Row-vector matrices (HLSL mul(v, M)), left-handed, matching the offline renderer's camera.
 void Multiply(const float a[16], const float b[16], float out[16]) {
@@ -27,6 +56,28 @@ float MaxAxisScale(const float t[16]) {
     float s = 0;
     for (int r = 0; r < 3; ++r) s = std::max(s, std::sqrt(t[r * 4] * t[r * 4] + t[r * 4 + 1] * t[r * 4 + 1] + t[r * 4 + 2] * t[r * 4 + 2]));
     return s;
+}
+
+// Original Naomi standard kernel's BRAF dispatch at 0x0C0C266E.
+// The native table deliberately has the same q^10 route for indices 5 and 6;
+// material index 16 selects q^32, other indices above 8 select q^64.
+float NaomiSpecularPower(int index) {
+    static constexpr float powers[] = {0,2,4,6,8,10,10,14,16};
+    if (index < 0) return -1; // -1 selects the constant-intensity kernel
+    if (index <= 8) return powers[index];
+    return index == 16 ? 32.f : 64.f;
+}
+
+// Native 0x0C069A2E packs the first eight significand bits and exponent
+// (IEEE exponent -126). FOG_DENSITY therefore represents approximately 2*far.
+float NaomiFogDensity(float far) {
+    if (!(far>0) || !std::isfinite(far)) return 0;
+    int exponent=0;
+    const float mantissa=std::frexp(far,&exponent);
+    const float byte=std::floor(mantissa*256.f);
+    if (exponent<0) return std::floor(std::ldexp(byte,exponent))/128.f;
+    if (exponent>126) return 0;
+    return std::ldexp(byte/128.f,exponent);
 }
 
 // Like IDirect3DDevice7::ComputeSphereVisibility's D3DSTATUS_CLIPINTERSECTION* bits (0xFFF000), which Mdl_Draw tests:
@@ -141,7 +192,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<const game::M
 }
 
 const ModelRenderer::ModelGpu& ModelRenderer::CachedModel(AssetStore& assets, const game::Model* model, const std::string& polName,int refinement) {
-    auto key = std::make_tuple(model, polName,refinement);
+    auto key = std::make_tuple(model, polName,refinement,device_->EffectiveGraphics().naomiGraphics);
     auto it = models_.find(key);
     if (it != models_.end()) return it->second;
     ModelGpu& g = models_[key];
@@ -203,7 +254,9 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         }
         // Pass selection in Mdl_Draw 0x004A7EF0.
         const uint32_t isp = mesh.material.Isp(), tsp = mesh.material.Tsp();
-        m.translucent = (tsp & 0x180000) != 0x80000;
+        const unsigned nativeList=(mesh.material.ParamControl()>>24)&7;
+        m.translucent = device_->EffectiveGraphics().naomiGraphics && (nativeList==0 || nativeList==2)
+            ? nativeList==2 : (tsp & 0x180000) != 0x80000;
         m.zfunc = kZFunc[isp >> 29];
         m.zwrite = ((isp >> 26) & 1) == 0;
         m.srcBlend = kSrc[tsp >> 29];
@@ -212,12 +265,16 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         m.addrU = kAddr[(((tsp >> 3) & 0x8000) | (tsp & 0x10000)) >> 15];
         m.addrV = kAddr[(((tsp >> 3) & 0x4000) | (tsp & 0x8000)) >> 14];
         m.alphaFromTexture = ((tsp >> 6) & 3) == 1;
+        m.naomiDecal = ((tsp >> 6) & 3) == 0 ? ((tsp & 0x80000) ? 2 : 1) : 0;
+        m.naomiTsp = static_cast<uint8_t>(((tsp>>6)&3) | (((tsp>>19)&1)<<2) | (((tsp>>20)&1)<<3));
         m.fog = ((tsp >> 23) & 1) == 0;  // FOGENABLE = !bit 23
         for (int k = 0; k < 4; ++k) m.sphere[k] = mesh.material.Sphere(k);  // material bounding sphere (words 4-7)
         if(refined) {
             float radius2=0;for(int k=0;k<3;++k){m.sphere[k]=(m.shadowBounds[k]+m.shadowBounds[k+3])*.5f;const float half=(m.shadowBounds[k+3]-m.shadowBounds[k])*.5f;radius2+=half*half;}m.sphere[3]=std::sqrt(radius2);
         }
         m.ambientScale = mesh.material.AmbientScale();
+        m.naomiSpecularIndex = static_cast<int8_t>(mesh.material.words[9] & 0xffu); // native driver loads a signed byte
+        for(int k=0;k<3;++k)m.naomiSpecular[k]=mesh.material.Specular(k);
         if (const int n = mesh.material.SpecularExponent(); n > 0 && n < 31) {  // Mdl_Draw 0x004A8026: power = 1 << n
             for (int k = 0; k < 3; ++k) m.specular[k] = mesh.material.Specular(k);
             m.specular[3] = static_cast<float>(1 << n);
@@ -225,9 +282,10 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
         const float d[4] = { mesh.material.DiffuseR(), mesh.material.DiffuseG(), mesh.material.DiffuseB(), mesh.material.DiffuseA() };
         memcpy(m.diffuse, d, sizeof(d));
         if (mesh.material.Textured()) {
-            m.tex = TextureView(assets.Texture(polName, mesh.material.TextureRef()), m.translucent);
+            const std::string& textureBank=mesh.textureBank.empty()?polName:mesh.textureBank;
+            m.tex = TextureView(assets.Texture(textureBank, mesh.material.TextureRef()), m.translucent);
             m.textured = true;
-            if (!m.translucent) m.normalRoughness = TextureView(assets.NormalRoughness(polName, mesh.material.TextureRef()));
+            if (!m.translucent) m.normalRoughness = TextureView(assets.NormalRoughness(textureBank, mesh.material.TextureRef()));
         }
         if (!m.count) continue;
         const uint32_t end = m.first + m.count;
@@ -239,6 +297,12 @@ void ModelRenderer::BuildMeshes(AssetStore& assets, const game::Model* model, co
             part.firstRun = r == 0;
             part.topology = topology;
             part.ordinal = static_cast<uint32_t>(g.meshes.size());
+            if (part.count) {
+                double sum[3] = {};
+                for (uint32_t v = part.first; v < part.first + part.count; ++v)
+                    for (int k = 0; k < 3; ++k) sum[k] += verts[v].pos[k];
+                for (int k = 0; k < 3; ++k) part.geometryCenter[k] = static_cast<float>(sum[k] / part.count);
+            }
             if (part.count) g.meshes.push_back(part);
         }
     }
@@ -257,6 +321,8 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
     itemCullFlip_.clear();
     itemLight_.clear();
     itemWorld_.clear();
+    itemModelView_.clear();
+    itemDirectModelView_.clear();
     itemMotionIdentity_.clear(); itemMotionTracked_.clear(); itemMotionReactive_.clear();
     itemShadowCaster_.clear();
     stats_ = {};
@@ -265,6 +331,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
     dynVerts_.clear();
     for (const SceneItem& item : items) {
         const float* t = item.transform;
+        const bool directModelView = item.directModelView && (item.priority == 0xC || item.priority == 8) && device_->EffectiveGraphics().naomiGraphics;
         const int refinement=device_->EffectiveGraphics().meshRefinement>0&&item.shadowCaster&&item.alpha<0&&
             (item.refineGeometry||(item.motionTracked&&assets.RefineModel(item.motionIdentity.model)))?device_->EffectiveGraphics().meshRefinement:0;
         const ModelGpu* gp;
@@ -291,7 +358,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
             Batch b;
             b.mesh = &m;
             b.item = itemIndex;
-            b.noMeshCull = item.noMeshCull;
+            b.noMeshCull = item.noMeshCull || directModelView;
             memcpy(b.center, center, sizeof(center));
             for (int k = 0; k < 3; ++k)  // material bounding sphere centre -> world
                 b.meshCenter[k] = m.sphere[0] * t[k] + m.sphere[1] * t[4 + k] + m.sphere[2] * t[8 + k] + t[12 + k];
@@ -305,7 +372,7 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
         }
         itemOrigin_.push_back({ t[12], t[13], t[14] });
         itemSphere_.push_back({ center[0], center[1], center[2], sc[3] * scale });
-        itemCullable_.push_back(item.cullable);
+        itemCullable_.push_back(item.cullable && !directModelView);
         itemPriority_.push_back(item.priority);
         itemAlpha_.push_back(item.alpha);
         itemUnitSpecular_.push_back(item.unitSpecular ? 1 : 0);
@@ -320,6 +387,10 @@ void ModelRenderer::SetScene(AssetStore& assets, const std::vector<SceneItem>& i
         std::array<float, 16> w;
         memcpy(w.data(), t, sizeof(float) * 16);
         itemWorld_.push_back(w);
+        std::array<float, 16> mv;
+        memcpy(mv.data(), item.modelView, sizeof(item.modelView));
+        itemModelView_.push_back(mv);
+        itemDirectModelView_.push_back(directModelView ? 1 : 0);
     }
     if (!dynVerts_.empty()) {
         haveDynamic_ = true;
@@ -601,6 +672,142 @@ void ModelRenderer::UploadDynamic() {
     dynUploadPending_ = false;
 }
 
+void ModelRenderer::SortNaomiFlashes(GpuDrawList& list, const std::vector<size_t>& draws) {
+    if (draws.empty()) return;
+    std::vector<NaomiFlashTriangle> input, visible, sorted;
+    size_t outsideCount=0,windingCount=0;
+    // Retain a full pixel guard band even if a backend applies a subpixel
+    // temporal jitter after submission. Boundary triangles stay with the GPU.
+    const float guardX=list.width>0?2.f/list.width:0.f,guardY=list.height>0?2.f/list.height:0.f;
+    std::map<uint32_t,bool> prelit;
+    uint64_t sequence = 0;
+    for (size_t index : draws) {
+        const auto& draw = list.draws[index];
+        const auto& vertices = draw.stream == GpuDraw::Stream::Dynamic ? dynVerts_ : cacheVerts_;
+        if (draw.first > vertices.size() || draw.count > vertices.size() - draw.first || draw.count % 3) return;
+        const auto& constants = list.model[draw.constants];
+        const int instruction=(static_cast<int>(constants.flags[3])-16)&3;
+        const bool specular=constants.matSpecular[3]>0 && (constants.matSpecular[0]!=0 || constants.matSpecular[1]!=0 || constants.matSpecular[2]!=0);
+        const bool varying=constants.litDir[3]>.5f && constants.lightingOptions[1]>.5f &&
+            constants.matSpecular[3]>=0 && (constants.flags[0]<=.5f || instruction!=0 || specular);
+        prelit.emplace(static_cast<uint32_t>(index),varying);
+        const float* mv = constants.modelView;
+        for (uint32_t first = draw.first; first < draw.first + draw.count; first += 3) {
+            NaomiFlashTriangle triangle{};
+            triangle.sourceDraw = static_cast<uint32_t>(index);
+            triangle.sequence = sequence++;
+            // Both source-only additions commute. Destination-color/alpha
+            // source factors remain ordinary cutters because they feed back.
+            triangle.additive = draw.state.dstBlend == 2 && (draw.state.srcBlend == 2 || draw.state.srcBlend == 5);
+            for (int k = 0; k < 3; ++k) {
+                const auto& source = vertices[first + k];
+                auto& vertex = triangle.vertices[k];
+                if(varying && !NaomiVertexColors(source,constants,vertex.color,vertex.specular))return;
+                for (int axis = 0; axis < 3; ++axis) {
+                    vertex.pos[axis] = ((source.pos[0]*mv[axis] + source.pos[1]*mv[4+axis]) + source.pos[2]*mv[8+axis]) + mv[12+axis];
+                    vertex.normal[axis] = (source.normal[0]*mv[axis] + source.normal[1]*mv[4+axis]) + source.normal[2]*mv[8+axis];
+                }
+                std::copy(source.uv,source.uv+2,vertex.uv);
+            }
+            input.push_back(triangle);
+            if(NaomiFlashOutsideProjection(triangle,constants.projection,guardX,guardY))++outsideCount;
+            else if(NaomiFlashCulledByWinding(triangle,constants.projection,draw.state.cull,guardX,guardY))++windingCount;
+            else visible.push_back(triangle);
+        }
+    }
+    const auto dump=[&] {
+        static bool attempted=false;
+        if(const char* path=std::getenv("HOTD2_DEBUG_NAOMI_SORT_DUMP");path && *path && !attempted) {
+            attempted=true;
+            std::fprintf(stderr,"Naomi autosort failure fixture: %s (%s)\n",path,
+                WriteNaomiSortFixture(path,input,list,draws,guardX,guardY)?"written":"write failed");
+        }
+    };
+    if(const char* frame=std::getenv("HOTD2_DEBUG_NAOMI_SORT_DUMP_FRAME");frame &&
+       std::strtoull(frame,nullptr,10)==temporalScene_.simulationFrame)dump();
+    std::string error;
+    if (!SortNaomiFlashTriangles(visible,&sorted,&error)) {
+        static bool warned = false;
+        if (std::getenv("HOTD2_DEBUG_NAOMI_SORT") || !warned) {
+            std::fprintf(stderr,"Naomi effect ordering exceeded its geometry budget: frame=%llu draws=%zu triangles=%zu: %s\n",
+                static_cast<unsigned long long>(temporalScene_.simulationFrame),draws.size(),visible.size(),error.c_str());
+            warned=true;
+        }
+        dump();
+        return;
+    }
+    if(std::getenv("HOTD2_DEBUG_NAOMI_SORT")) {
+        size_t varying=0;for(const auto& entry:prelit)if(entry.second)++varying;
+        std::fprintf(stderr,"Naomi autosort: frame=%llu draws=%zu prelit=%zu triangles=%zu split-triangles=%zu source-triangles=%zu frustum-rejected=%zu winding-rejected=%zu\n",
+            static_cast<unsigned long long>(temporalScene_.simulationFrame),draws.size(),varying,visible.size(),sorted.size(),input.size(),outsideCount,windingCount);
+    }
+    // Preserve the current skinned/wave prefix; replacing the dynamic stream with
+    // just the sorted flashes would silently corrupt every other dynamic draw.
+    std::vector<game::ModelVertex> vertices = dynVerts_;
+    std::vector<GpuDraw> ordered;
+    std::map<uint32_t,uint32_t> constantsBySource;
+    const auto identity = game::Mat4::Identity();
+    for (const auto& triangle : sorted) {
+        auto found = constantsBySource.find(triangle.sourceDraw);
+        if (found == constantsBySource.end()) {
+            ModelConstants c = list.model[list.draws[triangle.sourceDraw].constants];
+            memcpy(c.modelView,identity.m,sizeof(c.modelView));
+            memcpy(c.world,identity.m,sizeof(c.world));
+            c.localCount[2]=1;
+            // The native constant-color (-1) kernel is position-independent.
+            // Bake its original byte packing before changing coordinate space;
+            // retain the material's complete texture/alpha instruction. DECAL
+            // materials without an alpha override ignore this face RGB.
+            if (c.litDir[3]>.5f && c.lightingOptions[1]>.5f && c.matSpecular[3]<0) {
+                for (int k=0;k<3;++k) {
+                    const float faceByte=std::floor(std::clamp(c.diffuse[k]*c.litDiffuse[k],0.f,1.f)*255.f);
+                    c.diffuse[k]=(c.lightingOptions[1]>1.5f?faceByte:std::floor(faceByte*255.f/256.f))/255.f;
+                }
+            }
+            // Varying colors were packed only at original source vertices and
+            // interpolated by BSP. Flat/DECAL draws retain their existing path.
+            c.litDir[3]=prelit.at(triangle.sourceDraw)?1.f:0.f;
+            c.lightingOptions[0]=c.lightingOptions[1]=0;
+            c.matSpecular[0]=c.matSpecular[1]=c.matSpecular[2]=c.matSpecular[3]=0;
+            c.flags[1]=1;c.flags[2]=-1;
+            const auto index=static_cast<uint32_t>(list.model.size());
+            list.model.push_back(c);
+            found=constantsBySource.emplace(triangle.sourceDraw,index).first;
+        }
+        const bool usePrelit=prelit.at(triangle.sourceDraw);
+        const uint32_t first=static_cast<uint32_t>(usePrelit?list.naomiPrelitVertices.size():vertices.size());
+        for (const auto& vertex : triangle.vertices) {
+            if(usePrelit) {
+                NaomiPrelitVertex v{};std::copy(vertex.pos,vertex.pos+3,v.pos);std::copy(vertex.uv,vertex.uv+2,v.uv);
+                std::copy(vertex.color,vertex.color+3,v.color);std::copy(vertex.specular,vertex.specular+3,v.specular);
+                list.naomiPrelitVertices.push_back(v);
+            } else vertices.push_back(vertex);
+        }
+        if (!ordered.empty() && ordered.back().constants == found->second) ordered.back().count += 3;
+        else {
+            auto draw=list.draws[triangle.sourceDraw];
+            draw.stream=usePrelit?GpuDraw::Stream::NaomiPrelit:GpuDraw::Stream::Dynamic;
+            if(usePrelit)draw.pipeline=GpuDraw::Pipeline::NaomiPrelit;
+            draw.first=first;draw.count=3;draw.constants=found->second;
+            ordered.push_back(draw);
+        }
+    }
+    std::vector<GpuDraw> result;
+    result.reserve(list.draws.size()+ordered.size());
+    size_t slot=0,next=0;
+    for (size_t index=0;index<list.draws.size();++index) {
+        if (slot<draws.size() && draws[slot]==index) {
+            ++slot;
+            if (next<ordered.size()) result.push_back(ordered[next++]);
+            // Splits can need more runs than the original draw slots. Expand at
+            // the final eligible slot; unrelated draws keep their own order.
+            if (slot==draws.size()) while(next<ordered.size()) result.push_back(ordered[next++]);
+        } else result.push_back(list.draws[index]);
+    }
+    device_->SetDynamicVertices(vertices.data(),vertices.size());
+    list.draws=std::move(result);
+}
+
 void ModelRenderer::AddSpriteDraw(GpuDrawList& list, int width, int height, const SpriteDraw& s, size_t index) {
     // Same decoding as Mdl_ApplyPvrState (see BuildMeshes).
     const bool translucent = (s.tsp & 0x180000) != 0x80000;
@@ -626,6 +833,62 @@ void ModelRenderer::AddSpriteDraw(GpuDrawList& list, int width, int height, cons
     list.draws.push_back(d);
 }
 
+bool ModelRenderer::AddNaomiSpriteDraw(GpuDrawList& list,const SpriteDraw& s,const ModelConstants& frame,bool fogEnabled) {
+    // Native 0x0C0C17B0 emits one packed face RGBA and uniform reciprocal
+    // eye depth for the sprite's four screen vertices. Bridge that exact
+    // screen projection into the same camera-space sorter as native models.
+    // Native TA XY maps directly to D3D11 raster XY; the PC sprite shader's
+    // D3D7 +.5 adapter is deliberately absent here.
+    if(!s.naomiAutosort)return false;
+    const bool translucent=(s.key&0x80000000u)!=0;
+    const float* p=frame.projection;
+    const double determinant=double(p[0])*p[5]-double(p[4])*p[1];
+    if(p[3]!=0 || p[7]!=0 || !std::isfinite(determinant) || std::abs(determinant)<1e-20 || std::abs(p[11])<1e-20)return false;
+    game::ModelVertex corners[4]{};
+    const auto& first=s.v[0];
+    if(!std::isfinite(first.rhw) || first.rhw<=0)return false;
+    const double w=1./first.rhw,z=(w-p[15])/p[11];
+    for(int i=0;i<4;++i) {
+        const auto& v=s.v[i];
+        if(v.diffuse!=first.diffuse || v.rhw!=first.rhw || !std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.u) || !std::isfinite(v.v))return false;
+        const double x=(double(v.x)/320.-1)*w-z*p[8]-p[12];
+        const double y=(1-double(v.y)/240.)*w-z*p[9]-p[13];
+        corners[i].pos[0]=float((x*p[5]-y*p[4])/determinant);
+        corners[i].pos[1]=float((y*p[0]-x*p[1])/determinant);corners[i].pos[2]=float(z);
+        // Native sprite TA records use UV16: the high half of each source
+        // IEEE float (0x0C0C1A20..1A38), not a normalized 16-bit integer.
+        // C1A04..1A14 inverts V by default (flag0x20 suppresses that
+        // inversion). Combined with the native corner order, this is the same
+        // visible top-v1/bottom-v0 association already carried by SpriteQuad.
+        // Retained original TA sprites independently confirm that association.
+        uint32_t u=0,t=0;std::memcpy(&u,&v.u,4);std::memcpy(&t,&v.v,4);u&=0xffff0000u;t&=0xffff0000u;
+        std::memcpy(&corners[i].uv[0],&u,4);std::memcpy(&corners[i].uv[1],&t,4);
+        for(float coordinate:corners[i].pos)if(!std::isfinite(coordinate))return false;
+    }
+    Mesh mesh;mesh.dynamic=true;mesh.first=static_cast<uint32_t>(dynVerts_.size());mesh.count=6;mesh.tex=TextureView(s.texture);
+    if(!mesh.tex)return false;
+    for(int i:{0,1,2,2,1,3})dynVerts_.push_back(corners[i]);
+    dynUploadPending_=true;
+    ModelConstants c=frame;const auto identity=game::Mat4::Identity();
+    std::memcpy(c.world,identity.m,sizeof(c.world));std::memcpy(c.modelView,identity.m,sizeof(c.modelView));
+    c.localCount[2]=1;c.litDir[3]=0;c.lightingOptions[0]=c.lightingOptions[1]=0;
+    std::fill(c.matSpecular,c.matSpecular+4,0.f);c.flags[0]=c.flags[1]=1;c.flags[2]=-1;
+    // C1954..1978: list2 keeps texture alpha and enables face alpha;
+    // list0 forces IgnoreTexAlpha and face alpha1, with ONE/ZERO replacement.
+    c.flags[3]=translucent?27.f:23.f;
+    for(int k=0;k<3;++k)c.diffuse[k]=((first.diffuse>>(16-8*k))&255)/255.f;
+    c.diffuse[3]=translucent?(first.diffuse>>24)/255.f:1.f;
+    c.fogParams[2]=fogEnabled && !(s.tsp&0x800000u)?1.f:0.f;
+    c.materialParams[0]=c.depthEffects[0]=0;
+    // Actual native sprite headers retain wrap addressing. The loaded native
+    // first-encounter headers all use point sampling; flag0x1000 opts bilinear.
+    auto state=translucent?StateOf(true,5,6,4,false,s.linear,1,1):
+        StateOf(false,2,1,kZFunc[s.isp>>29],((s.isp>>26)&1)==0,s.linear,1,1);
+    state.cull=1;state.mipmapped=0;
+    AddModelDraw(list,mesh,c,state);list.draws.back().reactive=true;
+    return true;
+}
+
 namespace {
 void UploadSprites(GpuDevice* device, const std::vector<ModelRenderer::SpriteDraw>& sprites) {
     std::vector<game::TLVertex> v(sprites.size() * 4);
@@ -645,19 +908,33 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         fc.localCount[2] = 1;
     }
     // The light constants of one item (its own light when it has one, else the frame light).
+    const bool naomiGraphics = device_->EffectiveGraphics().naomiGraphics;
+    // Optional temporal/upscaling paths deliberately composite HUD after the
+    // scene. Keep that presentation contract instead of feeding native HUD
+    // quads into a low-resolution/temporal model pass. Direct native raster
+    // retains the original mixed model/sprite autosort below.
+    const bool nativeSpriteSort=naomiGraphics && !device_->RequiresSceneProcessing();
+    auto alphaOverride=[&](int item) {
+        return item>=0 && itemAlpha_[item]>=0 && (!naomiGraphics || itemAlpha_[item]<1);
+    };
     const Lighting* curLight = reinterpret_cast<const Lighting*>(1);  // none set yet
-    auto setLight = [&](const Lighting* l) {
-        if (l == curLight) return;
+    int curNaomi = 0;
+    auto setLight = [&](const Lighting* l, bool nativeMaterial) {
+        const int naomi = naomiGraphics && nativeMaterial && l && l->enabled ? (l->naomiTable?2:l->naomiStandard?1:0) : 0;
+        if (l == curLight && naomi == curNaomi) return;
         curLight = l;
+        curNaomi = naomi;
+        fc.lightingOptions[1] = static_cast<float>(naomi);
+        fc.lightingOptions[2] = naomi ? l->naomiIntensity : 0.f;
         for (int k = 0; k < 4; ++k) fc.litDir[k] = fc.litAmbient[k] = 0;
         for (int k = 0; k < 3; ++k) fc.litDiffuse[k] = fc.litSpecular[k] = 0;
         fc.localCount[0] = 0;
         if (!l || !l->enabled) return;
         for (int k = 0; k < 3; ++k) {
             fc.litDir[k] = l->dirToLight[k];
-            fc.litDiffuse[k] = l->diffuse[k];
-            fc.litSpecular[k] = l->diffuse[k];  // 0x004AA120: specular = diffuse
-            fc.litAmbient[k] = l->ambient[k] + l->ambientRS[k];
+            fc.litDiffuse[k] = naomi ? l->naomiColor[k] : l->diffuse[k];
+            fc.litSpecular[k] = naomi ? l->naomiColor[k] : l->diffuse[k];  // PC 0x004AA120: specular = diffuse
+            fc.litAmbient[k] = naomi==2 ? l->naomiTableAmbient[k] : l->ambient[k] + l->ambientRS[k];
         }
         fc.litDir[3] = 1;
         const int n = std::min(l->localCount, kMaxLocalLights);
@@ -678,7 +955,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         return light;
     };
     const bool anyLight = (light && light->enabled) || (itemLights && !itemLights->empty());
-    setLight(light);
+    setLight(light, true);
     // Normals: D3D7 transforms them by the inverse transpose of WORLD (x VIEW) and the game never sets NORMALIZENORMALS
     // (default FALSE), so scaled models get shorter / longer normals (mode 2; sweep vs the original's shots: 4.11 mean
     // block colour difference against 4.19 renormalised). HOTD2_NORMALS=0 renormalises, 1 = WORLD as is.
@@ -689,16 +966,28 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
             fc.eyePos[j] = -(gameView[12] * gameView[j * 4] + gameView[13] * gameView[j * 4 + 1] + gameView[14] * gameView[j * 4 + 2]);
     }
     static const bool noSpecular = getenv("HOTD2_NO_SPECULAR") != nullptr;
-    if (fog && fog->enabled) {
+    bool fogEnabled = fog && fog->enabled;
+    if (naomiGraphics && fogEnabled) {
+        fogEnabled = std::isfinite(fog->start) && std::isfinite(fog->end) && fog->end > fog->start &&
+                     NaomiFogDensity(fog->end*.5f) > 0;
+        for (float color : fog->color) fogEnabled = fogEnabled && std::isfinite(color);
+    }
+    if (fogEnabled) {
         fc.fogParams[0] = fog->start;
         fc.fogParams[1] = fog->end;
         for (int k = 0; k < 3; ++k) fc.fogColor[k] = fog->color[k];
+        if (naomiGraphics) {
+            fc.fogParams[3]=1;
+            fc.fogColor[3]=NaomiFogDensity(fog->end*.5f);
+        }
     }
     memcpy(fc.viewProj, viewProj, sizeof(fc.viewProj));
     fc.lightDir[1] = 1;
     fc.flags[1] = 1;  // unlit
 
     GpuDrawList out;
+    std::vector<size_t> nativeFlashDraws;
+    std::vector<uint8_t> nativeOpaqueSprites(sprites?sprites->size():0,0);
     out.width = width;
     out.height = height;
     out.temporalCamera=temporalCamera_;
@@ -708,36 +997,113 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     UploadDynamic();
     auto drawBatch = [&](const Batch* bb, int pass, bool casterOnly = false) {
         const Mesh* b = bb->mesh;
-        setLight(itemLighting(bb->item));
+        // Negative -2/-3 indices use separate original Naomi special kernels.
+        // Retain the established path for those until their inputs are mapped.
+        setLight(itemLighting(bb->item), b->naomiSpecularIndex >= -1);
         memcpy(fc.world, itemWorld_[bb->item].data(), sizeof(fc.world));
-        if (gameView && projection) Multiply(fc.world, gameView, fc.modelView);
+        if (gameView && projection) {
+            if (itemDirectModelView_[bb->item])
+                memcpy(fc.modelView, itemModelView_[bb->item].data(), sizeof(fc.modelView));
+            else
+                Multiply(fc.world, gameView, fc.modelView);
+        }
         memcpy(fc.diffuse, b->diffuse, sizeof(fc.diffuse));
         const float itemAlpha = itemAlpha_[bb->item];
         if (itemAlpha >= 0) fc.diffuse[3] *= itemAlpha;  // Mdl_DrawAlt: material alpha * record alpha
         fc.litDiffuse[3] = b->ambientScale;
         fc.localCount[3] = itemUnitSpecular_[bb->item] ? 1.0f : 0.0f;
         memcpy(fc.matSpecular, b->specular, sizeof(fc.matSpecular));
-        if (noSpecular) fc.matSpecular[3] = 0;
+        if (fc.lightingOptions[1] > 1.5f) {
+            // 0x0C0AF610 -> 0x0C0B4E80 prepares each light through the
+            // rotation-only inverse: normalize the model axes, transpose,
+            // and remove translation. It deliberately removes model scale.
+            const Lighting* l=itemLighting(bb->item);
+            const int count=std::min(l->localCount,kMaxLocalLights);
+            float axes[3][3];
+            for(int axis=0;axis<3;++axis) {
+                const float* row=fc.world+axis*4;
+                const float length=std::sqrt((row[0]*row[0]+row[1]*row[1])+row[2]*row[2]);
+                const float inverse=length>1e-20f?1.f/length:0;
+                for(int k=0;k<3;++k)axes[axis][k]=row[k]*inverse;
+            }
+            for(int i=0;i<count;++i) {
+                const auto& source=l->local[i];float* p=fc.local[i*5];
+                const float directionLength=std::sqrt((source.dir[0]*source.dir[0]+source.dir[1]*source.dir[1])+source.dir[2]*source.dir[2]);
+                const float inverseDirection=directionLength>1e-20f?1.f/directionLength:0;
+                for(int k=0;k<3;++k) {
+                    const float* a=axes[k];
+                    p[k]=((source.pos[0]-fc.world[12])*a[0]+(source.pos[1]-fc.world[13])*a[1])+(source.pos[2]-fc.world[14])*a[2];
+                    p[4+k]=((source.dir[0]*inverseDirection*a[0]+source.dir[1]*inverseDirection*a[1])+source.dir[2]*inverseDirection*a[2]);
+                }
+                // The real PC flashlight record has nonzero phi. Native
+                // 0x0C089934 uses range65536 and half-angle0x800; actor
+                // spots have phi0 and already store their half-angle in theta.
+                p[3]=source.type==2 && source.phi>0?65536.f:source.range;
+                const float halfAngle=source.phi>0?source.phi*.5f:source.theta;
+                const float cutoff=std::cos(halfAngle);
+                p[16]=cutoff;p[17]=cutoff<1.f?1.f/(1.f-cutoff):0;
+            }
+        }
+        if (fc.lightingOptions[1] > .5f) {
+            fc.diffuse[3]=std::floor(std::clamp(fc.diffuse[3],0.f,1.f)*255.f)/255.f;
+            const float* w = fc.world;
+            fc.lightingOptions[3] = 1.f / std::max(MaxAxisScale(w), 1e-12f);
+            fc.matSpecular[3] = NaomiSpecularPower(b->naomiSpecularIndex);
+            std::copy(b->naomiSpecular,b->naomiSpecular+3,fc.matSpecular);
+            // Naomi prepares one half-vector per model, with a parallel viewer
+            // along camera +Z. Transform into model space and normalize there.
+            float h[3];
+            for (int k=0;k<3;++k) h[k]=fc.litDir[k]+(gameView?gameView[k*4+2]:(k==2?1.f:0.f));
+            float modelHalf[3];
+            float length2=0;
+            for (int k=0;k<3;++k) {
+                modelHalf[k]=(w[k*4]*h[0]+w[k*4+1]*h[1])+w[k*4+2]*h[2];
+                length2+=modelHalf[k]*modelHalf[k];
+            }
+            const float inverseLength=length2>1e-20f?1.f/std::sqrt(length2):0.f;
+            for(int k=0;k<3;++k)fc.lightDir[k]=modelHalf[k]*inverseLength;
+        } else {
+            fc.lightingOptions[3] = 0;
+            fc.lightDir[0]=fc.lightDir[2]=0;fc.lightDir[1]=1;
+        }
+        if (noSpecular && fc.matSpecular[3] > 0) fc.matSpecular[3] = 0;
         if (!b->tex && !anyLight) fc.diffuse[0] = fc.diffuse[1] = fc.diffuse[2] = 0.7f;
         fc.flags[0] = b->tex ? 1.0f : 0.0f;
         fc.flags[2] = pass == 0 ? -1.0f : 1.0f / 255.0f;  // ALPHATESTENABLE only in pass 1; ALPHAREF 1, GREATEREQUAL
         // Shading 1 (texture alpha only, ALPHAOP SELECTARG1) except on the alpha path: Mdl_DrawAlt 0x004A8440 forces
         // TSP bit 7 (shading 2 / 3: ALPHAOP MODULATE, 0x004A7780), so the record's factor always reaches the alpha
         fc.flags[3] = b->alphaFromTexture && itemAlpha < 0 ? 2.0f : 1.0f;
-        fc.fogParams[2] = fog && fog->enabled && b->fog ? 1.0f : 0.0f;
+        const bool nativeAlphaOverride=naomiGraphics && itemAlpha>=0 && itemAlpha<1;
+        if (naomiGraphics) {
+            // 0x0C0C234E OR#192 sets both shading bits, and2354 sets
+            // UseAlpha. The2324/232A gate skips this when factor>=1;
+            // IgnoreTexAlpha remains authored in either case.
+            const uint8_t state=nativeAlphaOverride?static_cast<uint8_t>((b->naomiTsp&4)|3|8):b->naomiTsp;
+            fc.flags[3]=16.f+state;
+        }
+        fc.fogParams[2] = fogEnabled && b->fog ? 1.0f : 0.0f;
         // Modern lighting changes only opaque surfaces with a real game light. Keep the native
         // interpolation, normal/specular corrections and blending of smoke, sky overlays and
         // other pass-1 effects; the setting never changes simulation or material visibility.
         fc.materialParams[0] = device_->EffectiveGraphics().materialMaps && b->normalRoughness && pass == 0 && itemAlpha < 0 ? 1.0f : 0.0f;
-        fc.lightingOptions[0] = (device_->EffectiveGraphics().perPixelLighting || fc.materialParams[0] > 0.5f || (device_->EffectiveGraphics().shadowMaps>0&&out.shadowMap.valid)) && pass == 0 &&
+        fc.lightingOptions[0] = !naomiGraphics && (device_->EffectiveGraphics().perPixelLighting || fc.materialParams[0] > 0.5f || (device_->EffectiveGraphics().shadowMaps>0&&out.shadowMap.valid)) && pass == 0 &&
                                     itemAlpha < 0 && fc.litDir[3] > 0.5f ? 1.0f : 0.0f;
-        const GpuState st = itemAlpha >= 0
+        const GpuState st = (naomiGraphics?nativeAlphaOverride:itemAlpha>=0)
                                  ? StateOf(true, 5, 6, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV)  // forced SRCALPHA/INVSRCALPHA
                                  : StateOf(pass == 1, b->srcBlend, b->dstBlend, b->zfunc, b->zwrite, b->linear, b->addrU, b->addrV);
         GpuState cs = st;
+        if (pass == 1 && naomiGraphics) {
+            // The original main-3D regions use autosorted translucency for all
+            // list-2 polygons, including world-space smoke/fire and native fades.
+            // Test against opaque scenery without writing translucent depth.
+            // PVR GEQUAL maps to D3D7 LESSEQUAL (reversed GPU depth is GEQUAL).
+            cs.zfunc = 4;
+            cs.zwrite = 0;
+            fc.flags[2] = -1; // native translucent polygons are not punch-through
+        }
         static const bool noMips = getenv("HOTD2_NO_MIPS") != nullptr;
-        cs.mipmapped = noMips ? 0 : 1;
-        if(!noMips&&itemAuthoredMinification_[bb->item]&&device_->EffectiveGraphics().textureFilter==0&&
+        cs.mipmapped = noMips || naomiGraphics ? 0 : 1;
+        if(!noMips&&!naomiGraphics&&itemAuthoredMinification_[bb->item]&&device_->EffectiveGraphics().textureFilter==0&&
            device_->EffectiveGraphics().anisotropy<=1)cs.mipmapped=2;
         const bool softSmoke = pass == 1 && (b->layeredCards || itemSortBackToFront_[bb->item]) &&
                                cs.srcBlend == 5 && cs.dstBlend == 6 && gameView && projection && std::abs(projection[11]) > 1e-6f;
@@ -757,6 +1123,12 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         if (itemCullFlip_[bb->item] && cs.cull >= 2) cs.cull = static_cast<uint8_t>(5 - cs.cull);
         AddModelDraw(out, *b, fc, cs);
         if(casterOnly) {out.shadowCasters.push_back(out.draws.back());out.draws.pop_back();return;}
+        // Autosort applies to the complete native list, including lit/specular
+        // surfaces and native fades. Their source Gouraud colors are evaluated
+        // before splitting instead of incorrectly re-lighting generated cuts.
+        if (pass == 1 && naomiGraphics && gameView && projection && b->naomiSpecularIndex>=-1 &&
+            (fc.litDir[3]<=.5f || fc.lightingOptions[1]>.5f))
+            nativeFlashDraws.push_back(out.draws.size()-1);
         out.draws.back().reactive = pass==1 || itemMotionReactive_[bb->item];
         if (pass==0) AddMotionDraw(out,*bb,out.draws.back());
     };
@@ -769,7 +1141,7 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     if(device_->NeedsShadowCasters())for(const Batch& batch:batches_) {
         const Mesh& mesh=*batch.mesh;const int item=batch.item;
         const Lighting* illumination=itemLighting(item);
-        if(item<0||!itemShadowCaster_[item]||itemAlpha_[item]>=0||mesh.translucent||!mesh.zwrite||mesh.layeredCards||
+        if(item<0||!itemShadowCaster_[item]||alphaOverride(item)||mesh.translucent||!mesh.zwrite||mesh.layeredCards||
            !illumination||!illumination->enabled)continue;
         drawBatch(&batch,0,true);
         if(!shadowLight&&(illumination->diffuse[0]>0||illumination->diffuse[1]>0||illumination->diffuse[2]>0))shadowLight=illumination;
@@ -819,16 +1191,19 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     for (size_t i = 0; i < batches_.size(); ++i) {
         const Batch& b = batches_[i];
         if (b.mesh->translucent || batchCulled[i] || (b.item >= 0 && itemCulled[b.item])) continue;
-        if (b.item >= 0 && itemAlpha_[b.item] >= 0) continue;  // alpha path: pass 1 only (hypothesis)
+        if (alphaOverride(b.item)) continue;  // a native factor>=1 keeps its authored list
         drawBatch(&b, 0);
     }
+    if(nativeSpriteSort && gameView && projection && sprites)
+        for(size_t i=0;i<sprites->size();++i)if(!((*sprites)[i].key&0x80000000u) &&
+            AddNaomiSpriteDraw(out,(*sprites)[i],fc,fogEnabled))nativeOpaqueSprites[i]=1;
     out.opaqueDrawCount = static_cast<uint32_t>(out.draws.size());
 
     if (!gameView) {
         // No game view: approximate pass 1 per batch, back to front by clip w (model viewer).
         std::vector<const Batch*> translucent;
         for (const Batch& b : batches_)
-            if (b.mesh->translucent) translucent.push_back(&b);
+            if (b.mesh->translucent || (naomiGraphics && alphaOverride(b.item))) translucent.push_back(&b);
         auto depth = [&](const Batch* b) {
             const auto& w = itemWorld_[b->item];
             const float z = b->mesh->cardZ;
@@ -856,20 +1231,38 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     std::vector<Entry> list;
     std::vector<std::vector<const Batch*>> itemBatches(itemOrigin_.size());  // translucent, visible: drawn in pass 1
     std::vector<float> itemDepth(itemOrigin_.size(), 0);
+    std::vector<float> nativeSortDepth(itemOrigin_.size(), 0);
+    std::vector<double> nativeDepthSum(itemOrigin_.size(), 0);
+    std::vector<uint64_t> nativeDepthCount(itemOrigin_.size(), 0);
     std::vector<char> deferred(itemOrigin_.size(), 0);
-    for (size_t i = 0; i < itemOrigin_.size(); ++i) itemDepth[i] = viewZ(itemOrigin_[i].data());
+    for (size_t i = 0; i < itemOrigin_.size(); ++i)
+        itemDepth[i] = itemDirectModelView_[i] ? itemModelView_[i][14] : viewZ(itemOrigin_[i].data());
     for (size_t i = 0; i < batches_.size(); ++i) {
         const Batch& b = batches_[i];
         if (b.item < 0 || itemCulled[b.item]) continue;
-        const bool alphaItem = itemAlpha_[b.item] >= 0;
+        const bool alphaItem = alphaOverride(b.item);
         if (b.mesh->translucent || batchCulled[i] || alphaItem) {  // skipped in pass 0
             deferred[b.item] = 1;
-            itemDepth[b.item] = std::min(itemDepth[b.item], viewZ(b.meshCenter));
+            if (itemDirectModelView_[b.item]) {
+                const auto& mv = itemModelView_[b.item];
+                const auto* c = b.mesh->geometryCenter;
+                const double depth = double(c[0])*mv[2] + double(c[1])*mv[6] + double(c[2])*mv[10] + mv[14];
+                if (std::isfinite(depth)) {
+                    nativeDepthSum[b.item] += depth * b.mesh->count;
+                    nativeDepthCount[b.item] += b.mesh->count;
+                }
+                const float sphereDepth = b.mesh->sphere[0]*mv[2] + b.mesh->sphere[1]*mv[6] + b.mesh->sphere[2]*mv[10] + mv[14];
+                itemDepth[b.item] = std::min(itemDepth[b.item], sphereDepth);
+            } else {
+                itemDepth[b.item] = std::min(itemDepth[b.item], viewZ(b.meshCenter));
+            }
             if ((b.mesh->translucent || alphaItem) && !batchCulled[i]) itemBatches[b.item].push_back(&b);
         }
     }
-    for (size_t i = 0; i < itemOrigin_.size(); ++i)
-        if (deferred[i]) list.push_back({ (itemAlpha_[i] >= 0 ? 0x60000000u : 0x40000000u) | itemPriority_[i], itemDepth[i], static_cast<int>(i), -1 });
+    for (size_t i = 0; i < itemOrigin_.size(); ++i) {
+        nativeSortDepth[i] = nativeDepthCount[i] ? static_cast<float>(nativeDepthSum[i] / nativeDepthCount[i]) : itemDepth[i];
+        if (deferred[i]) list.push_back({ (alphaOverride(static_cast<int>(i)) ? 0x60000000u : 0x40000000u) | itemPriority_[i], itemDepth[i], static_cast<int>(i), -1 });
+    }
     // Smoke and similar billboards contain overlapping alpha cards, sometimes authored
     // front first. Precise depth then hides rear cards and cuts holes through the plume.
     // Sort those cards within the model; keep its place in the mixed pass-1 list and
@@ -877,6 +1270,10 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     for (auto& cards : itemBatches)
         if (cards.size() > 1 && cards.front()->mesh->layeredCards) {
             auto planeDepth = [&](const Batch* b) {
+                if (itemDirectModelView_[b->item]) {
+                    const auto& mv = itemModelView_[b->item];
+                    return b->mesh->cardZ * mv[10] + mv[14];
+                }
                 const auto& w = itemWorld_[b->item];
                 const float z = b->mesh->cardZ;
                 const float plane[3] = {z * w[8] + w[12], z * w[9] + w[13], z * w[10] + w[14]};
@@ -889,7 +1286,8 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     const bool haveSprites = sprites && !sprites->empty();
     if (haveSprites) {
         UploadSprites(device_, *sprites);
-        for (size_t i = 0; i < sprites->size(); ++i) list.push_back({ (*sprites)[i].key, (*sprites)[i].depth, -1, static_cast<int>(i) });
+        for (size_t i = 0; i < sprites->size(); ++i)if(!nativeOpaqueSprites[i])
+            list.push_back({ (*sprites)[i].key, (*sprites)[i].depth, -1, static_cast<int>(i) });
     }
     game::CrtQsort(list.data(), list.size(),
                    [](const Entry& a, const Entry& b) { return game::ComparePass1(a.key, a.depth, b.key, b.depth); });
@@ -924,12 +1322,16 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
     std::array<std::vector<size_t>,16> alphaSlots;
     for (size_t i=0;i<list.size();++i) {
         const auto& e=list[i];
-        if(e.item>=0 && itemSortBackToFront_[e.item]) alphaSlots[e.key&0xF].push_back(i);
+        if(e.item>=0 && itemSortBackToFront_[e.item] && !itemDirectModelView_[e.item]) alphaSlots[e.key&0xF].push_back(i);
     }
     for (const auto& slots:alphaSlots) if(slots.size()>1) {
         std::vector<Entry> effects;
         for(size_t i:slots)effects.push_back(list[i]);
         auto distanceSquared = [&](const Entry& e) {
+            if (itemDirectModelView_[e.item]) {
+                const auto& mv = itemModelView_[e.item];
+                return double(mv[12])*mv[12] + double(mv[13])*mv[13] + double(mv[14])*mv[14];
+            }
             const auto& p=itemOrigin_[e.item];
             double distance=0;
             for(int k=0;k<3;++k) {
@@ -941,14 +1343,63 @@ void ModelRenderer::DrawGame(int width, int height, const float viewProj[16], co
         std::stable_sort(effects.begin(),effects.end(),[&](const Entry& a,const Entry& b){return distanceSquared(a)>distanceSquared(b);});
         for(size_t i=0;i<slots.size();++i)list[slots[i]]=effects[i];
     }
+    // Keep every unrelated model/sprite slot in place. Within native camera-space
+    // effects, actual geometry depth puts the rear alpha quad before the forward
+    // additive flash; min(origin, sphere) incorrectly ties both at eye Z=-1.
+    // This is model-level compositing, not an emulation of PVR per-pixel sorting
+    // for intersecting effects belonging to different shots.
+    std::vector<size_t> nativeSlots;
+    std::vector<Entry> nativeEffects;
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].item >= 0 && itemDirectModelView_[list[i].item]) {
+            nativeSlots.push_back(i);
+            nativeEffects.push_back(list[i]);
+            nativeEffects.back().depth = nativeSortDepth[list[i].item];
+        }
+    std::stable_sort(nativeEffects.begin(), nativeEffects.end(), [](const Entry& a, const Entry& b) { return a.depth < b.depth; });
+    for (size_t i = 0; i < nativeSlots.size(); ++i) list[nativeSlots[i]] = nativeEffects[i];
     lastPass1 = list;
+    bool nativeSpriteBridgeFailed=false;
     for (const Entry& e : list) {
         if (e.item >= 0) {
             for (const Batch* b : itemBatches[e.item]) drawBatch(b, 1);
         } else {
-            AddSpriteDraw(out, width, height, (*sprites)[e.sprite], e.sprite);
+            if(nativeSpriteSort && projection && AddNaomiSpriteDraw(out,(*sprites)[e.sprite],fc,fogEnabled))
+                nativeFlashDraws.push_back(out.draws.size()-1);
+            else {
+                if((*sprites)[e.sprite].naomiAutosort && !device_->RequiresSceneProcessing())nativeSpriteBridgeFailed=true;
+                AddSpriteDraw(out, width, height, (*sprites)[e.sprite], e.sprite);
+            }
         }
     }
+    UploadDynamic(); // includes bridged source sprites, also valid if sorting reaches a budget guard
+    bool gpuNativeSort=naomiGraphics && gameView && projection && !nativeSpriteBridgeFailed &&
+        !nativeFlashDraws.empty() && device_->SupportsNaomiGpuSort() && out.opaqueDrawCount<=out.draws.size();
+    std::vector<uint8_t> nativeMask;
+    if(gpuNativeSort)nativeMask.assign(out.draws.size(),0);
+    size_t previousNative=0;bool firstNative=true;
+    if(gpuNativeSort)for(size_t index:nativeFlashDraws) {
+        if(index<out.opaqueDrawCount || index>=out.draws.size() || (!firstNative && index<=previousNative)) {gpuNativeSort=false;break;}
+        const auto& d=out.draws[index];
+        if(d.pipeline!=GpuDraw::Pipeline::Model || (d.stream!=GpuDraw::Stream::Static && d.stream!=GpuDraw::Stream::Dynamic) ||
+           d.count%3 || d.constants>=out.model.size() || d.state.zfunc!=4 || d.state.zwrite) {gpuNativeSort=false;break;}
+        const auto& c=out.model[d.constants];
+        if(c.localCount[2]<=.5f || c.flags[3]<16 || c.flags[2]>=0) {gpuNativeSort=false;break;}
+        nativeMask[index]=1;previousNative=index;firstNative=false;
+    }
+    // Only explicit port HUD can follow the native resolve. Unknown model or
+    // scene-sprite blend positions require the existing mixed CPU path.
+    if(gpuNativeSort)for(size_t i=out.opaqueDrawCount;i<out.draws.size();++i)
+        if(!nativeMask[i] && (out.draws[i].pipeline!=GpuDraw::Pipeline::Sprite || !out.draws[i].hud)) {gpuNativeSort=false;break;}
+    if(gpuNativeSort) {
+        std::vector<GpuDraw> phased;phased.reserve(out.draws.size());
+        phased.insert(phased.end(),out.draws.begin(),out.draws.begin()+out.opaqueDrawCount);
+        for(size_t index:nativeFlashDraws) {auto d=out.draws[index];d.naomiSortable=true;phased.push_back(d);}
+        for(size_t i=out.opaqueDrawCount;i<out.draws.size();++i)if(!nativeMask[i])phased.push_back(out.draws[i]);
+        out.draws.swap(phased);
+        if(std::getenv("HOTD2_DEBUG_NAOMI_SORT"))std::fprintf(stderr,"Naomi GPU sort submit: frame=%llu draws=%zu\n",
+            static_cast<unsigned long long>(temporalScene_.simulationFrame),nativeFlashDraws.size());
+    } else SortNaomiFlashes(out,nativeFlashDraws);
     SubmitGame(out);
 }
 

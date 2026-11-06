@@ -1,5 +1,6 @@
 #include "game/world_typing_original.h"
 #include "game/world_internal.h"
+#include "game/mstack.h"
 #include <algorithm>
 #include <string>
 
@@ -72,11 +73,40 @@ bool TypingOriginalPickup(World::Impl& world,int player,int item) {
 
 void TypingOriginalHud(World::Impl& world) {
     if (!world.cfg.portTyping || !world.cfg.typingOriginal || world.gameMode!=6 || world.paused) return;
+    if (!world.canShoot || (world.flags5900&0x18) || world.typingResultsActive || world.stageResults.shown) return;
     const bool pair=world.player[0].state==5 && world.player[1].state==5;
     for (int player=0;player<2;++player) {
         if (world.player[player].state!=5) continue;
         const auto& controller=world.TypingController(player);
         const auto& items=controller.original();
+        if (world.typingReferenceActive && world.focal>0) {
+            // PC4ACB40/4ACA10: four holders, F-key labels and rotating stocked items.
+            constexpr int digits[]={0x1B7F,0x1B81,0x1B83,0x1B84};
+            constexpr int models[]={7084,7090,7088,7079,7083};
+            constexpr float scales[]={.675f,.75f,.525f,.825f,.9f};
+            const float unit=-3.f/world.focal;
+            const auto model=[&](int raw,float x,float y,float scale,int yaw) {
+                const int id=world.LoadTypingModel(world.typingReference.SourceModel(raw));
+                if (!id) return;
+                Mat4 matrix=Mat4::Identity();
+                mx::Translate(matrix,unit*x,unit*y,-3);
+                mx::RotY(matrix,yaw);
+                mx::Scale(matrix,.04f*scale,.04f*scale,.04f*scale);
+                if (auto* draw=world.Draw(id,matrix,8,-1,false,-1,true)) {
+                    draw->fn=0x004ACB40;draw->light.table=false;
+                    draw->light.pitch=draw->light.yaw=0x2000;
+                    for (float& color:draw->light.color) color=1;
+                }
+            };
+            for (int slot=0;slot<4;++slot) {
+                const float x=float(267-slot*40-(player?436:0));
+                model(0x1BA5,x,-175,1,0x8000);
+                const int item=int(items.slots()[slot])-17;
+                if (item>=0 && item<5) model(models[item],x+17,-182,scales[item],world.frameCounter2BAC<<8);
+                else { model(0x1B9B,x+21,-184,1,0);model(digits[slot],x+11,-184,1,0); }
+            }
+            continue;
+        }
         const float x=pair?float(12+320*player):12.f;
         const float width=pair?304.f:416.f;
         world.hud.menuPanels.push_back({x-4,430,x+width,477,0xB8000000});

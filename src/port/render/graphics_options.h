@@ -7,6 +7,7 @@ namespace port {
 // Cosmetic options only: these never change the fixed 60 Hz simulation or network state.
 // Defaults preserve Build Z's authored filtering, single-sample target and present pass.
 struct GraphicsOptions {
+    bool naomiGraphics = false; // native arcade asset/shading/filtering profile; simulation is unchanged
     int msaa = 1;             // 1 (Off), 2, 4 samples
     int anisotropy = 1;       // 1 (Off), 2, 4, 8, 16; minified model materials only
     int textureFilter = 0;    // 0 authored, 1 nearest magnification, 2 linear magnification (3D only)
@@ -57,6 +58,31 @@ struct GraphicsCapabilities {
     bool lowLatency = false;
     bool hdrOutput = false;
 };
+
+// Apply the arcade scene policy to a copy. Callers retain saved PC preferences
+// so selecting PC again restores them. Native transparency requires MSAA and
+// alpha coverage off; post AA, output resolution, display calibration and
+// presentation effects remain independent of the scene's source graphics.
+inline GraphicsOptions ApplyGraphicsModePolicy(const GraphicsOptions& requested) {
+    GraphicsOptions effective = requested;
+    if (!effective.naomiGraphics) return effective;
+    // Native per-pixel transparency resolves a single-sample fragment list.
+    // Saved PC anti-aliasing choices are restored when leaving this profile.
+    effective.msaa = 1;
+    effective.alphaToCoverage = false;
+    effective.textureFilter = 0;
+    effective.anisotropy = 1;
+    effective.perPixelLighting = false;
+    effective.softParticles = 0;
+    effective.materialMaps = false;
+    effective.ambientOcclusion = 0;
+    effective.shadowMaps = 0;
+    effective.volumetricFog = 0;
+    effective.reflections = 0;
+    effective.cinematicFocus = 0;
+    effective.meshRefinement = 0;
+    return effective;
+}
 
 inline bool ValidateGraphicsOptions(const GraphicsOptions& g, std::string* error = nullptr) {
     const bool valid = (g.msaa == 1 || g.msaa == 2 || g.msaa == 4) &&

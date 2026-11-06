@@ -50,6 +50,9 @@ struct ModelMaterial {
 struct ModelMesh {
     ModelMaterial material;
     std::vector<ModelStrip> strips;
+    // Optional render-resource namespace for a verified mesh binding from a
+    // differently grouped source bank. Empty uses the containing model's bank.
+    std::string textureBank;
 };
 
 struct Model {

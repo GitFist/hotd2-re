@@ -193,12 +193,12 @@ private:
     ComPtr<ID3D12DescriptorHeap> rtv_, dsv_, srv_, srvCpu_, sampler_;
     UINT rtvStride_ = 0, srvStride_ = 0, samplerStride_ = 0, nextSrv_ = kTextureSlots, nextSampler_ = 0;
     ComPtr<ID3D12RootSignature> root_;
-    ComPtr<ID3DBlob> vs_[6], ps_[6]; // model, sprite, present, motion MRT, reactive model/sprite
+    ComPtr<ID3DBlob> vs_[7], ps_[7]; // model, sprite, present, motion MRT, reactive model/sprite
     std::map<uint64_t, ComPtr<ID3D12PipelineState>> pipelines_;
     std::map<std::tuple<UINT, UINT, UINT>, UINT> textureTables_;
     std::map<int, UINT> samplerTables_;
-    ComPtr<ID3D12Resource> vertices_[3];
-    UINT vertexBytes_[3] = {};
+    ComPtr<ID3D12Resource> vertices_[4];
+    UINT vertexBytes_[4] = {};
     std::vector<ComPtr<ID3D12Resource>> textures_, retained_;
     std::vector<Upload> constants_;
     PresentParams present_;
@@ -291,14 +291,15 @@ bool D3D12Device::CreateRoot(std::string* error) {
 }
 bool D3D12Device::Compile(std::string* error) {
     const auto reactiveModel = ReactiveModelShaderSource(), reactiveSprite = ReactiveSpriteShaderSource();
-    const char* sources[] = {kModelShaderHlsl, kSpriteShaderHlsl, kPresentShaderHlsl, kMotionShaderHlsl, reactiveModel.c_str(), reactiveSprite.c_str()};
+    const char* sources[] = {kModelShaderHlsl, kSpriteShaderHlsl, kPresentShaderHlsl, kMotionShaderHlsl, reactiveModel.c_str(), reactiveSprite.c_str(),kModelShaderHlsl};
     const D3D_SHADER_MACRO spriteDefines[] = {{"SDLGPU_UBYTE4", "1"}, {nullptr, nullptr}};
     const D3D_SHADER_MACRO motionDefines[] = {{"MOTION_MRT", "1"}, {nullptr, nullptr}};
-    for (int i = 0; i < 6; ++i) {
+    const D3D_SHADER_MACRO prelitDefines[]={{"NAOMI_PRELIT","1"},{nullptr,nullptr}};
+    for (int i = 0; i < 7; ++i) {
         ComPtr<ID3DBlob> errors;
         for (int stage = 0; stage < 2; ++stage) {
             auto& out = stage ? ps_[i] : vs_[i];
-            if (Failed(D3DCompile(sources[i], strlen(sources[i]), "native-d3d12", i == 1 || i == 5 ? spriteDefines : i == 3 ? motionDefines : nullptr, nullptr,
+            if (Failed(D3DCompile(sources[i], strlen(sources[i]), "native-d3d12", i == 1 || i == 5 ? spriteDefines : i == 3 ? motionDefines : i==6?prelitDefines:nullptr, nullptr,
                 stage ? "psmain" : "vsmain", stage ? "ps_5_1" : "vs_5_1", D3DCOMPILE_ENABLE_STRICTNESS, 0, &out, &errors), "Compile D3D12 shader", error)) {
                 if (error && errors) *error = static_cast<const char*>(errors->GetBufferPointer()); return false;
             }
@@ -453,10 +454,15 @@ ID3D12PipelineState* D3D12Device::Pipeline(int pipeline, const GpuState& s, bool
         {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}};
     const D3D12_INPUT_ELEMENT_DESC sprite[] = {{"POSITION",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
         {"COLOR",0,DXGI_FORMAT_R8G8B8A8_UNORM,0,16,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}};
+    const D3D12_INPUT_ELEMENT_DESC prelit[]={
+        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+        {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+        {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+        {"COLOR",1,DXGI_FORMAT_R32G32B32_FLOAT,0,32,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}};
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{}; d.pRootSignature = root_.Get();
     d.VS = {vs_[pipeline]->GetBufferPointer(), vs_[pipeline]->GetBufferSize()}; d.PS = {ps_[pipeline]->GetBufferPointer(), ps_[pipeline]->GetBufferSize()};
     if (raytracing) { const auto& shader = rayScene_.PixelShader(); const auto& vertex = rayScene_.VertexShader(); if (shader.empty() || vertex.empty()) return nullptr; d.PS = {shader.data(), shader.size()}; d.VS = {vertex.data(),vertex.size()}; }
-    if (pipeline != 2) d.InputLayout = {pipeline == 1 || pipeline == 5 ? sprite : model, 3};
+    if (pipeline != 2) d.InputLayout = {pipeline==6?prelit:pipeline == 1 || pipeline == 5 ? sprite : model, pipeline==6?4u:3u};
     auto& blend = d.BlendState.RenderTarget[0]; blend.BlendEnable = s.blendEnable != 0;
     blend.SrcBlend = Blend(s.srcBlend); blend.DestBlend = Blend(s.dstBlend); blend.BlendOp = D3D12_BLEND_OP_ADD;
     blend.SrcBlendAlpha = AlphaBlend(blend.SrcBlend); blend.DestBlendAlpha = AlphaBlend(blend.DestBlend); blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
@@ -501,8 +507,9 @@ UINT D3D12Device::SamplerTable(const GpuState& s, bool present) {
     samplerTables_[key] = at; return at;
 }
 
-bool D3D12Device::ConfigureGraphics(const GraphicsOptions& o, std::string* error) {
-    if (!ValidateGraphicsOptions(o, error)) return false;
+bool D3D12Device::ConfigureGraphics(const GraphicsOptions& requested, std::string* error) {
+    if (!ValidateGraphicsOptions(requested, error)) return false;
+    const GraphicsOptions o = ApplyGraphicsModePolicy(requested);
     if (active_) { if (error) *error = "Apply graphics options between frames"; return false; }
     if (finalFrames_.Enabled() && o.crtCurvature) { if(error)*error="CRT curvature cannot be combined with frame generation because depth and motion are unwarped";return false; }
     if (o.msaa != 1 || o.alphaToCoverage || o.postAA > 1 || o.spatialUpscaler || o.softParticles || o.materialMaps || o.ambientOcclusion || o.hdrOutput || o.temporalAA || o.shadowMaps || o.volumetricFog || o.reflections || o.cinematicFocus || o.outputResolutionHud) {
@@ -548,6 +555,7 @@ bool D3D12Device::BeginFrame(const float clear[4]) {
 }
 void D3D12Device::Submit(const GpuDrawList& draws) {
     if (!active_ || broken_) return;
+    if(!draws.naomiPrelitVertices.empty())SetVertices(3,draws.naomiPrelitVertices.data(),draws.naomiPrelitVertices.size()*sizeof(NaomiPrelitVertex));
     if (rayScene_.Info().enabled && (draws.opaqueDrawCount || !draws.shadowCasters.empty())) {
         ID3D12Resource* vertices[] = {vertices_[0].Get(), vertices_[1].Get(), vertices_[2].Get()};
         rayAddress_ = rayScene_.Build(list_.Get(), draws, vertices, vertexBytes_);
@@ -565,12 +573,12 @@ void D3D12Device::Submit(const GpuDrawList& draws) {
     size_t drawIndex = 0;
     for (const auto& draw : draws.draws) {
         const size_t currentDraw = drawIndex++;
-        const int stream = static_cast<int>(draw.stream), pipeline = static_cast<int>(draw.pipeline);
-        if (stream < 0 || stream > 2 || pipeline < 0 || pipeline > 1 || !vertices_[stream] || !draw.count) continue;
-        const UINT stride = stream == 2 ? sizeof(game::TLVertex) : sizeof(game::ModelVertex);
+        const int stream = static_cast<int>(draw.stream), pipeline = draw.pipeline==GpuDraw::Pipeline::NaomiPrelit?6:static_cast<int>(draw.pipeline);
+        if (stream < 0 || stream > 3 || pipeline < 0 || (pipeline > 1 && pipeline!=6) || !vertices_[stream] || !draw.count) continue;
+        const UINT stride = stream == 2 ? sizeof(game::TLVertex) : stream==3?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex);
         if (uint64_t(draw.first) + draw.count > vertexBytes_[stream] / stride) continue;
         GpuState state = draw.state; D3D12_GPU_VIRTUAL_ADDRESS cb = 0; bool rayDraw = false;
-        if (pipeline == 0) {
+        if (pipeline == 0 || pipeline==6) {
             if (draw.constants >= draws.model.size()) continue;
             if (graphics_.textureFilter) state.linear = graphics_.textureFilter == 2;
             auto constants = draws.model[draw.constants]; constants.depthEffects[3] = 0;
@@ -762,8 +770,8 @@ void D3D12Device::DrawReactive(const GpuDrawList& draws) {
     if (!reactiveReady_) { const float zero[4] = {}; list_->ClearRenderTargetView(rt, zero, 0, nullptr); }
     for (const auto& draw : draws.draws) {
         if (!draw.reactive || draw.hud) continue;
-        const int stream = static_cast<int>(draw.stream); if (stream < 0 || stream > 2 || !vertices_[stream] || !draw.count) continue;
-        const bool sprite = draw.pipeline == GpuDraw::Pipeline::Sprite; const UINT stride = stream == 2 ? sizeof(game::TLVertex) : sizeof(game::ModelVertex);
+        const int stream = static_cast<int>(draw.stream); if (stream < 0 || stream > 3 || !vertices_[stream] || !draw.count) continue;
+        const bool sprite = draw.pipeline == GpuDraw::Pipeline::Sprite; const UINT stride = stream == 2 ? sizeof(game::TLVertex) : stream==3?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex);
         if (uint64_t(draw.first) + draw.count > vertexBytes_[stream] / stride) continue;
         GpuState state = draw.state; state.blendEnable = 0; state.zwrite = 0;
         D3D12_GPU_VIRTUAL_ADDRESS cb = 0;

@@ -49,6 +49,16 @@ int SourceBossRank(World::Impl& w) {
     return w.rank;
 }
 
+void TypingJudgmentInstructions(World::Impl& w, int age, int sprite) {
+    // PC424CB0/424D30: thirty-frame fade, two-second instruction hold,
+    // then thirty frames restoring the scene. Sprites keep their white tint.
+    const float fade = std::clamp(float(std::min(age, 180-age))/30.f, 0.f, 1.f);
+    w.typingInstructionFade = fade;
+    if (age < 30 || age > 150) return;
+    if (age == 30) w.TypingSound(0x000436A9u);
+    for (int i=0;i<4;++i) w.TypingSprite(sprite+i,128.f*float(i+1),334,1,1,0xA,0x00424D30);
+}
+
 template <class T> T* AliveTask(World::Impl& w, T* p, uint32_t serial) {
     if (!p) return nullptr;
     for (Task* t : w.ts.Live())
@@ -915,7 +925,17 @@ void MountBeh1(World::Impl& w, MountTask& m, Actor22Task* rider) {
         const uint32_t f = m.flags34;
         m.flags34 = f & ~0x40000000u;
         switch (m.saved1350) {
-        case 1: case 5:
+        case 1:
+            if (w.typingReferenceActive) {
+                // PC489DCE: a completed phrase makes the mount retreat even
+                // when interrupted during its approach, before the next word.
+                m.flags34 = f & 0xAFFFFFFFu;
+                w.AnimBlendTo(m, exe.S16(0x005703CC + ph), exe.S16(0x00570418 + ph), 0x14);
+                m.sub = 3;
+                break;
+            }
+            [[fallthrough]];
+        case 5:
             w.AnimBlendTo(m, exe.S16(0x005703C0 + static_cast<uint32_t>(m.phase + m.saved1350 * 2) * 2), 0, 5);
             m.sub = static_cast<int16_t>(m.saved1350);
             break;
@@ -1348,9 +1368,15 @@ void BossBeh0(World::Impl& w, Actor22Task& a, BossState& b) {
             ++w.liveEnemies;
             w.AnimBlendTo(a, exe.S16(0x00570BE4), 0, 3);
             w.bossActive = 1;  // 0x009CA0EA
-            ++a.behaviour;
-            a.sub = 0;
+            if (w.typingReferenceActive && w.cfg.gameType != 3) {
+                a.sub = 3;
+                b.typingInstructions = 0;
+                a.typingFlags |= 0x400u;
+            } else { ++a.behaviour; a.sub = 0; }
         }
+    } else if (a.sub == 3 && w.typingReferenceActive) {
+        if (++b.typingInstructions < 180) TypingJudgmentInstructions(w,b.typingInstructions,0xB85);
+        else { a.typingFlags &= ~0x400u; ++a.behaviour; a.sub = 0; }
     }
     if (place) {
         float pos[3] = {}, tg[3] = {};
@@ -1668,6 +1694,8 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
     case 3: {
         const float tick=w.typingReferenceActive ? TypingJudgmentAdvancePathClock(b.count,b.typingPathFraction,SourceBossRank(w)) :
             static_cast<float>(b.count);
+        if (w.typingReferenceActive && b.count < 30)
+            w.TypingSprite(0xB8D,320,180,1.f-float(b.count)/30.f,1,0xA,0x004B3E70);
         PathTarget(w, b, b.path + 0x140, tick);
         memcpy(a.pos, b.off, 12);
         const int c = w.typingReferenceActive ? b.count : ++b.count;
@@ -1707,6 +1735,14 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
         }
         break;
     case 7:
+        if (w.typingReferenceActive && w.playersInGame >= 0 && b.count <= 180) {
+            const int tick = b.count;
+            w.TypingSprite(0xB90-tick/60,320,180,1.f-float(tick%60)/60.f,1,0xA,0x004B3E70);
+            if (b.count == 1) {
+                w.typing.cancelSelection(); w.typing2.cancelSelection();
+                w.typingCharacters.clear(); w.typingCharacters2.clear();
+            }
+        }
         if (-1 < w.playersInGame && (w.typingReferenceActive ? 179 : 99) < b.count++) {
             w.AnimBlendTo(a, exe.S16(0x00570BE6), 0, 3);
             if (a.flags34 & 0x100) a.flags34 &= ~0x100u;
@@ -1719,7 +1755,7 @@ void BossBeh2(World::Impl& w, Actor22Task& a, BossState& b) {
         // Source4B40A4: chapter-one phase instructions precede its first
         // approach. The rematch skips this interlude; Boss Mode skips its wait.
         if (w.cfg.gameType != 3 && ++b.typingInstructions < 180) {
-            for (int i=0;i<4;++i) w.TypingSprite(0xB89+i,128.0f*float(i+1),334,1,.1f,0xA,0x00424D30);
+            TypingJudgmentInstructions(w,b.typingInstructions,0xB89);
             break;
         }
         b.count=0; newPath(0x0049C23B); a.sub=7;
@@ -2465,6 +2501,15 @@ bool TypingBoss1(World::Impl& w, ActorTask& actor, TypingTargetSpec& out, bool c
         out.boss = true;
         if (a->hp < 1 || a->behaviour < 1 || a->behaviour > 2 || (a->flags34 & 0x4000000u)) return true;
         BossState& b = Boss(*a);
+        if (w.typingReferenceActive) {
+            // PC4B3C78 and4B47ED hide words outside these actual attack
+            // windows; retaining a word there would let players pre-type it.
+            const auto* mount = AliveTask(w,b.mount,b.mountSerial);
+            const bool first = a->behaviour == 1 && (a->sub==1 || a->sub==5 || a->sub==7) &&
+                mount && (mount->sub==1 || mount->sub==2);
+            const bool second = a->behaviour == 2 && a->sub==3;
+            if ((!first && !second) || (a->flags34 & 0x40008100u)) return true;
+        }
         out.retain = true;
         out.token = 0x100000u | (static_cast<uint32_t>(a->behaviour) << 12) | (static_cast<uint32_t>(b.phase) << 8);
         memcpy(out.view, a->anim.nodes[2].hit, 12);

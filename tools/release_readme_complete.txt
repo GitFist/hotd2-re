@@ -5,14 +5,19 @@ START PLAYING
 2. Open the hotd2re folder and double-click hotd2.exe.
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a
-Complete download: HOTD2RE-1.9-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.05-a
+Complete download: HOTD2RE-2.0-Windows-x64.zip
 This complete package includes the required game data. No separate installation or disc is needed.
 Keep the game and scenes folders next to hotd2.exe. Launch the top-level hotd2.exe.
 Requires Windows 10/11 with Direct3D 11 support. Optional graphics features have additional
 GPU/backend requirements. Settings and saves are kept in this folder. No personal saves
 or device profiles are included. Sound is enabled on normal hotd2.exe launches, including
 launches with a custom game-folder path or command-line options.
+
+NAOMI GRAPHICS
+Naomi is the default graphics profile. Options > Graphics > Graphics mode also
+offers PC graphics and preserves each profile's preferences. This ZIP includes
+the verified Naomi visual bank; no extra graphics download is needed.
 
 NIGHT SHIFT MENUS
 Home uses the game's moving standby preview. Play contains Arcade, Original, Boss Mode
@@ -32,10 +37,10 @@ background menu loop separately from gameplay music, gunfire and effects.
 THE TYPING OF THE DEAD
 Select the other game's logo card on the main menu to switch between House of the Dead 2
 and Typing of the Dead. Each has its own moving attract presentation. Typing Home offers
-Original, Drill, Leaderboard and Options. Original setup includes difficulty, lives,
+Arcade, Original, Drill, Leaderboard and Options. Original setup includes difficulty, lives,
 continues, word size and US/UK keyboard layout. Type the displayed words to fight.
 Drill contains all 13 courses, with authored encounters, word cards, result books and
-course records. Drill is local play. Typing Original also supports two-player online
+course records. Drill is local play. Typing Arcade and Original also support two-player online
 play through the shared lobby, with its own local/online leaderboard table.
 This complete ZIP includes the prepared Typing data and does not run the original
 Typing executable. No additional Typing download is needed.
@@ -54,7 +59,7 @@ Both players should use this same package.
 3. The other player selects BROWSE LOBBY and picks the host's room.
 4. Public rooms need no code. Private rooms appear in the list but require the host's 5-digit code.
 5. Both players enter the shared lobby. The creator (player 1) chooses ARCADE, ORIGINAL,
-   SCENE SELECTION, BOSS MODE, HORDE MODE, RANDOMIZER, or TYPING ORIGINAL.
+   SCENE SELECTION, BOSS MODE, HORDE MODE, RANDOMIZER, TYPING ARCADE, or TYPING ORIGINAL.
    Chapter and boss selections are controlled by the host.
    The host can change difficulty in the shared lobby; both players use that setting.
 6. Pause > Return to Lobby brings BOTH players back to that room to choose another mode.

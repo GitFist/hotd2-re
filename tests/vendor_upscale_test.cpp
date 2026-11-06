@@ -13,11 +13,13 @@ struct Run {
     port::DlssSuperResolution dlss;
     port::FsrSuperResolution fsr;
     port::XessSuperResolution xess;
-    bool amd=false,intel=false;
+    bool amd=false,intel=false,expectedInfinite=false;
     int calls=0;
     std::string error;
     static bool Callback(const port::NativeD3D12FrameInterop& frame,port::NativeD3D12FrameOutput* out,void* user,std::string* error){
         auto& r=*static_cast<Run*>(user);
+        if(r.amd&&((frame.camera.projection[10]==0)!=r.expectedInfinite)){
+            r.error="FSR fixture did not receive the intended finite/infinite reversed projection";if(error)*error=r.error;return false;}
         const bool okay=r.intel?r.xess.Evaluate(frame,out,&r.error):r.amd?r.fsr.Evaluate(frame,out,&r.error):r.dlss.Evaluate(frame,out,&r.error);
         if(okay&&out->color)++r.calls;
         if(error)*error=r.error;return okay;
@@ -44,6 +46,8 @@ int main(int argc,char** argv){
     port::ModelRenderer::SceneItem item;item.model=&model;item.cullable=false;item.noMeshCull=true;item.motionTracked=true;item.motionIdentity.task=1;
     port::ModelRenderer::Lighting light;light.enabled=true;for(int k=0;k<3;++k){light.ambient[k]=1;light.diffuse[k]=0;}
     const auto view=game::Mat4::Identity(),projection=game::DeviceView()*game::DeviceProjection();
+    auto nativeDeviceProjection=game::DeviceProjection();nativeDeviceProjection.m[10]=1;nativeDeviceProjection.m[14]=-1e-5f;
+    const auto infiniteProjection=game::DeviceView()*nativeDeviceProjection;
     port::ModelRenderer::SpriteDraw hud{};hud.isp=0xE4000000;hud.tsp=0x94918000;hud.depth=.001f;
     const float xy[4][2]={{88,20},{88,60},{144,20},{144,60}};
     for(int i=0;i<4;++i)hud.v[i]={xy[i][0],xy[i][1],0,1,0xFF18D840,0,0,0};
@@ -55,18 +59,24 @@ int main(int argc,char** argv){
         if(fsr2&&quality==3){Require(!configured,"FSR2 must reject unsupported NativeAA instead of silently substituting another algorithm");std::printf("PASS FSR2 NativeAA explicitly unavailable: %s\n",error.c_str());continue;}
         Require(configured,error.c_str());
         Require(gpu->ResizeTarget(iw,ih),"vendor input resolution target");
-        for(int frame=0;frame<6;++frame){
+        // FSR's infinite-depth permutation is fixed when its context is created.
+        // Switch both ways at fixed dimensions, then require real GPU dispatch,
+        // visible geometry, and the same exact post-upscale HUD in every mode.
+        for(int phase=0;phase<(run.amd?3:1);++phase){
+          run.expectedInfinite=phase==1;const auto& activeProjection=run.expectedInfinite?infiniteProjection:projection;
+          for(int frame=0;frame<6;++frame){
             item.transform[12]=frame*2.f;renderer.SetScene(assets,{item});port::TemporalFrameInfo temporal;temporal.enabled=true;temporal.frameId=++sequence;
-            temporal.reset=frame==0||frame==5;temporal.jitterPixels[0]=frame%2?.25f:-.25f;temporal.jitterPixels[1]=frame%3?.125f:-.375f;renderer.SetTemporalFrame(temporal);
+            temporal.reset=(phase==0&&frame==0)||frame==5;temporal.jitterPixels[0]=frame%2?.25f:-.25f;temporal.jitterPixels[1]=frame%3?.125f:-.375f;renderer.SetTemporalFrame(temporal);
             const float clear[]={.03f,.03f,.03f,1};Require(gpu->BeginFrame(clear),"begin temporal scene");
-            const int before=run.calls;renderer.DrawGame(iw,ih,projection.m,&light,nullptr,view.m,&sprites,nullptr,projection.m);
+            const int before=run.calls;renderer.DrawGame(iw,ih,activeProjection.m,&light,nullptr,view.m,&sprites,nullptr,activeProjection.m);
             Require(run.calls==before+1,run.error.empty()?"vendor dispatch skipped real scene":run.error.c_str());
             std::vector<uint8_t> color;Require(gpu->ReadPresentation(960,720,&color),"read actual vendor result");gpu->EndFrame();
             const size_t ui=(60*960+160)*4;
             Require(color[ui]==24&&color[ui+1]==216&&color[ui+2]==64,"HUD was reconstructed/blurred instead of drawn at output resolution");
             const size_t surface=(360*960+480)*4;
             Require(color[surface+2]>100&&color[surface+2]>color[surface],"vendor output lost real scene color");
+          }
         }
-        std::printf("PASS %s mode%d real GPU evaluation %dx%d->960x720, moving geometry/jitter/cut and exact post-upscale HUD\n",argv[1],quality,iw,ih);
+        std::printf("PASS %s mode%d real GPU evaluation %dx%d->960x720, moving geometry/jitter/cut and exact post-upscale HUD%s\n",argv[1],quality,iw,ih,run.amd?", finite/infinite/finite depth":"");
     }
 }

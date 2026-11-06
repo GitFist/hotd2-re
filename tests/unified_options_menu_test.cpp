@@ -35,20 +35,23 @@ play::MenuInput Point(float x, float y, bool shot = false) {
 bool Text(const game::WorldHud& hud, const std::string& text) {
     return std::any_of(hud.menuText.begin(), hud.menuText.end(), [&](const auto& item) { return item.text == text; });
 }
-float Top(const Menu& menu, int row) { return Menu::RowY(row, menu.CurrentPage(), menu.ScrollOffset()) * 24 + 10; }
-void LayoutAndReachability(bool modern) {
+float Top(const Menu& menu, int row) { return menu.RowTop(row); }
+void LayoutAndReachability(bool modern, bool naomi, bool typing) {
     Menu menu;
     menu.SetNightShiftActive(modern);
     play::DisplaySettings settings;
+    settings.graphics.naomiGraphics = naomi;
+    menu.SetGraphicsMode(naomi);
+    Menu::OptionValues options; options.typing = typing; menu.SetOptionValues(options);
     std::vector<uint32_t> sounds;
     menu.Open();
-    const char* names[] = {"Display", "Graphics", "Gameplay", "Sound", "Devices", "CRT", "Packs"};
-    Require(Menu::kPageCount == 7, "seven requested categories including Sound");
+    const char* names[] = {"Display", "Graphics", "Gameplay", "Sound", "Devices", "CRT"};
+    Require(Menu::kPageCount == 6, "six requested categories including Sound");
     std::vector<int> count(Menu::kRowCount);
     for (int category = 0; category < Menu::kPageCount; ++category) {
         const auto page = static_cast<Menu::Page>(category);
         menu.SetPage(page);
-        for (int row : Menu::Rows(page)) {
+        for (int row : Menu::Rows(page, naomi, typing)) {
             ++count[row];
             menu.FocusRow(row);
             const float top = Top(menu, row);
@@ -56,16 +59,16 @@ void LayoutAndReachability(bool modern) {
             Require(std::find(visible.begin(), visible.end(), row) != visible.end(), "every option scrolls into the real viewport");
             Require(row == Menu::kBack ? top >= 429.9f && top + 24 <= 454.1f : top >= 125.9f && top + 24 <= 420.1f,
                     "settings and fixed Back remain inside their reserved regions");
-            Require(Menu::RowAt(600, top + 12, page, menu.ScrollOffset()) == row,
+            Require(Menu::RowAt(600, top + 12, page, menu.ScrollOffset(), naomi, typing) == row,
                     "scrolled pointer hit test selects the visible row");
-            Require(Menu::RowAt(600, 117, page, menu.ScrollOffset()) == -1,
+            Require(Menu::RowAt(600, 117, page, menu.ScrollOffset(), naomi, typing) == -1,
                     "group headings and category gap do not change a hidden value");
             game::WorldHud hud;
             menu.ModernHud(settings, hud);
-            for (const char* name : names) Require(Text(hud, name), "all seven category headers remain present while scrolling");
+            for (const char* name : names) Require(Text(hud, name), "all six category headers remain present while scrolling");
             Require(Text(hud, Menu::Label(row)), "focused option is rendered at every scroll position");
             Require(Text(hud, "Back"), "Back stays visible while scrolling");
-            Require(!Text(hud, "Game Options") && !Text(hud, "Advanced") && !Text(hud, "Resolution"),
+            Require(!Text(hud, "Game Options") && !Text(hud, "Advanced") && !Text(hud, "Resolution") && !Text(hud, "Packs"),
                     "obsolete menu categories are absent");
             sounds.clear();
             menu.Update(Key(0x20), settings, sounds);
@@ -77,8 +80,12 @@ void LayoutAndReachability(bool modern) {
         menu.Update(Point(tabX, 90, true), settings, sounds);
         Require(menu.CurrentPage() == page && sounds.empty(), "category switching is direct and silent");
     }
-    for (int row = 0; row < Menu::kRowCount; ++row)
-        Require(count[row] == (row == Menu::kBack ? Menu::kPageCount : 1), "each setting has one category and one editable location");
+    for (int row = 0; row < Menu::kRowCount; ++row) {
+        const bool hidden = (naomi && std::find(Menu::Rows(Menu::kGraphics).begin(), Menu::Rows(Menu::kGraphics).end(), row) != Menu::Rows(Menu::kGraphics).end() &&
+                             std::find(Menu::Rows(Menu::kGraphics, true).begin(), Menu::Rows(Menu::kGraphics, true).end(), row) == Menu::Rows(Menu::kGraphics, true).end()) ||
+                            (typing && (row == Menu::kCrosshairP1 || row == Menu::kCrosshairP2 || row == Menu::kCrosshairs));
+        Require(count[row] == (row == Menu::kBack ? Menu::kPageCount : hidden ? 0 : 1), "each applicable setting has one editable location");
+    }
     menu.SetPage(Menu::kGraphics);
     const int first = menu.Cursor();
     menu.Update(Point(628, 404, true), settings, sounds);
@@ -118,7 +125,7 @@ void ScrollHints(bool modern) {
     menu.Update(wheel,settings,sounds);
     hint=menu.ScrollHint();
     Require(!hint.above&&hint.below, "returning to the first row removes the upper cue");
-    for(auto page:{Menu::kSound,Menu::kDevices,Menu::kRetro,Menu::kPacks}) {
+    for(auto page:{Menu::kSound,Menu::kDevices,Menu::kRetro}) {
         menu.SetPage(page);
         Require(inactive(), "short Options categories do not imply hidden rows");
     }
@@ -147,6 +154,7 @@ void CompactFooter(bool modern) {
     menu.SetNightShiftActive(modern);
     play::DisplaySettings settings;
     settings.nightShift = modern;
+    settings.graphics.naomiGraphics = false;
     std::vector<uint32_t> sounds;
     menu.Open();
     const std::string status = "Gameplay settings saved for the next run.";
@@ -158,7 +166,7 @@ void CompactFooter(bool modern) {
             menu.FocusRow(row);
             game::WorldHud hud;
             menu.ModernHud(settings, hud);
-            Require(!Text(hud, status), "saved-setting status no longer occupies Options list space");
+            Require(Text(hud, status), "save and restart status is visible above the Options list");
             const auto help = menu.RowHelp(settings, row);
             Require(help.empty() || !Text(hud, help), "normal Options does not render per-row tooltips");
             int cornerHints = 0, categoryHints = 0;
@@ -220,6 +228,7 @@ void CompactFooter(bool modern) {
 void ValuesAndActions() {
     Menu menu;
     play::DisplaySettings display;
+    display.graphics.naomiGraphics = false; // this fixture exercises the PC blood preference
     Menu::OptionValues values;
     for (int& volume : values.audio) volume = 5;
     values.difficulty = 2;
@@ -258,13 +267,20 @@ void ValuesAndActions() {
     Require(menu.TakeOptionChange(&change) && change.difficulty == 3, "difficulty remains a real saved gameplay edit");
     menu.FocusRow(Menu::kContinues);
     press(0x80);
-    Require(menu.TakeOptionChange(&change) && change.credits == 1, "locked Free Play cannot be selected by wrapping credits");
+    Require(menu.TakeOptionChange(&change) && change.credits == 0, "Unlimited is selectable without completion unlocks");
+    { game::WorldHud hud; menu.ModernHud(display, hud); Require(Text(hud, "Unlimited"), "unlimited credits have a clear value label"); }
+    press(0x80);
+    Require(menu.TakeOptionChange(&change) && change.credits == 1, "Unlimited cycles forward to one credit");
+    press(0x40);
+    Require(menu.TakeOptionChange(&change) && change.credits == 0, "one credit cycles backward to Unlimited");
+    press(0x40);
+    Require(menu.TakeOptionChange(&change) && change.credits == 9, "Unlimited cycles backward to nine credits");
     values = menu.OptionValuesState();
     values.freePlayUnlocked = true;
     values.credits = 9;
     menu.SetOptionValues(values);
     press(0x80);
-    Require(menu.TakeOptionChange(&change) && change.credits == 0, "unlocked Free Play is selectable");
+    Require(menu.TakeOptionChange(&change) && change.credits == 0, "existing Free Play availability still selects Unlimited");
     menu.FocusRow(Menu::kCrosshairP2);
     press(0x80);
     Require(menu.TakeOptionChange(&change) && change.crosshair[1] == 1 && change.crosshair[0] == 0,
@@ -352,14 +368,168 @@ void ValuesAndActions() {
     menu.FocusRow(Menu::kBack);
     Require(press(8) && sounds == std::vector<uint32_t>{game::kOptionBackSound}, "fixed Back closes with one 76");
 }
+void NaomiGraphicsChoices() {
+    Menu menu;
+    play::DisplaySettings d;
+    Require(d.graphics.naomiGraphics && d.EffectiveBloodColor() == port::BloodColor::Red && !port::GraphicsOptions{}.naomiGraphics,
+            "player graphics default to Naomi/Red without changing raw renderer defaults");
+    d.graphics.naomiGraphics = false; // exercise a deliberate saved PC choice
+    d.bloodColor = port::BloodColor::Purple;
+    d.graphics.perPixelLighting = true;
+    d.graphics.textureFilter = 2;
+    d.graphics.anisotropy = 16;
+    d.graphics.bloom = 2;
+    d.graphics.msaa = 4;
+    d.graphics.alphaToCoverage = true;
+    d.graphics.postAA = 2;
+    const auto pc = d;
+    std::vector<uint32_t> sounds;
+    menu.Open();
+    menu.SetPage(Menu::kGraphics);
+    menu.FocusRow(Menu::kGraphicsMode);
+    menu.Update(Key(0x80), d, sounds);
+    Require(d == pc && sounds.empty(), "missing Naomi content cannot enable a partial graphics mode");
+    Require(menu.RowHelp(d, Menu::kGraphicsMode).find("unavailable") != std::string::npos,
+            "missing Naomi content has a player-facing explanation");
+    menu.SetNaomiAvailability(true);
+    port::GraphicsCapabilities capabilities;capabilities.msaa2=capabilities.msaa4=capabilities.smaa=capabilities.cmaa2=true;
+    menu.SetGraphicsCapabilities(capabilities);
+    menu.Update(Key(0x80), d, sounds);
+    Require(d.graphics.naomiGraphics && d.EffectiveBloodColor() == port::BloodColor::Red,
+            "enabling Naomi uses its independent Red default");
+    Require(d.bloodColor == pc.bloodColor && d.graphics.perPixelLighting && d.graphics.textureFilter == 2 && d.graphics.anisotropy == 16,
+            "mode switch retains existing PC blood and scene preferences");
+    for (int hidden : {Menu::kFiltering, Menu::kAniso, Menu::kMsaa, Menu::kCoverage, Menu::kPerPixel,
+                       Menu::kSoftParticles, Menu::kAmbientOcclusion, Menu::kShadowMaps, Menu::kRayShadows,
+                       Menu::kFog, Menu::kReflections, Menu::kCinematicFocus}) {
+        const auto& rows = menu.CurrentRows();
+        Require(std::find(rows.begin(), rows.end(), hidden) == rows.end(), "Naomi omits inapplicable PC scene controls");
+        const int cursor = menu.Cursor(); menu.FocusRow(hidden);
+        Require(menu.Cursor() == cursor, "hidden controls cannot receive keyboard focus");
+    }
+    Require(d.graphics.msaa == 4 && d.graphics.alphaToCoverage,
+            "hiding controls retains PC preferences");
+    menu.FocusRow(Menu::kPostAA);sounds.clear();menu.Update(Key(0x80),d,sounds);
+    Require(d.graphics.postAA==3 && sounds==std::vector<uint32_t>{game::kOptionSelectSound},
+            "Post AA remains editable in Naomi mode");
+    menu.SetPage(Menu::kGameplay);
+    menu.FocusRow(Menu::kBlood);
+    menu.Update(Key(0x80), d, sounds);
+    Require(d.naomiBloodColor == port::BloodColor::Green && d.bloodColor == port::BloodColor::Purple,
+            "changing Naomi blood edits only the Naomi preference");
+    Menu::Step(d, Menu::kGraphicsMode, 1);
+    Require(!d.graphics.naomiGraphics && d.EffectiveBloodColor() == port::BloodColor::Purple,
+            "PC blood returns immediately when switching back");
+    Menu::Step(d, Menu::kGraphicsMode, 1);
+    Require(d.EffectiveBloodColor() == port::BloodColor::Green, "Naomi blood choice returns on the next switch");
+    Menu typingMenu;
+    typingMenu.SetNaomiAvailability(true);
+    typingMenu.SetGraphicsCapabilities(capabilities);
+    typingMenu.Open();
+    typingMenu.SetPage(Menu::kGraphics);
+    typingMenu.FocusRow(Menu::kGraphicsMode);
+    game::WorldHud hud;
+    typingMenu.ModernHud(d, hud);
+    Require(Text(hud, "Naomi"), "another game menu shows the shared Naomi choice");
+    typingMenu.Update(Key(0x80), d, sounds);
+    Require(!d.graphics.naomiGraphics && d.EffectiveBloodColor() == port::BloodColor::Purple,
+            "Typing can select PC and restore that profile's saved blood");
+    typingMenu.Update(Key(0x80), d, sounds);
+    Require(d.graphics.naomiGraphics && d.EffectiveBloodColor() == port::BloodColor::Green,
+            "Typing can select Naomi with its saved blood color");
+    typingMenu.SetPage(Menu::kGameplay);
+    typingMenu.FocusRow(Menu::kBlood);
+    typingMenu.Update(Key(0x80), d, sounds);
+    Require(d.bloodColor == port::BloodColor::Purple && d.naomiBloodColor == port::BloodColor::Blue,
+            "Typing edits the selected profile's blood without replacing the PC preference");
+    const auto requested = d.graphics;
+    auto actual = port::ApplyGraphicsModePolicy(requested);
+    Require(actual.msaa==1 && !actual.alphaToCoverage && actual.postAA==requested.postAA && requested.msaa==4 && requested.alphaToCoverage,
+            "Naomi applies single-sample transparency without changing requested PC AA or postprocessing");
+    actual.msaa = 2;
+    const auto saved = play::PreserveNaomiPreferences(requested, actual);
+    Require(saved.naomiGraphics && saved.perPixelLighting && saved.textureFilter == 2 && saved.anisotropy == 16 && saved.msaa == 4 && saved.alphaToCoverage,
+            "Naomi policy writeback preserves the saved PC scene and MSAA/coverage choices");
+    auto pcRequest=requested;pcRequest.naomiGraphics=false;
+    Require(port::ApplyGraphicsModePolicy(pcRequest)==pcRequest,
+            "the PC profile retains its requested MSAA/coverage and graphics settings");
+    actual.naomiGraphics = false;
+    Require(play::PreserveNaomiPreferences(requested, actual).naomiGraphics,
+            "a temporary device fallback does not clear the saved graphics mode");
+    menu.SetPage(Menu::kDisplay);
+    menu.FocusRow(Menu::kResetGraphics);
+    menu.Update(Key(8), d, sounds);
+    menu.Update(Key(0x40), d, sounds);
+    menu.Update(Key(8), d, sounds);
+    Require(d.graphics.naomiGraphics && d.bloodColor == port::BloodColor::Purple && d.naomiBloodColor == port::BloodColor::Blue,
+            "graphics reset restores Naomi defaults while retaining both Gameplay blood preferences");
+}
+void SavedGraphicsAndConsolidatedControls() {
+    port::GraphicsOptions requested;
+    requested.msaa = 4; requested.alphaToCoverage = true; requested.anisotropy = 16;
+    requested.postAA = 2; requested.temporalAA = requested.outputResolutionHud = true;
+    requested.spatialUpscaler = 1; requested.softParticles = requested.ambientOcclusion = requested.shadowMaps = 3;
+    requested.materialMaps = true; requested.volumetricFog = requested.reflections = requested.cinematicFocus = 2;
+    requested.hdrOutput = requested.allowTearing = requested.lowLatency = true;
+    requested.bloom = 2; requested.gamma = 60;
+    for (bool naomi : {false, true}) {
+        requested.naomiGraphics = naomi;
+        for (int samples : {1, 2, 4}) {
+            port::GraphicsCapabilities limited;
+            limited.msaa2 = samples >= 2; limited.msaa4 = samples == 4; limited.maxAnisotropy = samples;
+            auto active = port::ApplyGraphicsModePolicy(play::SupportedGraphicsOptions(requested, limited));
+            Require(active.msaa == (naomi ? 1 : samples) && active.postAA == 0 && !active.temporalAA && !active.shadowMaps,
+                    "limited renderer receives only supported scene options");
+            auto saved = play::PreserveGraphicsPreferences(requested, active, limited);
+            Require(saved == requested, "renderer fallback preserves every saved request for the next renderer");
+            active.bloom = 1;
+            Require(play::PreserveGraphicsPreferences(requested, active, limited).bloom == 1,
+                    "supported runtime changes still write back");
+        }
+    }
+    play::DisplaySettings d; d.graphics.naomiGraphics = false;
+    const char* choices[] = {"Off", "FSR 1", "DLSS", "FSR 2", "FSR 3", "XeSS"};
+    for (int cycle = 0; cycle < 12; ++cycle) {
+        Require(Menu::ValueText(d, Menu::kTemporalUpscaler) == choices[cycle % 6], "one upscaling control visits every provider");
+        Require(!(d.graphics.spatialUpscaler && d.temporalUpscaler), "spatial and temporal upscalers cannot be selected together");
+        if (d.temporalUpscaler) Require(d.renderer == 2, "temporal selection requests D3D12");
+        if (d.graphics.spatialUpscaler) Require(d.renderer == 0, "FSR1 selection requests D3D11 after D3D12");
+        Menu::Step(d, Menu::kTemporalUpscaler, 1);
+    }
+    d.graphics.crtGlow = 2;
+    Menu::Step(d, Menu::kBloom, 1);
+    Require(d.graphics.bloom == 3 && d.graphics.crtGlow == 0 && std::string(Menu::Label(Menu::kBloom)) == "Glow",
+            "single glow adjustment replaces the old overlapping effect");
+    Menu menu; menu.Open(); menu.SetPage(Menu::kGameplay);
+    Menu::OptionValues values; values.typing = true; values.livesMask = (1u << 1) | (1u << 3);
+    values.creditsMask = 1u | (1u << 3) | (1u << 5); menu.SetOptionValues(values);
+    std::vector<uint32_t> sounds;
+    menu.FocusRow(Menu::kLives); menu.Update(Key(0x80), d, sounds);
+    Require(menu.OptionValuesState().lives == 1, "Typing lives skip values not offered by its original rules");
+    menu.FocusRow(Menu::kContinues); menu.Update(Key(0x80), d, sounds);
+    Require(menu.OptionValuesState().credits == 0, "Typing continues include Unlimited alongside its allowed numeric choices");
+    menu.SetStatus("Restart required. Renderer choice applies on next launch.");
+    game::WorldHud hud; menu.ModernHud(d, hud);
+    Require(Text(hud, "Restart required. Renderer choice applies on next launch."), "restart notice is rendered");
+    menu.SetStatus(std::string(250, 'W')); menu.ModernHud(d, hud);
+    int notices = 0;
+    for (const auto& text : hud.menuText) if (text.x == 210 && text.y >= 25 && text.y < 65) {
+        ++notices; Require(text.x + text.text.size() * 16 * text.scale <= 614 && text.y + 24 * text.scale <= 65,
+                           "long errors wrap and stay inside the notice area");
+    }
+    Require(notices == 2, "long status occupies at most two compact lines");
+}
 }  // namespace
 int main() {
-    LayoutAndReachability(false);
-    LayoutAndReachability(true);
+    for (bool modern : {false, true})
+        for (bool naomi : {false, true})
+            for (bool typing : {false, true}) LayoutAndReachability(modern, naomi, typing);
     ScrollHints(false);
     ScrollHints(true);
     CompactFooter(false);
     CompactFooter(true);
     ValuesAndActions();
+    NaomiGraphicsChoices();
+    SavedGraphicsAndConsolidatedControls();
     std::printf("PASS %d unified options checks: categories, scrolling, mixer buses, gameplay locks, reset scopes and devices\n", checks);
 }

@@ -266,10 +266,92 @@ bool AssetStore::Open(const std::filesystem::path& gameDir, std::string* error) 
     redBloodTextures_.clear();
     if (auto it = byFile_.find("scr_blood_red.bin"); it != byFile_.end())
         for (const auto& r : it->second) redBloodTextures_.emplace(r.desc.id, r);
+    naomiPath_=dir_/"naomi_visuals.bank";
+    naomiCandidate_=NaomiVisuals::Inspect(naomiPath_,&naomiError_);
     return true;
 }
 
+bool AssetStore::LoadNaomiVisuals(const std::filesystem::path& path,std::string* error) {
+    auto next=std::make_unique<NaomiVisuals>();std::string reason;
+    if(!next->Load(path,&reason)){naomiError_=reason;if(path==naomiPath_)naomiCandidate_=false;if(error)*error=reason;return false;}
+    ClearCache();naomi_=std::move(next);naomiPath_=path;naomiCandidate_=true;naomiError_.clear();++visualRevision_;
+    if(error)error->clear();return true;
+}
+
+bool AssetStore::SetNaomiGraphics(bool enabled,std::string* error) {
+    if(enabled&&(!naomi_||!naomi_->Available())&&naomiCandidate_)
+        if(!LoadNaomiVisuals(naomiPath_,error))return false;
+    if(enabled&&!NaomiAvailable()){if(error)*error=naomiError_;return false;}
+    if(naomiGraphics_!=enabled){ClearCache();naomiGraphics_=enabled;++visualRevision_;}
+    if(error)error->clear();return true;
+}
+
+bool AssetStore::NaomiModelById(uint32_t id,game::Model& out,std::string* polName) const {
+    if(!naomiGraphics_||!NaomiAvailable()||id>=0x4000)return false;
+    uint16_t file=0;if(!exe_.Read(0x004E83B4+id*2,&file,2))return false;
+    const auto name=exe_.CStr(exe_.U32(0x004D0EF4+file*4));const auto list=exe_.U32(0x004E794C+file*4);
+    uint16_t count=0;if(name.empty()||!exe_.InData(list)||!exe_.Read(0x004E803C+file*2,&count,2)||count>4096)return false;
+    for(uint32_t i=0;i<count;++i)if(static_cast<uint16_t>(exe_.S16(list+i*2))==id){std::string native;
+        if(!naomi_->Model(name,i,out,&native))return false;
+        native="naomi:"+native;
+        for(auto& mesh:out.meshes)mesh.textureBank=native;
+        if(polName)*polName=native;return true;}
+    return false;
+}
+
+bool AssetStore::NaomiModelSourceById(uint32_t id,std::string* nativeBank,uint32_t* nativePart,uint32_t* evidence) const {
+    if(nativeBank)nativeBank->clear();if(nativePart)*nativePart=0;if(evidence)*evidence=0;
+    if(!naomiGraphics_||!NaomiAvailable()||id>=0x4000)return false;
+    uint16_t file=0;if(!exe_.Read(0x004E83B4+id*2,&file,2))return false;
+    const auto name=exe_.CStr(exe_.U32(0x004D0EF4+file*4));const auto list=exe_.U32(0x004E794C+file*4);
+    uint16_t count=0;if(name.empty()||!exe_.InData(list)||!exe_.Read(0x004E803C+file*2,&count,2)||count>4096)return false;
+    for(uint32_t i=0;i<count;++i)if(static_cast<uint16_t>(exe_.S16(list+i*2))==id){const auto* source=naomi_->ModelMapping(name,i);if(!source)return false;
+        if(nativeBank)*nativeBank="naomi:"+source->bank;if(nativePart)*nativePart=source->index;if(evidence)*evidence=source->evidence;return true;}
+    return false;
+}
+
+bool AssetStore::NaomiAdditionalStageModelById(uint32_t id,uint32_t extraOrdinal,game::Model& out,std::string* nativeBank,uint32_t* nativePart,uint32_t* evidence) const {
+    if(nativeBank)nativeBank->clear();if(nativePart)*nativePart=0;if(evidence)*evidence=0;
+    if(!naomiGraphics_||!NaomiAvailable()||id>=0x4000||extraOrdinal>=32)return false;
+    const auto key="__naomi_stage_"+std::to_string(id)+"__.bin";
+    const auto* source=naomi_->ModelMapping(key,extraOrdinal);if(!source||source->evidence!=14)return false;
+    std::string native;if(!naomi_->Model(key,extraOrdinal,out,&native))return false;
+    native="naomi:"+native;for(auto& mesh:out.meshes)mesh.textureBank=native;
+    if(nativeBank)*nativeBank=native;if(nativePart)*nativePart=source->index;if(evidence)*evidence=source->evidence;return true;
+}
+
+bool AssetStore::NaomiNodeModelById(uint32_t id,uint32_t node,game::Model& out,std::string* nativeBank) const {
+    if(nativeBank)nativeBank->clear();
+    if(!naomiGraphics_||!NaomiAvailable()||id>=0x4000||node>=256)return false;
+    const auto key="__naomi_node_"+std::to_string(id)+"__.bin";
+    const auto* source=naomi_->ModelMapping(key,node);if(!source||source->evidence!=19)return false;
+    std::string native;if(!naomi_->Model(key,node,out,&native))return false;
+    native="naomi:"+native;for(auto& mesh:out.meshes)mesh.textureBank=native;
+    if(nativeBank)*nativeBank=native;return true;
+}
+
+bool AssetStore::NaomiMeshById(uint32_t id,uint32_t mesh,game::ModelMesh& out,std::string* nativePolName,uint32_t* evidence) const {
+    if(evidence)*evidence=0;
+    if(!naomiGraphics_||!naomi_||id>=0x4000)return false;
+    uint16_t file=0;if(!exe_.Read(0x004E83B4+id*2,&file,2))return false;
+    const auto name=exe_.CStr(exe_.U32(0x004D0EF4+file*4));const auto list=exe_.U32(0x004E794C+file*4);
+    uint16_t count=0;if(name.empty()||!exe_.InData(list)||!exe_.Read(0x004E803C+file*2,&count,2)||count>4096)return false;
+    for(uint32_t i=0;i<count;++i)if(static_cast<uint16_t>(exe_.S16(list+i*2))==id){std::string native;
+        if(!naomi_->Mesh(name,i,mesh,out,&native,evidence))return false;
+        out.textureBank="naomi:"+native;
+        if(nativePolName)*nativePolName=out.textureBank;return true;}
+    return false;
+}
+
+bool AssetStore::NaomiPolygonBloodFrame(uint32_t frame,game::Model& out,std::string* nativePolName) const {
+    if(!naomiGraphics_||!naomi_||frame>=58)return false;std::string native;
+    if(!naomi_->Model("__naomi_polygon_blood__.bin",frame,out,&native))return false;
+    native="naomi:"+native;for(auto& mesh:out.meshes)mesh.textureBank=native;
+    if(nativePolName)*nativePolName=native;return true;
+}
+
 TexturePackInfo AssetStore::ActivePackInfo() const {
+    if(naomiGraphics_){TexturePackInfo info;info.name="Naomi";info.valid=NaomiAvailable();info.path=dir_/"naomi_visuals.bank";return info;}
     if (!AssetDir().empty()) return InspectTexturePack(AssetDir());
     TexturePackInfo original;
     original.name = "Original";
@@ -360,6 +442,7 @@ bool AssetStore::ModelById(uint32_t id, game::Model& out, std::string* polName) 
 }
 
 std::string AssetStore::TextureFileFor(const std::string& polName) const {
+    if(naomiGraphics_&&naomi_&&polName.rfind("naomi:",0)==0){const auto bank=polName.substr(6);if(naomi_->Find(1,bank))return bank;return{};}
     if (byFile_.count(polName)) return polName;
     if (polName.rfind("pol_", 0) == 0 && byFile_.count(polName.substr(4))) return polName.substr(4);
     return {};
@@ -367,6 +450,7 @@ std::string AssetStore::TextureFileFor(const std::string& polName) const {
 
 const RgbaImage* AssetStore::Texture(const std::string& polName, uint32_t ref) {
     if (ref == 0xFFFFFFFF) return nullptr;
+    if(naomiGraphics_&&polName.rfind("naomi:",0)==0)return NaomiTexture(polName.substr(6),ref);
     const std::string texName = TextureFileFor(polName);
     const auto file = byFile_.find(texName);
     if (file == byFile_.end() || ref >= file->second.size()) return nullptr;
@@ -374,6 +458,7 @@ const RgbaImage* AssetStore::Texture(const std::string& polName, uint32_t ref) {
 }
 
 bool AssetStore::RefineModel(uint32_t modelId) {
+    if(naomiGraphics_)return false;
     if(!AssetDirSet())return false;
     if(!refinementSelectionRead_){refinementSelectionRead_=true;bool enabled=false;std::string ignored;
         if(!ReadMeshSelection(std::filesystem::path(AssetDir())/"pack.ini",&enabled,&refinementModels_,&ignored)||!enabled)refinementModels_.clear();}
@@ -381,6 +466,7 @@ bool AssetStore::RefineModel(uint32_t modelId) {
 }
 
 const RgbaImage* AssetStore::NormalRoughness(const std::string& polName, uint32_t ref) {
+    if(naomiGraphics_)return nullptr;
     if (AssetDir().empty() || ref == 0xFFFFFFFF) return nullptr;
     if (normalRoughnessMode_ < 0) {
         // Read only the small manifest; discovery/whole-pack validation belongs to
@@ -454,6 +540,10 @@ const RgbaImage* AssetStore::TextureById(int fileIndex, uint32_t id) {
 }
 
 const RgbaImage* AssetStore::ResolvedTexture(const TexRef& original) {
+    if(naomiGraphics_&&naomi_){
+        if(const auto* mapped=naomi_->TextureMapping(original.fileName,static_cast<uint32_t>(original.texIndex)))
+            if(const auto* texture=NaomiTexture(mapped->bank,mapped->index,original.desc.width,original.desc.height))return texture;
+    }
     const TexRef* r = &original;
     const auto blood = redBloodTextures_.find(original.desc.id);
     if (bloodColor_ != BloodColor::Green) {
@@ -476,7 +566,25 @@ const RgbaImage* AssetStore::ResolvedTexture(const TexRef& original) {
     return variant.get();
 }
 
+const RgbaImage* AssetStore::NaomiTexture(const std::string& bank,uint32_t index,int logicalWidth,int logicalHeight) {
+    if(!naomiGraphics_||!naomi_)return nullptr;
+    const auto* desc=naomi_->Descriptor(bank,index);if(!desc||!naomi_->CanDecodeTexture(bank,index))return nullptr;
+    NaomiVisuals::TextureRef selected{bank,index};
+    const bool red=bloodColor_!=BloodColor::Green;
+    const auto* blood=naomi_->BloodTexture(desc->id,red);
+    if(blood)selected=*blood;
+    desc=naomi_->Descriptor(selected.bank,selected.index);if(!desc||!naomi_->CanDecodeTexture(selected.bank,selected.index))return nullptr;
+    const std::string cacheBank="naomi:"+selected.bank+":"+std::to_string(static_cast<int>(bloodColor_))+":"+std::to_string(logicalWidth)+"x"+std::to_string(logicalHeight);
+    const TexKey key{cacheBank,selected.index};auto found=textures_.find(key);if(found!=textures_.end())return found->second.get();
+    auto image=std::make_unique<RgbaImage>();image->width=desc->width;image->height=desc->height;
+    if(!naomi_->DecodeRgba(selected.bank,selected.index,image->pixels))return nullptr;
+    image->logicalWidth=logicalWidth;image->logicalHeight=logicalHeight;
+    if(blood&&(bloodColor_==BloodColor::Blue||bloodColor_==BloodColor::Purple))RecolorBlood(*image,bloodColor_);
+    return textures_.emplace(key,std::move(image)).first->second.get();
+}
+
 std::unique_ptr<RgbaImage> AssetStore::LoadOverride(const TexRef& r) {
+    if(naomiGraphics_)return nullptr;
     if (AssetDir().empty()) return nullptr;
     std::string stem = r.fileName;
     if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".bin") == 0) stem.resize(stem.size() - 4);
@@ -533,22 +641,26 @@ void AssetStore::ClearCache() {
     recoloredBloodTextures_.clear();
     textures_.clear(); normalRoughness_.clear(); normalRoughnessMode_=-1; files_.clear();
     refinementSelectionRead_=false;refinementModels_.clear();
+    if(naomi_)naomi_->ClearDecoded();
     stop_ = false;
 }
 
 void AssetStore::PrefetchFile(int fileIndex) {
+    if(naomiGraphics_)return;
     if (AssetDir().empty()) return;
     for (const auto& [name, list] : byFile_)
         if (!list.empty() && list[0].fileIndex == fileIndex) PrefetchTexName(name);
 }
 
 void AssetStore::PrefetchPolFile(const std::string& polName) {
+    if(naomiGraphics_)return;
     if (AssetDir().empty()) return;
     const std::string tex = TextureFileFor(polName);
     if (!tex.empty()) PrefetchTexName(tex);
 }
 
 void AssetStore::PrefetchTexName(const std::string& name) {
+    if(naomiGraphics_)return;
     static const bool log = getenv("HOTD2_PLAY_TIMING") != nullptr;
     auto found = byFile_.find(name);
     if (found == byFile_.end()) return;

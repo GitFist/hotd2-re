@@ -54,6 +54,17 @@ struct WorldLight {
     int pitch = 0, yaw = 0;
 };
 
+// Native-only presentation state. These effects never enter the deterministic
+// task list, PC model submissions, network snapshots, or the game's rand stream.
+struct NativeVisualEffect {
+    enum class Kind : uint8_t { PolygonBlood };
+    Kind kind = Kind::PolygonBlood;
+    uint64_t serial = 0;
+    int frame = 0;
+    int duration = 58;
+    Mat4 world = Mat4::Identity();
+};
+
 // Edits the original makes to a model's data in memory before drawing it (the global model, so they persist until
 // the next edit): the bat / leech skeleton draw 0x0040F960 moves the seam vertices of each body segment onto the
 // neighbouring segment and sets the diffuse colour of every material. Applied by the renderer to a copy of the model.
@@ -85,6 +96,7 @@ struct ModelEdit {
     };
     std::vector<Uv> uvs;
     uint32_t tspOr = 0;  // OR-ed into every material's TSP word (0x0046E3A0: 0x2000, bilinear filtering)
+    float alpha = -1.0f; // >= 0: material word 11 (0x004659D0: car glass reflection opacity)
     bool clearSpecular = false; // PC4AEB40: material exponent word9 becomes zero for authored typing UI models.
 };
 
@@ -468,14 +480,17 @@ struct WorldConfig {
 };
 
 // Save-backed gameplay controls exposed to the port's unified Options tabs. Lives are the visible 1..5 value;
-// credits == 0 means the existing unlock-gated Free Play choice. Availability is output-only metadata.
+// credits == 0 means Unlimited (the native Free Play encoding). Availability is output-only metadata.
 struct PortGameOptions {
     int difficulty = 2;
     int lives = 3;
     int credits = 5;
     int crosshair[2] = {0, 0};
-    bool freePlayUnlocked = false;
+    bool freePlayUnlocked = false;  // Unlimited is always available in port settings
     bool editable = false;
+    bool typing = false;
+    uint32_t livesMask = 0x3E;   // allowed values; metadata, not caller permissions
+    uint32_t creditsMask = 0x3FE;
 };
 
 struct PortTypingPrompt : TypingPrompt {
@@ -584,6 +599,7 @@ public:
     // a context can change after that in the same frame, e.g. the map screen setup). view / inverse are not filled.
     WorldCamera ContextNow() const;
     const std::vector<WorldDraw>& Draws() const;
+    const std::vector<NativeVisualEffect>& NativeVisualEffects() const;
     const WorldHud& Hud() const;
     const WorldFeedback& Feedback() const;
     // Fog, the env blocks and the light table after the last frame (renderer state).
@@ -614,7 +630,9 @@ public:
         int tick;          // +0x19C
         int target;        // +0x121 target player (-1 none)
     };
-    std::vector<EnemyInfo> Enemies(bool civilians = false) const;  // civilians: also actor type 0x10 (0x0048A920)
+    std::vector<EnemyInfo> Enemies(bool civilians = false, bool bosses = false) const;
+    // Optional scripted actors let verification inspect boss timing and HP;
+    // the default snapshot remains ordinary enemies only.
     // Route planning (world_plan.cpp, tests/world_test --plan): the shot targets registered this frame (what the next
     // frame's hit task tests) and a preview of player p's shot at gun pixel (x, y) (mode-6 calibration) against them:
     // the object the hit task would pick (nearest entry), without side effects on the simulation.

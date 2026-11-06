@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "game/shoot_camera.h"
+#include "game/naomi_math.h"
 
 namespace game {
 
@@ -80,12 +81,43 @@ float CameraFile::EvalCurve(int32_t word, float t) const {
     return sum + (c3 - b) * v1;
 }
 
+float CameraFile::EvalCurveNaomi(int32_t word,float t) const {
+    const auto* c=&data_[base_+static_cast<size_t>(word)*4];
+    uint16_t n0,n1;std::memcpy(&n0,c,2);std::memcpy(&n1,c+2,2);
+    auto key=[&](int i,int field) {float v;std::memcpy(&v,c+4+i*16+field*4,4);return v;};
+    int step=n0>>2,idx=n0>>1;
+    for(int i=n1-1;i>0;--i) {idx+=t<=key(idx,0)?-step:step;step/=2;}
+    if(key(idx,0)<t)++idx;
+    // 0x0C02911E..18E. Retain the native weight/accumulation order;
+    // reusing the PC's algebraically equivalent sum loses native float bits.
+    const float s=naomi::Sub(t,key(idx-1,0)),h=naomi::Sub(key(idx,0),key(idx-1,0));
+    const float s2=naomi::Mul(s,s),s3=naomi::Mul(s,s2);
+    const float h2=naomi::Mul(h,h),h3=naomi::Mul(h,h2);
+    const float twice=naomi::Mul(s3,2.0f),three=naomi::Mul(s2,3.0f);
+    const float h0=naomi::Add(naomi::Sub(naomi::Div(twice,h3),naomi::Div(three,h2)),1.0f);
+    const float h1=naomi::Add(naomi::Div(-twice,h3),naomi::Div(three,h2));
+    const float a=naomi::Div(s3,h2);
+    const float g=naomi::Sub(a,naomi::Div(s2,h));
+    const float f=naomi::Add(naomi::Sub(a,naomi::Div(naomi::Mul(s2,2.0f),h)),s);
+    float sum=naomi::Mul(key(idx,1),h1);
+    sum=naomi::Fmac(key(idx-1,1),h0,sum);
+    sum=naomi::Fmac(key(idx-1,2),f,sum);
+    return naomi::Fmac(key(idx,3),g,sum);
+}
+
 void CameraFile::Evaluate(int k, float t, float pos[3], float target[3], int* roll) const {
     int32_t ch[8];
     Channels(k, ch);
     for (int i = 0; i < 3; ++i) pos[i] = EvalCurve(ch[i], t);
     for (int i = 0; i < 3; ++i) target[i] = EvalCurve(ch[3 + i], t);
     if (roll) *roll = static_cast<int>(EvalCurve(ch[6], t));
+}
+
+void CameraFile::EvaluateNaomi(int k,float t,float pos[3],float target[3],int* roll) const {
+    int32_t ch[8];Channels(k,ch);
+    for(int i=0;i<3;++i)pos[i]=EvalCurveNaomi(ch[i],t);
+    for(int i=0;i<3;++i)target[i]=EvalCurveNaomi(ch[3+i],t);
+    if(roll)*roll=static_cast<int>(EvalCurveNaomi(ch[6],t));
 }
 
 float CameraFile::Duration(int k) const {
@@ -125,6 +157,15 @@ bool CameraBank::Evaluate(int id, float t, float pos[3], float target[3], int* r
     return true;
 }
 
+bool CameraBank::EvaluateNaomi(int id,float t,float pos[3],float target[3],int* roll,bool rollEnabled) const {
+    const auto it=ids_.find(id);
+    if(it==ids_.end())return false;
+    int r=0;
+    it->second.first->EvaluateNaomi(it->second.second,t,pos,target,rollEnabled?&r:nullptr);
+    if(roll)*roll=rollEnabled?r:0;
+    return true;
+}
+
 bool CameraBank::AddPreparedFile(std::vector<uint8_t> bytes, const std::vector<int>& ids) {
     if (ids.empty() || ids.size() > 4096) return false;
     auto file = std::make_unique<CameraFile>();
@@ -137,6 +178,17 @@ bool CameraBank::AddPreparedFile(std::vector<uint8_t> bytes, const std::vector<i
 void LookAngles(const float pos[3], const float target[3], int* pitch, int* yaw) {
     // 0x00403AC0 -> 0x004016B0 with the game's 24-bit FPU precision (game::DirToAngles, shoot_camera.cpp)
     DirToAngles(pos[0] - target[0], pos[1] - target[1], pos[2] - target[2], pitch, yaw);
+}
+
+void NaomiLookAngles(const float pos[3],const float target[3],int* pitch,int* yaw) {
+    const float dx=naomi::Sub(pos[0],target[0]),dy=naomi::Sub(pos[1],target[1]),dz=naomi::Sub(pos[2],target[2]);
+    const int y=static_cast<int16_t>(static_cast<uint16_t>(naomi::ArcTan2(dx,dz)));
+    // 0x0C026048..076 reconstructs length from its quantized yaw using
+    // the SDK trig approximations, rather than sqrt(dx*dx+dz*dz).
+    const float length=((y+0x2000)&0x4000)?naomi::Div(dx,naomi::Sin(y)):naomi::Div(dz,naomi::Cos(y));
+    const int p=static_cast<int16_t>(static_cast<uint16_t>(naomi::ArcTan2(dy,length)));
+    if(pitch)*pitch=-p;
+    if(yaw)*yaw=y;
 }
 
 Mat4 ViewMatrix(const float pos[3], int pitch, int yaw, int roll) {

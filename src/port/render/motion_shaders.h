@@ -1,11 +1,12 @@
 #pragma once
 #include "temporal_frame.h"
+#include "material_opacity_hlsl.h"
 
 namespace port {
 // Default output RGBA16F = {motion.xy, previous reversed depth, history valid}.
 // MOTION_MRT also writes a genuine RG16F target for temporal SDKs. The backend
 // clears both targets to zero and rasterizes opaque geometry with real depth.
-inline const char kMotionShaderHlsl[] = R"(
+inline const char kMotionShaderHlsl[] = HOTD2_MATERIAL_OPACITY_HLSL R"(
 #ifndef CB_REG
 #define CB_REG register(b0)
 #endif
@@ -44,7 +45,7 @@ VSOut vsmain(VSIn i) {
 float4 MotionValue(VSOut i) {
     if(alpha.y>=0) {
         float ta=alpha.x>0.5?tex.Sample(samp,i.uv).a:1;
-        float a=alpha.x>0.5?(alpha.w>1.5?ta:ta*alpha.z):alpha.z;
+        float a=SourceMaterialAlpha(ta,alpha.z,alpha.w,alpha.x>0.5);
         clip(a-alpha.y);
     }
     if(target.z<0.5 || i.previous.w<=1e-6 || i.current.w<=1e-6) return 0;

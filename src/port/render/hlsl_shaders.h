@@ -1,4 +1,5 @@
 #pragma once
+#include "material_opacity_hlsl.h"
 
 // HLSL source of the port's two pipelines, shared by the D3D11 backend (compiled as vs_5_0 / ps_5_0 without defines)
 // and the SDL_GPU backend (DXBC vs_5_1 / ps_5_1 with the register spaces SDL_GPU expects for D3D12: vertex uniforms
@@ -9,7 +10,7 @@
 
 namespace port {
 
-inline const char kModelShaderHlsl[] = R"(
+inline const char kModelShaderHlsl[] = HOTD2_MATERIAL_OPACITY_HLSL R"(
 #ifndef CB_REG
 #define CB_REG register(b0)
 #endif
@@ -38,18 +39,18 @@ cbuffer Frame : CB_REG {
     row_major float4x4 projection;
     float4 lightDir;
     float4 diffuse;
-    float4 flags;   // x: textured, y: unlit, z: alpha-test threshold (<0 = off), w: alpha source (1 tex*mat, 2 tex)
+    float4 flags;   // x: textured, y: unlit, z: alpha-test; w: PC1/2 or16+native TSP shading/alpha bits
     float4 litDir;      // xyz: world dir to light, w: 1 = D3D7 lighting
     float4 litDiffuse;  // light diffuse (rgb), w: material ambient scale
     float4 litAmbient;  // light ambient + AMBIENT render state, premultiplied sum (rgb)
-    float4 fogParams;   // x: FOGSTART, y: FOGEND, z: 1 = fog on for this material
-    float4 fogColor;
+    float4 fogParams;   // x: PC doubled start, y: doubled end, z: material fog on, w: Naomi LUT path
+    float4 fogColor;    // rgb; w: original packed-density decode for Naomi
     float4 localCount;  // x: local lights, y: normal mode, z: split projection, w: unit specular normal
     float4 matSpecular; // rgb, w: power (0 = none)
     float4 litSpecular;
     float4 eyePos;
     float4 local[40];   // 8 lights x (pos range | dir falloff | diffuse type | att | cos half theta, cos half phi)
-    float4 lightingOptions; // x: optional opaque per-pixel lighting (zero retains native Gouraud)
+    float4 lightingOptions; // x: modern; y: Naomi standard1/RGB-table2; z: original intensity; w: inverse model scale
     float4 sampling;        // x: retain authored point magnification with AF; yz: U/V address modes
     float4 depthEffects;    // fade distance, 1/width, 1/height, current opaque-depth snapshot ready
     float4 depthProjection; // reversed projection A/B/C/D, computed before rasterization
@@ -66,11 +67,34 @@ SamplerState materialSampler : MATERIAL_SAMP_REG;
 #define IN1 NORMAL
 #define IN2 TEXCOORD
 #endif
+#ifdef NAOMI_PRELIT
+#ifndef IN3
+#define IN3 COLOR1
+#endif
+struct VSIn { float3 pos : IN0; float3 color : IN1; float2 uv : IN2; float3 specular : IN3; };
+#else
 struct VSIn { float3 pos : IN0; float3 nrm : IN1; float2 uv : IN2; };
+#endif
 struct VSOut { float4 pos : SV_Position; float3 nrm : NORMAL; float2 uv : TEXCOORD; float depth : DEPTH; float4 lit : COLOR0; float4 spec : COLOR1; float3 worldPos : TEXCOORD1; float3 surfaceNormal : TEXCOORD2; };
 float3 SafeUnit(float3 v) { return v * rsqrt(max(dot(v, v), 1e-20)); }
+// PVR intensity-color vertices clamp the face and scalar independently to bytes,
+// multiply with an eight-bit divisor, then interpolate the resulting color.
+// Alpha is separate and is never multiplied by the lighting intensity.
+float3 NaomiIntensityColor(float3 face, float intensity) {
+    float3 faceByte = floor(saturate(face) * 255.0);
+    float intensityByte = floor(saturate(intensity) * 255.0);
+    return floor(faceByte * intensityByte / 256.0) / 255.0;
+}
 VSOut vsmain(VSIn i) {
     VSOut o;
+#ifdef NAOMI_PRELIT
+    // Camera-space geometry whose original packed Gouraud colors have already
+    // been interpolated at BSP cuts. Preserve perspective interpolation and
+    // apply the source material/texture/fog in the unchanged fragment stage.
+    o.pos=mul(float4(i.pos,1),projection);
+    o.nrm=o.surfaceNormal=float3(0,0,0);o.worldPos=i.pos;
+    o.uv=i.uv;o.depth=o.pos.w;o.lit=float4(i.color,1);o.spec=float4(i.specular,0);
+#else
     float4 wp = mul(float4(i.pos, 1), world);
     if (localCount.z > 0.5) {
         // Project only after moving into camera space. A combined world-to-clip matrix loses
@@ -88,7 +112,49 @@ VSOut vsmain(VSIn i) {
     o.spec = float4(0, 0, 0, 0);
     o.worldPos = wp.xyz;
     o.surfaceNormal = o.nrm;
-    if (lightingOptions.x > 0.5 && litDir.w > 0.5) {
+    if (lightingOptions.y > 1.5 && litDir.w > 0.5) {
+        // Native RGB TABLE kernel 0x0C0C5160. This path sums colored
+        // lighting before multiplying/packing the material face RGB. It has
+        // neither the standard intensity-color product nor a specular term.
+        float3 color = matSpecular.w < 0 ? float3(1,1,1) : litAmbient.rgb * litDiffuse.w;
+        if (matSpecular.w >= 0) for (int k=0;k<(int)localCount.x;++k) {
+            float4 p0=local[k*5],p1=local[k*5+1],p2=local[k*5+2],p3=local[k*5+3],p4=local[k*5+4];
+            float amount=0;
+            if (p2.w > 2.5) {
+                amount=max(0,dot(i.nrm,p1.xyz));
+            } else {
+                float3 delta=p0.xyz-i.pos;
+                float distance2=dot(delta,delta), lambert=dot(i.nrm,delta);
+                if (lambert<=0 || distance2>=p0.w*p0.w) continue;
+                float inverseDistance=rsqrt(max(distance2,1e-20));
+                float distance=distance2*inverseDistance;
+                amount=lambert*inverseDistance;
+                if (p2.w>1.5) {
+                    float rho=-dot(delta,p1.xyz)*inverseDistance;
+                    if (rho<p4.x) continue;
+                    amount*=p4.y>0?(rho-p4.x)*p4.y:0;
+                }
+                amount/=max(1,p3.x+p3.y*distance+p3.z*distance2);
+            }
+            color+=p2.rgb*amount;
+        }
+        o.lit=float4(floor(saturate(diffuse.rgb*litDiffuse.rgb*color)*255.0)/255.0,1);
+    } else if (lightingOptions.y > 0.5 && litDir.w > 0.5) {
+        // Original standard Naomi kernel: model-space light is transformed by
+        // WORLD and divided by the explicit maximum model scale. The normal is
+        // not passed through the PC inverse-transpose or normalized per vertex.
+        float ndl = dot(o.nrm * lightingOptions.w, litDir.xyz);
+        float intensity = matSpecular.w < 0 ? 1.0 : lightingOptions.z * litDiffuse.w + max(0, ndl);
+        o.lit = float4(NaomiIntensityColor(diffuse.rgb * litDiffuse.rgb, intensity), 1);
+        if (matSpecular.w > 0) {
+            // lightDir contains the single normalized model-space half-vector
+            // prepared for this draw. q is the native doubled-angle curve.
+            float h = dot(i.nrm, lightDir.xyz);
+            float q = max(0, 2.0 * h * h - 1.0);
+            float sheen = h > 0 ? pow(q, matSpecular.w) : 0;
+            o.spec = float4(NaomiIntensityColor(matSpecular.rgb * litSpecular.rgb, sheen), 0);
+        }
+    } else if (lightingOptions.x > 0.5 && litDir.w > 0.5) {
         // WORLD can include mirrored and nonuniform scales. Transform normals with its
         // inverse transpose and normalize for modern illumination. Degenerate transforms
         // use the finite WORLD normal; they must never introduce a full-screen NaN flash.
@@ -143,6 +209,7 @@ VSOut vsmain(VSIn i) {
         }
         o.lit = float4(saturate(c), 1);
     }
+#endif
     return o;
 }
 // Preserve the game's material colors and light table, changing where illumination is
@@ -208,6 +275,7 @@ float RasterDirectionalVisibility(float3 position,float3 normal,float3 direction
 #ifndef DIRECT_LIGHT_VISIBILITY
 #define DIRECT_LIGHT_VISIBILITY(P,N,L) 1.0
 #endif
+)" R"(
 float3 PixelLighting(VSOut i, float3 textureColor) {
     float3 n = SafeUnit(i.surfaceNormal);
     float specPower = matSpecular.w;
@@ -246,8 +314,26 @@ float3 PixelLighting(VSOut i, float3 textureColor) {
     return saturate(textureColor * saturate(c) + spec);
 }
 // D3DFOG_LINEAR table fog: f = (end - d) / (end - start), colour = f * c + (1 - f) * FOGCOLOR.
+)" R"(
+float NaomiFogEntry(float index) {
+    float near = fogParams.x * 0.5;
+    float far = fogParams.y * 0.5;
+    // 0x0C069A86 builds 129 samples, but the final hardware entry repeats
+    // F[127]. Quantize the two independently before the lookup interpolation.
+    float coefficient = saturate((far * exp2(-min(index,127.0) / 16.0) - near) / (far - near));
+    return floor(coefficient * 255.0) / 255.0;
+}
 float3 Fog(float3 c, float d) {
     if (fogParams.z < 0.5) return c;
+    if (fogParams.w > 0.5) {
+        if (fogParams.y <= fogParams.x || fogColor.w <= 0 || d <= 0) return c;
+        float z = clamp(fogColor.w / d,1.0,255.9999);
+        float exponent = floor(log2(z));
+        float mantissa = z * 16.0 / exp2(exponent) - 16.0;
+        float index = floor(mantissa) + exponent * 16.0;
+        float coefficient = lerp(NaomiFogEntry(index),NaomiFogEntry(index+1),frac(mantissa));
+        return lerp(c,fogColor.rgb,coefficient);
+    }
     float f = saturate((fogParams.y - d) / (fogParams.y - fogParams.x));
     return lerp(fogColor.rgb, c, f);
 }
@@ -292,11 +378,22 @@ float SoftOpacity(VSOut i, float alpha) {
     float fade = saturate((sceneW - i.depth) / depthEffects.x);
     return alpha * fade;
 }
+#ifdef NAOMI_GATHER
+float4 ModelColor(VSOut i) {
+#else
 float4 psmain(VSOut i) : SV_Target {
+#endif
     float4 t = flags.x > 0.5 ? ModelSample(i.uv) : float4(1, 1, 1, 1);
-    float a = flags.x > 0.5 ? (flags.w > 1.5 ? t.a : t.a * diffuse.a) : diffuse.a;
+    float a = SourceMaterialAlpha(t.a,diffuse.a,flags.w,flags.x > 0.5);
     a = SoftOpacity(i,a);
     if (flags.z >= 0) clip(a - flags.z);
+    if (flags.w >= 16 && flags.x > 0.5) {
+        int instruction = ((int)flags.w - 16) & 3;
+        float3 face = litDir.w > 0.5 ? i.lit.rgb : diffuse.rgb;
+        float3 color = instruction == 0 ? t.rgb : instruction == 2
+            ? lerp(face,t.rgb,SourceTextureAlpha(t.a,flags.w)) : face*t.rgb;
+        return float4(Fog(saturate(color+i.spec.rgb),i.depth),a);
+    }
     if (lightingOptions.x > 0.5 && litDir.w > 0.5) return float4(Fog(PixelLighting(i, t.rgb), i.depth), a);
     if (litDir.w > 0.5) return float4(Fog(saturate(t.rgb * i.lit.rgb + i.spec.rgb), i.depth), a);  // Gouraud colour (vsmain)
     float3 c = diffuse.rgb * t.rgb;

@@ -33,6 +33,17 @@ inline int ReversedDepthCompare(int comparison) {
 
 struct RgbaImage;
 
+// Native Gouraud colors are packed at the original vertices, before clipping
+// or translucent polygon splitting. Generated vertices retain the interpolated
+// float colors; re-running lighting there would change the source triangle.
+struct NaomiPrelitVertex {
+    float pos[3];
+    float color[3];
+    float uv[2];
+    float specular[3];
+};
+static_assert(sizeof(NaomiPrelitVertex)==44);
+
 using GpuTexture = uintptr_t;  // backend handle, 0 = none
 
 // Fixed-function state of one draw, in D3D7 terms (decoded from the PVR ISP/TSP words like Mdl_ApplyPvrState 0x004A7780).
@@ -86,8 +97,8 @@ struct SpriteConstants {
 };
 
 struct GpuDraw {
-    enum class Pipeline : uint8_t { Model, Sprite };
-    enum class Stream : uint8_t { Static, Dynamic, Sprite };  // vertex buffer the draw reads
+    enum class Pipeline : uint8_t { Model, Sprite, NaomiPrelit };
+    enum class Stream : uint8_t { Static, Dynamic, Sprite, NaomiPrelit };  // vertex buffer the draw reads
     Pipeline pipeline = Pipeline::Model;  // Model: triangle list of game::ModelVertex; Sprite: 4-vertex strip of game::TLVertex
     Stream stream = Stream::Static;
     uint32_t first = 0, count = 0;        // vertices
@@ -97,6 +108,7 @@ struct GpuDraw {
     uint32_t constants = 0;               // index into GpuDrawList::model / ::sprite
     bool reactive = false;               // scene alpha/animated texture; never a claim of opaque correspondence
     bool hud = false;                    // explicit screen UI, deferred only by opted-in scene processing
+    bool naomiSortable = false;          // original native list2; an opted-in backend resolves its fragments per pixel
 };
 
 struct GpuMotionDraw {
@@ -111,6 +123,7 @@ struct GpuDrawList {
     std::vector<GpuDraw> draws;
     std::vector<ModelConstants> model;
     std::vector<SpriteConstants> sprite;
+    std::vector<NaomiPrelitVertex> naomiPrelitVertices; // optional native translucent stream, consumed by Submit
     uint32_t opaqueDrawCount = 0; // initial pass-0 models; depth prepass excludes mixed pass-1 and HUD
     TemporalFrameInfo temporal;
     TemporalCameraInfo temporalCamera;
@@ -160,6 +173,10 @@ public:
     // times); EndFrame presents (window) or finishes (off-screen).
     virtual bool BeginFrame(const float clear[4]) = 0;
     virtual void Submit(const GpuDrawList& list) = 0;
+    // The default path keeps the portable CPU sorter. A supporting backend must
+    // retain every fragment, including same-frame allocator growth/replay.
+    virtual bool SupportsNaomiGpuSort() const { return false; }
+    virtual const std::string& NaomiSortError() const { static const std::string empty; return empty; }
     // Between frames: render explicit menu UI at the presentation resolution.
     // This transient override never changes the accepted graphics settings.
     virtual void SetMenuOverlay(bool enabled) {}

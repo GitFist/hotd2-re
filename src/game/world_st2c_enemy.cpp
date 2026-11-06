@@ -80,7 +80,12 @@ void World::Impl::EnemySetupKind2(EnemyTask& e) {
         nd.radius = 0;
     }
     uint32_t& count = GroupCount();
-    if (count == 0) Sound(e.anim.kind == 2 ? 0x4D17A9 : 0x1F25A9);
+    if (count == 0) {
+        // Max shares Strength's motor sample and its original group on/off
+        // cues. Keep Typing's reference-sound translation on the generic path.
+        SoundCall(e.anim.kind == 2 && cfg.portFeatures && !cfg.portTyping ? World::kStrengthChainsawSound : World::kPlayGameSound,
+                  e.anim.kind == 2 ? 0x4D17A9 : 0x1F25A9);
+    }
     ++count;
     e.c131B = 1;
 }

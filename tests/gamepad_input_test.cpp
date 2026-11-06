@@ -282,16 +282,29 @@ void SettingsProfilesAndPersistence() {
           defaults.bindings[2] == ControlMask(Control::Start), "default profiles preserve the existing aim and action mappings");
     Profile profile;
     profile.CycleBinding(0, 1);
-    Check(profile.bindings[0] == ControlMask(Control::East) &&
-          !(profile.bindings[1] & ControlMask(Control::East)), "cycling replaces an action and removes the same control from other actions");
+    Check(profile.bindings[0] == (ControlMask(Control::East) | ControlMask(Control::RightTrigger)) &&
+          (profile.bindings[1] & ControlMask(Control::South)) && !(profile.bindings[1] & ControlMask(Control::East)),
+          "cycling swaps conflicting primary buttons and keeps alternate trigger bindings");
     profile.CycleBinding(2, -1);
     Check(profile.bindings[2] == ControlMask(Control::Back), "reverse cycling selects the previous control");
     profile.bindings[0] = ControlMask(Control::RightTrigger);
     profile.CycleBinding(0, 1);
     Check(profile.bindings[0] == ControlMask(Control::South), "binding cycles wrap around the available controls");
     profile.bindings[0] = 0;
+    const auto otherBindings = profile.bindings;
     profile.CycleBinding(0, -1);
-    Check(profile.bindings[0] == ControlMask(Control::RightTrigger), "an unassigned action can select a control in either direction");
+    Check(profile.bindings[0] && profile.bindings[1] == otherBindings[1] && profile.bindings[2] == otherBindings[2],
+          "an unassigned action selects a free control without stealing another action's button");
+    for (int direction : {-1, 1}) {
+        profile = {};
+        for (int n = 0; n < 40; ++n) {
+            profile.CycleBinding(0, direction);
+            Check(profile.bindings[0] && profile.bindings[1] && profile.bindings[2], "repeated remapping never unbinds another action");
+            Check(profile.bindings[0] & ControlMask(Control::RightTrigger), "remapping primary Fire retains RT");
+            Check(!(profile.bindings[0] & profile.bindings[1]) && !(profile.bindings[0] & profile.bindings[2]) &&
+                  !(profile.bindings[1] & profile.bindings[2]), "swaps keep all action bindings disjoint");
+        }
+    }
     const Profile beforeInvalid = profile;
     profile.CycleBinding(-1, 1); profile.CycleBinding(3, 1); profile.CycleBinding(0, 0);
     Check(profile == beforeInvalid, "invalid binding edits leave the profile unchanged");

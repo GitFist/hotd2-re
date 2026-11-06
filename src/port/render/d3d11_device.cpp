@@ -10,11 +10,15 @@
 #include <cstring>
 #include <chrono>
 #include <climits>
+#include <cstdlib>
+#include <cstdio>
+#include <algorithm>
 #include <map>
 #include <vector>
 
 #include "asset_store.h"
 #include "hlsl_shaders.h"
+#include "naomi_gpu_sort_hlsl.h"
 #include "texture_mips.h"
 #include "postprocess_shaders.h"
 #include "depth_shaders.h"
@@ -78,6 +82,8 @@ public:
     void SetSpriteVertices(const game::TLVertex* v, size_t count) override;
     bool BeginFrame(const float clear[4]) override;
     void Submit(const GpuDrawList& list) override;
+    bool SupportsNaomiGpuSort() const override { return graphics_.naomiGraphics && graphics_.msaa==1 && naomiReady_ && !hudReady_; }
+    const std::string& NaomiSortError() const override { return naomiError_; }
     void EndFrame() override;
     bool ReadPixels(std::vector<uint8_t>* rgba) override;
     bool ReadPresentation(int width, int height, std::vector<uint8_t>* rgba) override;
@@ -137,6 +143,11 @@ private:
     ID3D11DepthStencilState* DepthState(int zfunc, bool zwrite);
     ID3D11SamplerState* Sampler(bool linear, int addrU, int addrV, int mipmapped);
     void BindPipeline(GpuDraw::Pipeline p, int width, int height);
+    bool EnsureNaomiSort(std::string* error);
+    bool NaomiFailure(const char* operation,HRESULT status,std::string* error) const;
+    bool GrowNaomiNodes(uint64_t count,std::string* error);
+    bool DrawNaomiSorted(const GpuDrawList&,size_t first,size_t end);
+    void DrawNaomiGather(const GpuDrawList&,const GpuDraw&,uint32_t order);
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> ctx_;
@@ -164,6 +175,18 @@ private:
     ComPtr<ID3D11Texture2D> multisampleColor_, postColor_;
     ComPtr<ID3D11RenderTargetView> postRtv_;
     bool frameActive_ = false;
+    ComPtr<ID3D11PixelShader> naomiGatherPs_,naomiResolvePs_;
+    ComPtr<ID3D11VertexShader> naomiResolveVs_;
+    ComPtr<ID3D11Buffer> naomiSortCb_,naomiNodes_,naomiCounter_,naomiCounterRead_;
+    ComPtr<ID3D11Texture2D> naomiHeads_,naomiOpaque_;
+    ComPtr<ID3D11ShaderResourceView> naomiOpaqueSrv_;
+    ComPtr<ID3D11UnorderedAccessView> naomiHeadsUav_,naomiNodesUav_,naomiCounterUav_;
+    ComPtr<ID3D11BlendState> naomiGatherBlend_;
+    ComPtr<ID3D11RasterizerState> naomiResolveRaster_;
+    uint32_t naomiNodeCapacity_=0;
+    int naomiWidth_=0,naomiHeight_=0;
+    bool naomiReady_=false;
+    std::string naomiError_;
     PostTarget smaaEdge_, smaaWeight_, smaaColor_, fsrColor_, fsrSharp_, captureColor_,floatCaptureColor_;
     ComPtr<ID3D11ShaderResourceView> smaaArea_, smaaSearch_;
     ComPtr<ID3D11PixelShader> smaaPs_[3], fsrPs_[2];
@@ -214,13 +237,14 @@ private:
     ComPtr<ID3D11SamplerState> presentSampler_;
     ComPtr<ID3D11DepthStencilState> presentDepth_;
 
-    ComPtr<ID3D11VertexShader> vs_, spriteVs_;
+    ComPtr<ID3D11VertexShader> vs_, spriteVs_, naomiPrelitVs_;
     ComPtr<ID3D11PixelShader> ps_, spritePs_;
-    ComPtr<ID3D11InputLayout> layout_, spriteLayout_;
+    ComPtr<ID3D11InputLayout> layout_, spriteLayout_, naomiPrelitLayout_;
     ComPtr<ID3D11Buffer> constants_, spriteCb_;
     ComPtr<ID3D11RasterizerState> raster_;
     ComPtr<ID3D11RasterizerState> rasterCull_[3];  // D3DCULL none / CW / CCW
-    ComPtr<ID3D11Buffer> staticVb_, dynVb_, spriteVb_;
+    ComPtr<ID3D11Buffer> staticVb_, dynVb_, spriteVb_, naomiPrelitVb_;
+    UINT naomiPrelitCapacity_=0;
     UINT dynVbCapacity_ = 0, spriteVbCapacity_ = 0;  // bytes / vertices
     std::map<int, ComPtr<ID3D11BlendState>> blends_;
     std::map<int, ComPtr<ID3D11DepthStencilState>> depths_;
@@ -438,8 +462,9 @@ bool D3D11Device::SetHdrOutput(bool enabled,std::string* error) {
     CreateBackBuffer(backW_,backH_);if(error)*error="Could not change HDR output; previous presentation was restored";return false;
 }
 
-bool D3D11Device::ConfigureGraphics(const GraphicsOptions& options, std::string* error) {
-    if (!ValidateGraphicsOptions(options, error)) return false;
+bool D3D11Device::ConfigureGraphics(const GraphicsOptions& requested, std::string* error) {
+    if (!ValidateGraphicsOptions(requested, error)) return false;
+    const GraphicsOptions options = ApplyGraphicsModePolicy(requested);
     if (frameActive_) { if (error) *error = "Apply graphics options between frames"; return false; }
     if(options.outputResolutionHud&&!EnsureHudTargets(error))return false;
     if((options.shadowMaps||options.volumetricFog)&&!EnsureShadowMap(options.shadowMaps?options.shadowMaps:1)){if(error)*error="Directional shadow map resources are unavailable";return false;}
@@ -483,6 +508,9 @@ bool D3D11Device::ConfigureGraphics(const GraphicsOptions& options, std::string*
     if(graphics_.temporalAA!=options.temporalAA)taaHistoryReady_=taaResolved_=false;
     const bool samplerPolicyChanged=graphics_.anisotropy!=options.anisotropy;
     graphics_ = options;
+    naomiReady_=false;naomiError_.clear();
+    if(graphics_.naomiGraphics && graphics_.msaa==1 && device_->GetFeatureLevel()>=D3D_FEATURE_LEVEL_11_0)
+        naomiReady_=EnsureNaomiSort(&naomiError_); // unsupported devices retain the portable sorter; options stay intact
     hudReady_=false;hudError_.clear();
     sync_ = options.syncInterval;
     if(samplerPolicyChanged)samplers_.clear();
@@ -517,6 +545,20 @@ bool D3D11Device::CreatePipelines(std::string* error) {
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     device_->CreateInputLayout(il, 3, vsb->GetBufferPointer(), vsb->GetBufferSize(), &layout_);
+    const D3D_SHADER_MACRO prelitDefines[]={{"NAOMI_PRELIT","1"},{nullptr,nullptr}};
+    ComPtr<ID3DBlob> prelit;
+    if(FAILED(CompileShaderCached(kModelShaderHlsl,sizeof(kModelShaderHlsl)-1,"naomi-prelit",prelitDefines,nullptr,"vsmain","vs_5_0",0,0,&prelit,&err))) {
+        if(error)*error=err?static_cast<const char*>(err->GetBufferPointer()):"native prelit shader compile failed";
+        return false;
+    }
+    if(FAILED(device_->CreateVertexShader(prelit->GetBufferPointer(),prelit->GetBufferSize(),nullptr,&naomiPrelitVs_)))return false;
+    const D3D11_INPUT_ELEMENT_DESC pil[]={
+        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"COLOR",1,DXGI_FORMAT_R32G32B32_FLOAT,0,32,D3D11_INPUT_PER_VERTEX_DATA,0}};
+    if(FAILED(device_->CreateInputLayout(pil,4,prelit->GetBufferPointer(),prelit->GetBufferSize(),&naomiPrelitLayout_)))return false;
+
     D3D11_BUFFER_DESC cb = { sizeof(ModelConstants), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER };
     device_->CreateBuffer(&cb, nullptr, &constants_);
     D3D11_BUFFER_DESC shadowCb={sizeof(ShadowConstants),D3D11_USAGE_DEFAULT,D3D11_BIND_CONSTANT_BUFFER};
@@ -745,10 +787,10 @@ void D3D11Device::DrawReactive(const GpuDrawList& list) {
     const float blend[4]={};ctx_->OMSetBlendState(nullptr,blend,0xffffffff);
     for(const auto& draw:list.draws) {
         if(!draw.reactive||draw.hud)continue;
-        const bool model=draw.pipeline==GpuDraw::Pipeline::Model;
-        ID3D11Buffer* vertices=draw.stream==GpuDraw::Stream::Static?staticVb_.Get():draw.stream==GpuDraw::Stream::Dynamic?dynVb_.Get():spriteVb_.Get();
+        const bool model=draw.pipeline!=GpuDraw::Pipeline::Sprite;
+        ID3D11Buffer* vertices=draw.stream==GpuDraw::Stream::Static?staticVb_.Get():draw.stream==GpuDraw::Stream::Dynamic?dynVb_.Get():draw.stream==GpuDraw::Stream::NaomiPrelit?naomiPrelitVb_.Get():spriteVb_.Get();
         if(!vertices)continue;
-        const UINT stride=model?sizeof(game::ModelVertex):sizeof(game::TLVertex),offset=0;ctx_->IASetVertexBuffers(0,1,&vertices,&stride,&offset);
+        const UINT stride=draw.stream==GpuDraw::Stream::NaomiPrelit?sizeof(NaomiPrelitVertex):model?sizeof(game::ModelVertex):sizeof(game::TLVertex),offset=0;ctx_->IASetVertexBuffers(0,1,&vertices,&stride,&offset);
         ctx_->IASetInputLayout(model?layout_.Get():spriteLayout_.Get());ctx_->IASetPrimitiveTopology(model?D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST:D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         ctx_->VSSetShader(model?depthVs_.Get():spriteVs_.Get(),nullptr,0);ctx_->PSSetShader(model?reactiveModelPs_.Get():reactiveSpritePs_.Get(),nullptr,0);
         ID3D11Buffer* constants=model?constants_.Get():spriteCb_.Get();ctx_->VSSetConstantBuffers(0,1,&constants);ctx_->PSSetConstantBuffers(0,1,&constants);
@@ -1019,10 +1061,11 @@ void D3D11Device::BindPipeline(GpuDraw::Pipeline p, int width, int height) {
     D3D11_VIEWPORT vp = { 0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1 };
     ctx_->RSSetViewports(1, &vp);
     ctx_->RSSetState(raster_.Get());
-    const bool model = p == GpuDraw::Pipeline::Model;
-    ctx_->IASetInputLayout(model ? layout_.Get() : spriteLayout_.Get());
+    const bool model = p != GpuDraw::Pipeline::Sprite;
+    const bool prelit=p==GpuDraw::Pipeline::NaomiPrelit;
+    ctx_->IASetInputLayout(prelit?naomiPrelitLayout_.Get():model ? layout_.Get() : spriteLayout_.Get());
     ctx_->IASetPrimitiveTopology(model ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    ctx_->VSSetShader(model ? vs_.Get() : spriteVs_.Get(), nullptr, 0);
+    ctx_->VSSetShader(prelit?naomiPrelitVs_.Get():model ? vs_.Get() : spriteVs_.Get(), nullptr, 0);
     ctx_->PSSetShader(model ? ps_.Get() : spritePs_.Get(), nullptr, 0);
     ID3D11Buffer* cb = model ? constants_.Get() : spriteCb_.Get();
     ctx_->VSSetConstantBuffers(0, 1, &cb);
@@ -1030,7 +1073,212 @@ void D3D11Device::BindPipeline(GpuDraw::Pipeline p, int width, int height) {
     if(model){ID3D11Buffer* shadow=shadowMapCb_.Get();ctx_->PSSetConstantBuffers(1,1,&shadow);}
 }
 
+bool D3D11Device::NaomiFailure(const char* operation,HRESULT status,std::string* error) const {
+    if(error) {
+        char detail[256];
+        std::snprintf(detail,sizeof(detail),"%s (HRESULT 0x%08lX; device reason 0x%08lX)",operation,
+            static_cast<unsigned long>(status),static_cast<unsigned long>(device_->GetDeviceRemovedReason()));
+        *error=detail;
+    }
+    return false;
+}
+
+bool D3D11Device::GrowNaomiNodes(uint64_t count,std::string* error) {
+    constexpr uint64_t stride=36;
+    if(count<=naomiNodeCapacity_&&naomiNodes_)return true;
+    uint64_t capacity=std::max<uint64_t>(count,naomiNodeCapacity_?uint64_t(naomiNodeCapacity_)*2:count);
+    if(!capacity||capacity>UINT_MAX/stride){if(error)*error="Native transparency fragment count exceeds the D3D11 buffer address range";return false;}
+    D3D11_BUFFER_DESC description{};description.ByteWidth=static_cast<UINT>(capacity*stride);
+    description.Usage=D3D11_USAGE_DEFAULT;description.BindFlags=D3D11_BIND_UNORDERED_ACCESS;
+    description.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;description.StructureByteStride=static_cast<UINT>(stride);
+    ComPtr<ID3D11Buffer> buffer;ComPtr<ID3D11UnorderedAccessView> view;
+    HRESULT status=S_OK;const char* operation=nullptr;
+    auto create=[&] {
+        operation="Native transparency fragment-buffer allocation failed";
+        status=device_->CreateBuffer(&description,nullptr,&buffer);if(FAILED(status))return false;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};uav.ViewDimension=D3D11_UAV_DIMENSION_BUFFER;
+        uav.Buffer.NumElements=static_cast<UINT>(capacity);
+        operation="Native transparency fragment-buffer UAV creation failed";
+        status=device_->CreateUnorderedAccessView(buffer.Get(),&uav,&view);return SUCCEEDED(status);
+    };
+    if(!create()) {
+        // A power-of-two/high-water reserve may exceed a resource budget while
+        // the measured exact count still fits. Retry that exact requirement.
+        buffer.Reset();view.Reset();capacity=count;description.ByteWidth=static_cast<UINT>(capacity*stride);
+        if(!create())return NaomiFailure(operation,status,error);
+    }
+    naomiNodes_=buffer;naomiNodesUav_=view;naomiNodeCapacity_=static_cast<uint32_t>(capacity);return true;
+}
+
+bool D3D11Device::EnsureNaomiSort(std::string* error) {
+    if(device_->GetFeatureLevel()<D3D_FEATURE_LEVEL_11_0){if(error)*error="Native GPU sorting requires Direct3D feature level11";return false;}
+    if(graphics_.msaa!=1)return false;
+    if(!naomiGatherPs_||!naomiResolveVs_||!naomiResolvePs_||!naomiSortCb_||!naomiGatherBlend_||
+       !naomiResolveRaster_||!naomiCounter_||!naomiCounterUav_||!naomiCounterRead_) {
+        const std::string shared=kNaomiGpuSortSharedHlsl;
+        const std::string gather=std::string(kModelShaderHlsl)+shared+kNaomiGpuGatherHlsl;
+        const std::string resolve=shared+kNaomiGpuResolveHlsl;
+        ComPtr<ID3DBlob> pixel,vertex,resolvePixel,errors;
+        const D3D_SHADER_MACRO definitions[]={{"RASTER_SHADOW_MAP","1"},{"NAOMI_GATHER","1"},{nullptr,nullptr}};
+        const auto compileFailure=[&](const char* operation,HRESULT status) {
+            NaomiFailure(operation,status,error);
+            if(error&&errors){*error+="; ";*error+=static_cast<const char*>(errors->GetBufferPointer());}
+            return false;
+        };
+        HRESULT status=CompileShaderCached(gather.data(),gather.size(),"naomi-gather",definitions,nullptr,"psgather","ps_5_0",0,0,&pixel,&errors);
+        if(FAILED(status))return compileFailure("Native gather shader compilation failed",status);
+        status=CompileShaderCached(resolve.data(),resolve.size(),"naomi-resolve",nullptr,nullptr,"vsresolve","vs_5_0",0,0,&vertex,&errors);
+        if(FAILED(status))return compileFailure("Native resolve vertex shader compilation failed",status);
+        status=CompileShaderCached(resolve.data(),resolve.size(),"naomi-resolve",nullptr,nullptr,"psresolve","ps_5_0",0,0,&resolvePixel,&errors);
+        if(FAILED(status))return compileFailure("Native resolve pixel shader compilation failed",status);
+        // Commit the complete initialization together. A failed later creation
+        // must never make a retry treat a lone gather shader as ready.
+        ComPtr<ID3D11PixelShader> gatherPs,resolvePs;ComPtr<ID3D11VertexShader> resolveVs;
+        ComPtr<ID3D11Buffer> sortCb,counterBuffer,counterRead;
+        ComPtr<ID3D11BlendState> gatherBlend;ComPtr<ID3D11RasterizerState> resolveRaster;
+        ComPtr<ID3D11UnorderedAccessView> counterView;
+        status=device_->CreatePixelShader(pixel->GetBufferPointer(),pixel->GetBufferSize(),nullptr,&gatherPs);
+        if(FAILED(status))return NaomiFailure("Native gather pixel shader creation failed",status,error);
+        if(const char* failure=std::getenv("HOTD2_TEST_NAOMI_INIT_FAILURE");failure&&std::strcmp(failure,"after-gather")==0)
+            return NaomiFailure("Native transparency diagnostic initialization failure",E_OUTOFMEMORY,error);
+        status=device_->CreateVertexShader(vertex->GetBufferPointer(),vertex->GetBufferSize(),nullptr,&resolveVs);
+        if(FAILED(status))return NaomiFailure("Native resolve vertex shader creation failed",status,error);
+        status=device_->CreatePixelShader(resolvePixel->GetBufferPointer(),resolvePixel->GetBufferSize(),nullptr,&resolvePs);
+        if(FAILED(status))return NaomiFailure("Native resolve pixel shader creation failed",status,error);
+        D3D11_BUFFER_DESC constants{};constants.ByteWidth=32;constants.Usage=D3D11_USAGE_DEFAULT;constants.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
+        D3D11_BLEND_DESC blend{};blend.RenderTarget[0].RenderTargetWriteMask=0;
+        status=device_->CreateBuffer(&constants,nullptr,&sortCb);
+        if(FAILED(status))return NaomiFailure("Native transparency constant-buffer creation failed",status,error);
+        status=device_->CreateBlendState(&blend,&gatherBlend);
+        if(FAILED(status))return NaomiFailure("Native transparency gather blend-state creation failed",status,error);
+        D3D11_RASTERIZER_DESC raster{};raster.FillMode=D3D11_FILL_SOLID;raster.CullMode=D3D11_CULL_NONE;
+        raster.DepthClipEnable=TRUE;raster.ScissorEnable=TRUE;raster.MultisampleEnable=TRUE;
+        status=device_->CreateRasterizerState(&raster,&resolveRaster);
+        if(FAILED(status))return NaomiFailure("Native transparency resolve rasterizer creation failed",status,error);
+        D3D11_BUFFER_DESC counter{};counter.ByteWidth=16;counter.Usage=D3D11_USAGE_DEFAULT;
+        counter.BindFlags=D3D11_BIND_UNORDERED_ACCESS;counter.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC raw{};raw.Format=DXGI_FORMAT_R32_TYPELESS;raw.ViewDimension=D3D11_UAV_DIMENSION_BUFFER;
+        raw.Buffer.NumElements=4;raw.Buffer.Flags=D3D11_BUFFER_UAV_FLAG_RAW;
+        status=device_->CreateBuffer(&counter,nullptr,&counterBuffer);
+        if(FAILED(status))return NaomiFailure("Native transparency allocator creation failed",status,error);
+        status=device_->CreateUnorderedAccessView(counterBuffer.Get(),&raw,&counterView);
+        if(FAILED(status))return NaomiFailure("Native transparency allocator UAV creation failed",status,error);
+        counter.Usage=D3D11_USAGE_STAGING;counter.BindFlags=0;counter.MiscFlags=0;counter.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        status=device_->CreateBuffer(&counter,nullptr,&counterRead);
+        if(FAILED(status))return NaomiFailure("Native transparency allocator readback creation failed",status,error);
+        naomiGatherPs_=gatherPs;naomiResolveVs_=resolveVs;naomiResolvePs_=resolvePs;
+        naomiSortCb_=sortCb;naomiGatherBlend_=gatherBlend;naomiResolveRaster_=resolveRaster;
+        naomiCounter_=counterBuffer;naomiCounterUav_=counterView;naomiCounterRead_=counterRead;
+    }
+    if(naomiWidth_!=width_||naomiHeight_!=height_||!naomiHeads_) {
+        D3D11_TEXTURE2D_DESC d{};d.Width=width_;d.Height=height_;d.MipLevels=d.ArraySize=1;d.SampleDesc.Count=1;
+        d.Usage=D3D11_USAGE_DEFAULT;d.Format=DXGI_FORMAT_R32_UINT;d.BindFlags=D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> heads,opaque;ComPtr<ID3D11UnorderedAccessView> view;ComPtr<ID3D11ShaderResourceView> snapshot;
+        HRESULT status=device_->CreateTexture2D(&d,nullptr,&heads);
+        if(FAILED(status))return NaomiFailure("Native transparency head-buffer allocation failed",status,error);
+        status=device_->CreateUnorderedAccessView(heads.Get(),nullptr,&view);
+        if(FAILED(status))return NaomiFailure("Native transparency head-buffer UAV creation failed",status,error);
+        d.Format=DXGI_FORMAT_R8G8B8A8_UNORM;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        status=device_->CreateTexture2D(&d,nullptr,&opaque);
+        if(FAILED(status))return NaomiFailure("Native transparency opaque snapshot allocation failed",status,error);
+        status=device_->CreateShaderResourceView(opaque.Get(),nullptr,&snapshot);
+        if(FAILED(status))return NaomiFailure("Native transparency opaque snapshot SRV creation failed",status,error);
+        naomiHeads_=heads;naomiHeadsUav_=view;naomiOpaque_=opaque;naomiOpaqueSrv_=snapshot;
+        naomiWidth_=width_;naomiHeight_=height_;
+    }
+    if(!naomiNodes_) {
+        uint64_t initial=std::max<uint64_t>(65536,std::min<uint64_t>(uint64_t(width_)*height_*4,2u*1024u*1024u));
+        // Diagnostic-only allocator pressure; never changes graphics settings.
+        if(const char* value=std::getenv("HOTD2_TEST_NAOMI_GPU_NODES")){char* end=nullptr;const auto n=std::strtoull(value,&end,10);if(end&&!*end&&n)initial=n;}
+        if(!GrowNaomiNodes(initial,error))return false;
+    }
+    return true;
+}
+
+void D3D11Device::DrawNaomiGather(const GpuDrawList& list,const GpuDraw& d,uint32_t order) {
+    BindPipeline(d.pipeline,list.width,list.height);ctx_->PSSetShader(naomiGatherPs_.Get(),nullptr,0);
+    ID3D11Buffer* vb=d.stream==GpuDraw::Stream::Static?staticVb_.Get():d.stream==GpuDraw::Stream::Dynamic?dynVb_.Get():naomiPrelitVb_.Get();
+    const UINT stride=d.stream==GpuDraw::Stream::NaomiPrelit?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex),offset=0;
+    ctx_->IASetVertexBuffers(0,1,&vb,&stride,&offset);
+    GpuState state=d.state;if(graphics_.textureFilter)state.linear=graphics_.textureFilter==2?1:0;
+    ModelConstants constants=list.model[d.constants];constants.depthEffects[3]=opaqueReady_?1.f:0.f;
+    if(!d.normalRoughnessTexture||d.normalRoughnessTexture>textures_.size())constants.materialParams[0]=0;
+    constants.sampling[0]=state.mipmapped&&graphics_.anisotropy>1&&!state.linear?1.f:0.f;
+    constants.sampling[1]=static_cast<float>(state.addrU);constants.sampling[2]=static_cast<float>(state.addrV);
+    ctx_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);
+    const uint32_t parameters[8]={static_cast<uint32_t>(width_),static_cast<uint32_t>(height_),naomiNodeCapacity_,order,state.srcBlend,state.dstBlend,0,0};
+    ctx_->UpdateSubresource(naomiSortCb_.Get(),0,nullptr,parameters,0,0);ID3D11Buffer* cb=naomiSortCb_.Get();ctx_->PSSetConstantBuffers(2,1,&cb);
+    const float factor[4]{};ctx_->OMSetBlendState(naomiGatherBlend_.Get(),factor,0xffffffffu);
+    ctx_->RSSetState(rasterCull_[(state.cull>=1&&state.cull<=3)?state.cull-1:0].Get());
+    ctx_->OMSetDepthStencilState(DepthState(state.zfunc,false),0);
+    auto* sampler=Sampler(state.linear!=0,state.addrU,state.addrV,state.mipmapped);
+    ID3D11SamplerState* samplers[]={sampler,postPointSampler_.Get(),sampler,postPointSampler_.Get()};ctx_->PSSetSamplers(0,4,samplers);
+    ID3D11ShaderResourceView* texture=d.texture&&d.texture<=textures_.size()?textures_[d.texture-1].Get():nullptr;
+    ID3D11ShaderResourceView* resources[]={texture,opaqueReady_?opaqueDepthColor_.srv.Get():nullptr,
+        d.normalRoughnessTexture&&d.normalRoughnessTexture<=textures_.size()?textures_[d.normalRoughnessTexture-1].Get():nullptr,
+        shadowMapConstants_.parameters[3]>.5f?shadowMapColor_.srv.Get():nullptr};
+    ctx_->PSSetShaderResources(0,4,resources);ctx_->Draw(d.count,d.first);
+}
+
+bool D3D11Device::DrawNaomiSorted(const GpuDrawList& list,size_t first,size_t end) {
+    for(size_t i=first;i<end;++i)if(list.draws[i].pipeline==GpuDraw::Pipeline::Sprite||list.draws[i].state.zwrite||!list.draws[i].state.blendEnable) {
+        naomiError_="Native GPU sorting received an ineligible draw";return false;
+    }
+    if(!EnsureNaomiSort(&naomiError_))return false;
+    ctx_->OMSetRenderTargets(0,nullptr,nullptr);ctx_->CopyResource(naomiOpaque_.Get(),color_.Get());
+    uint32_t count=0;unsigned replays=0;
+    for(;;) {
+        const UINT empty[4]={0xffffffffu,0xffffffffu,0xffffffffu,0xffffffffu},zero[4]{};
+        ctx_->ClearUnorderedAccessViewUint(naomiHeadsUav_.Get(),empty);ctx_->ClearUnorderedAccessViewUint(naomiCounterUav_.Get(),zero);
+        ID3D11RenderTargetView* target=rtv_.Get();ID3D11UnorderedAccessView* views[]={naomiHeadsUav_.Get(),naomiNodesUav_.Get(),naomiCounterUav_.Get()};
+        ctx_->OMSetRenderTargetsAndUnorderedAccessViews(1,&target,dsv_.Get(),1,3,views,nullptr);
+        for(size_t i=first;i<end;++i)DrawNaomiGather(list,list.draws[i],static_cast<uint32_t>(i));
+        ID3D11UnorderedAccessView* noViews[3]{};ctx_->OMSetRenderTargetsAndUnorderedAccessViews(0,nullptr,nullptr,1,3,noViews,nullptr);
+        ctx_->CopyResource(naomiCounterRead_.Get(),naomiCounter_.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT readStatus=ctx_->Map(naomiCounterRead_.Get(),0,D3D11_MAP_READ,0,&mapped);
+        if(FAILED(readStatus))return NaomiFailure("Native transparency counter readback failed",readStatus,&naomiError_);
+        const auto* counters=static_cast<const uint32_t*>(mapped.pData);count=counters[0];const bool overflow=counters[1]!=0;ctx_->Unmap(naomiCounterRead_.Get(),0);
+        if(!overflow)break;
+        if(count<=naomiNodeCapacity_){naomiError_="Native GPU transparency counter overflowed its address range";return false;}
+        if(!GrowNaomiNodes(count,&naomiError_))return false;
+        ++replays; // replay this same immutable draw list; no partial result was written to color/depth
+    }
+    ID3D11RenderTargetView* target=rtv_.Get();ID3D11UnorderedAccessView* views[]={naomiHeadsUav_.Get(),naomiNodesUav_.Get(),nullptr};
+    ctx_->OMSetRenderTargetsAndUnorderedAccessViews(1,&target,nullptr,1,3,views,nullptr);
+    ctx_->IASetInputLayout(nullptr);ID3D11Buffer* none=nullptr;const UINT zero=0;ctx_->IASetVertexBuffers(0,1,&none,&zero,&zero);
+    ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);ctx_->VSSetShader(naomiResolveVs_.Get(),nullptr,0);ctx_->PSSetShader(naomiResolvePs_.Get(),nullptr,0);
+    ID3D11Buffer* cb=naomiSortCb_.Get();ctx_->PSSetConstantBuffers(2,1,&cb);ID3D11ShaderResourceView* snapshot=naomiOpaqueSrv_.Get();ctx_->PSSetShaderResources(4,1,&snapshot);
+    const float factor[4]{};ctx_->OMSetBlendState(nullptr,factor,0xffffffffu);ctx_->OMSetDepthStencilState(presentDepth_.Get(),0);ctx_->RSSetState(naomiResolveRaster_.Get());
+    const D3D11_VIEWPORT viewport={0,0,static_cast<float>(width_),static_cast<float>(height_),0,1};ctx_->RSSetViewports(1,&viewport);
+    // Each pixel still sorts and blends its complete original list exactly
+    // once. Disjoint scissored draws bound the pixel work of one resolve draw
+    // as output resolution grows, without changing projection or quality.
+    constexpr LONG tileWidth=256,tileHeight=128;unsigned tiles=0;
+    for(LONG top=0;top<height_;top+=tileHeight)for(LONG left=0;left<width_;left+=tileWidth) {
+        const D3D11_RECT tile={left,top,std::min<LONG>(left+tileWidth,width_),std::min<LONG>(top+tileHeight,height_)};
+        ctx_->RSSetScissorRects(1,&tile);ctx_->Draw(3,0);++tiles;
+    }
+    ctx_->RSSetState(rasterCull_[0].Get());
+    snapshot=nullptr;ctx_->PSSetShaderResources(4,1,&snapshot);ID3D11UnorderedAccessView* noViews[3]{};
+    ctx_->OMSetRenderTargetsAndUnorderedAccessViews(1,&target,dsv_.Get(),1,3,noViews,nullptr);
+    if(std::getenv("HOTD2_DEBUG_NAOMI_SORT"))std::fprintf(stderr,"Naomi GPU sort: draws=%zu fragments=%u capacity=%u replays=%u tiles=%u target=%dx%d\n",end-first,count,naomiNodeCapacity_,replays,tiles,width_,height_);
+    return true;
+}
+
 void D3D11Device::Submit(const GpuDrawList& list) {
+    if(!list.naomiPrelitVertices.empty()) {
+        const size_t bytes=list.naomiPrelitVertices.size()*sizeof(NaomiPrelitVertex);
+        if(bytes>UINT_MAX/2)return;
+        if(bytes>naomiPrelitCapacity_) {
+            naomiPrelitVb_.Reset();naomiPrelitCapacity_=0;
+            D3D11_BUFFER_DESC desc={static_cast<UINT>(bytes*2),D3D11_USAGE_DYNAMIC,D3D11_BIND_VERTEX_BUFFER,D3D11_CPU_ACCESS_WRITE};
+            if(FAILED(device_->CreateBuffer(&desc,nullptr,&naomiPrelitVb_)))return;
+            naomiPrelitCapacity_=static_cast<UINT>(bytes*2);
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if(!naomiPrelitVb_||FAILED(ctx_->Map(naomiPrelitVb_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped)))return;
+        memcpy(mapped.pData,list.naomiPrelitVertices.data(),bytes);ctx_->Unmap(naomiPrelitVb_.Get(),0);
+    }
     StartGpuTiming();
     if(!hudReady_){
     DrawShadowMap(list);
@@ -1046,9 +1294,14 @@ void D3D11Device::Submit(const GpuDrawList& list) {
     GpuDraw::Pipeline pipeline = GpuDraw::Pipeline::Model;
     bool streamBound = false;
     GpuDraw::Stream stream = GpuDraw::Stream::Static;
-    size_t drawIndex=0;
-    for (const GpuDraw& d : list.draws) {
-        if(drawIndex++==list.opaqueDrawCount&&list.opaqueDrawCount){DrawAmbientOcclusion(list);bound=false;streamBound=false;}
+    for (size_t drawIndex=0;drawIndex<list.draws.size();++drawIndex) {
+        const GpuDraw& d=list.draws[drawIndex];
+        if(drawIndex==list.opaqueDrawCount&&list.opaqueDrawCount){DrawAmbientOcclusion(list);bound=false;streamBound=false;}
+        if(d.naomiSortable && SupportsNaomiGpuSort()) {
+            size_t end=drawIndex+1;while(end<list.draws.size()&&list.draws[end].naomiSortable)++end;
+            if(!DrawNaomiSorted(list,drawIndex,end))return;
+            drawIndex=end-1;bound=false;streamBound=false;continue;
+        }
         if (!bound || d.pipeline != pipeline) {
             BindPipeline(d.pipeline, list.width, list.height);
             bound = true;
@@ -1056,15 +1309,15 @@ void D3D11Device::Submit(const GpuDrawList& list) {
             streamBound = false;
         }
         if (!streamBound || d.stream != stream) {
-            ID3D11Buffer* vb = d.stream == GpuDraw::Stream::Static ? staticVb_.Get() : d.stream == GpuDraw::Stream::Dynamic ? dynVb_.Get() : spriteVb_.Get();
-            const UINT stride = d.stream == GpuDraw::Stream::Sprite ? sizeof(game::TLVertex) : sizeof(game::ModelVertex), offset = 0;
+            ID3D11Buffer* vb = d.stream == GpuDraw::Stream::Static ? staticVb_.Get() : d.stream == GpuDraw::Stream::Dynamic ? dynVb_.Get() : d.stream==GpuDraw::Stream::NaomiPrelit?naomiPrelitVb_.Get():spriteVb_.Get();
+            const UINT stride = d.stream == GpuDraw::Stream::Sprite ? sizeof(game::TLVertex) : d.stream==GpuDraw::Stream::NaomiPrelit?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex), offset = 0;
             ctx_->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
             streamBound = true;
             stream = d.stream;
         }
         GpuState s = d.state;
         bool coverage = false;
-        if (d.pipeline == GpuDraw::Pipeline::Model) {
+        if (d.pipeline != GpuDraw::Pipeline::Sprite) {
             if (graphics_.textureFilter) s.linear = graphics_.textureFilter == 2 ? 1 : 0;
             ModelConstants c = list.model[d.constants];
             c.depthEffects[3] = opaqueReady_ ? 1.0f : 0.0f;
@@ -1091,6 +1344,7 @@ void D3D11Device::Submit(const GpuDrawList& list) {
 
 bool D3D11Device::BeginFrame(const float clear[4]) {
     hudReady_=false;hudError_.clear();
+    naomiError_.clear();naomiReady_=false;
     if(graphics_.hdrOutput){UpdateHdrCapabilities();if(!capabilities_.hdrOutput&&SetHdrOutput(false,nullptr))graphics_.hdrOutput=false;}
     if (graphics_.lowLatency && queueReady_ && WaitForSingleObjectEx(queueReady_, 0, FALSE) != WAIT_OBJECT_0) return false;
     CollectGpuTimings();
@@ -1102,6 +1356,8 @@ bool D3D11Device::BeginFrame(const float clear[4]) {
             if (!CreateOffscreen(w, h)) return false;
         }
     }
+    if(graphics_.naomiGraphics&&graphics_.msaa==1&&device_->GetFeatureLevel()>=D3D_FEATURE_LEVEL_11_0)
+        naomiReady_=EnsureNaomiSort(&naomiError_);
     ID3D11RenderTargetView* rt = rtv_.Get();
     ctx_->OMSetRenderTargets(1, &rt, dsv_.Get());
     ctx_->ClearRenderTargetView(rt, clear);

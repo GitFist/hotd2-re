@@ -4,16 +4,17 @@
 
 A native Windows port of **The House of the Dead 2** and **The Typing of the Dead**, with online co-op and modern controls.
 
-**[Download 1.9 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.02-a/HOTD2RE-1.9-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a)
+**[Download 2.0 for Windows x64](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.05-a/HOTD2RE-2.0-Windows-x64.zip)** · [Release notes](https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.05-a)
 
 ## Features
 
-- **The Typing of the Dead:** full campaign and all 13 Drill courses.
+- **The Typing of the Dead:** separate Arcade and Original campaigns, plus all 13 Drill courses.
 - **HOTD2 modes:** Arcade, Original, Boss Mode, Horde and Randomizer.
 - **Online play:** two-player co-op, shared lobbies and leaderboards.
 - **Controls:** keyboard, mouse, touch, Xbox/PlayStation controllers, light guns and Wii Remotes.
 - **Native feedback:** controller rumble and light-gun recoil with per-player settings.
-- **Graphics and extras:** modern display options, blood colors, music library and model viewer.
+- **Graphics:** Naomi artwork, models, lighting and effects, with PC graphics also available.
+- **Extras:** music library and model viewer.
 
 ## Screenshots
 
@@ -31,17 +32,17 @@ The main-menu preview uses example online rooms.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a Direct3D 11-compatible graphics device. Optional Direct3D 12/vendor features require compatible hardware.
 
-1. Download **[HOTD2RE-1.9-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.02-a/HOTD2RE-1.9-Windows-x64.zip)**.
+1. Download **[HOTD2RE-2.0-Windows-x64.zip](https://github.com/GitFist/hotd2-re/releases/download/v2026.11.05-a/HOTD2RE-2.0-Windows-x64.zip)**.
 2. Extract the ZIP to a writable folder.
 3. Open the `hotd2re` folder and run **hotd2.exe**.
 
 The complete download includes both games. Keep the `game` and `scenes` folders beside `hotd2.exe`.
 
-The in-game updater keeps your saves and downloads any missing Typing data.
+The in-game updater keeps your saves and downloads any missing Naomi graphics and Typing data on first launch.
 
 ## Online play
 
-Open **Home > Online**, then choose **Create Room**, **Browse Lobby** or **Peer to Peer** to play with someone on the same game version. The host can choose gun modes or **Typing Original** in the shared lobby. Drill is local play.
+Open **Home > Online**, then choose **Create Room**, **Browse Lobby** or **Peer to Peer** to play with someone on the same game version. The host can choose gun modes or **Typing Arcade / Original** in the shared lobby. Drill is local play.
 
 Choose a username on first launch; eligible scores submit automatically to the online leaderboards, including the Typing table, with offline scores queued until you reconnect. Typing Drill keeps its own course records.
 

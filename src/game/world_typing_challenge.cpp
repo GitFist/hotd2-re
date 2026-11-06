@@ -19,7 +19,7 @@ void ChallengeHud(World::Impl& world) {
         world.TypingSprite(2974 + seconds % 10, 340, 65, 1, .1f, 0xA, 0x00495D50);
     }
     if (challenge.quota != 0) {
-        const int target = challenge.instructionTarget;
+        const int target = std::clamp(challenge.quota - challenge.spawned + world.liveEnemies, 0, 99);
         world.TypingSprite(3647, 244, 120, 1, .1f, 9, 0x00495D50);
         if (target >= 10) world.TypingSprite(3554 + std::clamp(target / 10, 0, 9), 312, 120, 1, .1f, 0xA, 0x00495D50);
         world.TypingSprite(3554 + target % 10, 332, 120, 1, .1f, 0xA, 0x00495D50);
@@ -64,15 +64,18 @@ void RewardPresentation(Task& task) {
     if (!world.typingReferenceActive || !reward) { world.ts.KillCurrent(); return; }
     // 0x0040ADA0: the item icon rotates for 120 frames in view space. Source
     // projection A0D1F0 is the same focal length used by the native camera.
-    const int file = world.typingReference.ModelFile(reward->model);
-    if (file >= 0 && (reward->model >= int(world.modelLoaded.size()) || !world.modelLoaded[reward->model]))
-        world.ProcessRequest({0x52, uint32_t(file)});
+    const int model = world.LoadTypingModel(reward->model);
     Mat4 matrix = Mat4::Identity();
     mx::Translate(matrix, -reward->x / world.focal, -(reward->y - 160.0f) / world.focal, -1);
     mx::RotY(matrix, presentation.age * 364 - 21840);
     const float scale = reward->scale * .03f;
     mx::Scale(matrix, scale, scale, scale);
-    world.Draw(reward->model, matrix, 8, 1, false, -1, true);
+    if (auto* draw = world.Draw(model, matrix, 8, -1, false, -1, true)) {
+        draw->fn = 0x0040ADA0;
+        // PC40ADA0 sets white item lighting. Preserve the source material
+        // alpha as well: the diamond is translucent, not an opaque trophy.
+        for (float& color : draw->light.color) color = 1;
+    }
     world.TypingSprite(reward->sprite - 0x4000, 320, 202, 1, 2, 0xA, 0x0040ADA0);
     if (++presentation.age > 120) world.ts.KillCurrent();
 }
@@ -108,6 +111,18 @@ void ChallengeReward(World::Impl& world) {
     world.typingChallenge.rewardPending = false;
 }
 } // namespace
+
+int World::Impl::LoadTypingModel(int model) {
+    if (model <= 0) return 0;
+    if (model >= int(modelLoaded.size()) || !modelLoaded[model]) {
+        int file = typingReference.ModelFile(model);
+        // Byte-identical source models reuse the HOTD bank and its file table.
+        if (file < 0 && model < 0x4000 && exe.InData(0x004E83B4 + uint32_t(model) * 2))
+            file = exe.S16(0x004E83B4 + uint32_t(model) * 2);
+        if (file >= 0) ProcessRequest({0x52, uint32_t(file)});
+    }
+    return model;
+}
 
 void World::Impl::TypingSprite(int rawId, float x, float y, float alpha, float depth, uint32_t flags, uint32_t source) {
     if (!typingReferenceActive) return;
@@ -180,7 +195,23 @@ void World::Impl::TypingChallengeStep() {
         if (success) return; // success presentation starts on the next task frame
         challenge.inputBlocked = true;
         typing.cancelSelection();
+        typing2.cancelSelection();
         typingCharacters.clear();
+        typingCharacters2.clear();
+        // End only this mission's living enemies through their normal death
+        // path. This releases camera/attack locks without awarding kill points.
+        for (auto* task : ts.Live()) {
+            if (std::find(challenge.enemies.begin(),challenge.enemies.end(),task->serial)==challenge.enemies.end()) continue;
+            auto* enemy = dynamic_cast<EnemyTask*>(task->data.get());
+            if (!enemy || enemy->civilian || enemy->hp <= 0 || (enemy->flags38 & 2)) continue;
+            enemy->hp = 0;
+            enemy->flags34 = (enemy->flags34 & ~8u) | 0x4000100u;
+            enemy->flags136C |= 0x80000000u;
+            enemy->typingFlags |= 0x400u;
+            enemy->typingStrike = false;
+            enemy->behaviour = 6; enemy->sub = 0;
+            EnemyOnDeath(*enemy);
+        }
         TypingAttackTimer(2);
     };
     if (challenge.state == 0) {
@@ -206,7 +237,9 @@ void World::Impl::TypingChallengeStep() {
                 } else if (cfg.eventMode == 5 && runner->scene == 3) {
                     choice = (++challenge.side & 1) * 5;
                 }
+                const uint32_t serial = ts.NextSerial();
                 Spawn(0x0B, challenge.records[static_cast<size_t>(challenge.weighted[choice])]);
+                challenge.enemies.push_back(serial);
                 if (challenge.quota != 0) {
                     // Counted waves return immediately after spawning. Their
                     // quota/deadline transition is evaluated on the next frame.

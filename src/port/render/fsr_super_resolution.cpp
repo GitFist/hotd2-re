@@ -1,4 +1,5 @@
 #include "fsr_super_resolution.h"
+#include "fsr_depth.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <wrl/client.h>
@@ -19,7 +20,7 @@ struct FsrSuperResolution::Impl {
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12Resource> output;
     int outputW = 0, outputH = 0, inputW = 0, inputH = 0, quality = 0;
-    bool available = false, first = true;
+    bool available = false, first = true, infiniteDepth = false;
     std::string version;
 #if defined(HOTD2_FSR_SDK)
     HMODULE module = nullptr;
@@ -156,7 +157,8 @@ bool FsrSuperResolution::Configure(int width, int height, int quality, int* iw, 
         impl_->create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
         impl_->create.header.pNext = &impl_->backend.header;
         impl_->create.flags =
-            FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
+            FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE |
+            (impl_->infiniteDepth ? FFX_UPSCALE_ENABLE_DEPTH_INFINITE : 0);
         impl_->create.maxRenderSize = {rw, rh};
         impl_->create.maxUpscaleSize = {unsigned(width), unsigned(height)};
         if (!Api(impl_->api.CreateContext(&impl_->context, &impl_->create.header, nullptr), "FSR context creation", error)) return false;
@@ -187,11 +189,22 @@ bool FsrSuperResolution::Evaluate(const NativeD3D12FrameInterop& f, NativeD3D12F
     if (!std::isfinite(f.frameTimeMs) || f.frameTimeMs <= 0) return Fail("FSR requires the actual positive render interval", error);
     const auto& p = f.camera.projection;
     const double a = p[10], b = p[14], c = p[11], d = p[15];
-    if (std::abs(c) < 1e-8 || std::abs(c - a) < 1e-8 || std::abs(a) < 1e-12 || std::abs(p[5]) < 1e-8)
-        return Fail("FSR requires a finite perspective depth range", error);
-    const float cameraNear = static_cast<float>(std::abs((b - d) / (c - a))), cameraFar = static_cast<float>(std::abs(b / a));
-    if (!std::isfinite(cameraNear) || !std::isfinite(cameraFar) || cameraNear <= 0 || cameraFar <= cameraNear)
+    if (std::abs(c) < 1e-8 || std::abs(c - a) < 1e-8 || !std::isfinite(p[5]) || std::abs(p[5]) < 1e-8)
+        return Fail("FSR requires a perspective depth range", error);
+    FsrDepthRange depth;
+    if (!DecodeFsrDepthRange(b - d, c - a, b, a, &depth))
         return Fail("FSR camera depth range is invalid", error);
+    if (depth.infinite != impl_->infiniteDepth) {
+        // Depth interpretation is a creation-time SDK flag. Reset temporal
+        // history when switching between PC and native arcade projections.
+        impl_->Release();
+        impl_->infiniteDepth = depth.infinite;
+        impl_->create.flags =
+            FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE |
+            (depth.infinite ? FFX_UPSCALE_ENABLE_DEPTH_INFINITE : 0);
+        if (!Api(impl_->api.CreateContext(&impl_->context, &impl_->create.header, nullptr), "FSR depth context creation", error))
+            return false;
+    }
     if (!impl_->output) {
         D3D12_HEAP_PROPERTIES heap{};
         heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -229,8 +242,8 @@ bool FsrSuperResolution::Evaluate(const NativeD3D12FrameInterop& f, NativeD3D12F
     dispatch.frameTimeDelta = f.frameTimeMs;
     dispatch.preExposure = 1;
     dispatch.reset = impl_->first || f.resetHistory;
-    dispatch.cameraNear = cameraNear;
-    dispatch.cameraFar = cameraFar;
+    dispatch.cameraNear = depth.nearPlane;
+    dispatch.cameraFar = depth.farPlane;
     dispatch.cameraFovAngleVertical = 2 * std::atan(1 / std::abs(p[5]));
     dispatch.viewSpaceToMetersFactor = 1;
     dispatch.flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;

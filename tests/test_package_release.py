@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import package_release as release
@@ -644,6 +645,78 @@ $payload = Expand-VerifiedFileUpdate -Root $Root -IndexPath $Index -ExpectedSha2
         with self.assertRaisesRegex(ValueError, "missing required boot-data records"):
             release.verified_game_entries(directory, metadata)
         self.assertFalse(list(self.root.rglob("*.zip")))
+
+    def naomi_bank(self, payload=b"synthetic Naomi fixture"):
+        bank = self.root / "visuals.bank"
+        bank.write_bytes(struct.pack("<8s6I", b"H2NVIS01", 2, len(payload), zlib.crc32(payload), 1, 0, 0) + payload)
+        self.pin_naomi_bank(bank)
+        return bank
+
+    def pin_naomi_bank(self, bank):
+        header = self.source / "src/port/update/naomi_content.h"
+        header.parent.mkdir(exist_ok=True)
+        header.write_text(f'constexpr uint64_t kNaomiContentBytes = {bank.stat().st_size};\n'
+                          f'constexpr const char* kNaomiContentSha256 = "{release.sha256(bank)}";\n')
+
+    def test_naomi_complete_package_matches_runtime_pin_and_manifest(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = self.naomi_bank()
+        archive = self.package(kind="complete", game_dir=directory, game_manifest=metadata, naomi_visuals=bank)
+        with zipfile.ZipFile(archive) as contents:
+            self.assertEqual(contents.read("hotd2re/game/naomi_visuals.bank"), bank.read_bytes())
+            manifest = json.loads(contents.read("hotd2re/PACKAGE-MANIFEST.json"))
+            self.assertEqual(manifest["naomiVisuals"], release.naomi_visuals_info(bank, self.source))
+            self.assertIn({key: manifest["naomiVisuals"][key] for key in ("path", "bytes", "sha256")}, manifest["files"])
+        self.assertFalse((archive.parent / "file-assets").exists())
+
+    def test_public_package_rejects_naomi_without_reading_or_staging_it(self):
+        with self.assertRaisesRegex(ValueError, "original game data.*complete packages"):
+            self.package(naomi_visuals=self.root / "missing.bank")
+        self.assertFalse((self.root / "new-output").exists())
+        self.assertIsNone(release.PUBLIC_MANAGED_PATH.fullmatch("game/naomi_visuals.bank"))
+
+    def test_complete_naomi_client_requires_bank_and_discovers_verified_installed_bank(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = self.naomi_bank()
+        with self.assertRaisesRegex(ValueError, "require --naomi-visuals"):
+            self.package(kind="complete", game_dir=directory, game_manifest=metadata)
+        self.assertFalse((self.root / "new-output").exists())
+        shutil.copy2(bank, directory / "naomi_visuals.bank")
+        archive = self.package(kind="complete", game_dir=directory, game_manifest=metadata)
+        with zipfile.ZipFile(archive) as contents:
+            self.assertEqual(contents.read("hotd2re/game/naomi_visuals.bank"), bank.read_bytes())
+
+    def test_naomi_corruption_pin_and_envelope_are_checked_before_output(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = self.naomi_bank()
+        original = bank.read_bytes()
+        for broken in (original[:-1], original[:-1] + b"X"):
+            bank.write_bytes(broken)
+            with self.assertRaisesRegex(ValueError, "pinned size and SHA-256"):
+                self.package(kind="complete", game_dir=directory, game_manifest=metadata, naomi_visuals=bank)
+            self.assertFalse((self.root / "new-output").exists())
+        for offset, value, message in ((8, 1, "header"), (12, 0, "header"), (16, 0, "CRC"), (20, 0, "header")):
+            broken = bytearray(original)
+            struct.pack_into("<I", broken, offset, value)
+            bank.write_bytes(broken)
+            self.pin_naomi_bank(bank)
+            with self.assertRaisesRegex(ValueError, message):
+                self.package(kind="complete", game_dir=directory, game_manifest=metadata, naomi_visuals=bank)
+            self.assertFalse((self.root / "new-output").exists())
+
+    def test_naomi_bank_is_rehashed_after_copy(self):
+        directory, metadata, _ = self.game_manifest()
+        bank = self.naomi_bank()
+        original_copy = release.shutil.copy2
+        def changed_copy(source, destination):
+            result = original_copy(source, destination)
+            if source == bank:
+                with Path(destination).open("ab") as stream:
+                    stream.write(b"changed during copy")
+            return result
+        with patch.object(release.shutil, "copy2", side_effect=changed_copy), self.assertRaisesRegex(ValueError, "changed during packaging"):
+            self.package(kind="complete", game_dir=directory, game_manifest=metadata, naomi_visuals=bank)
+        self.assertFalse(list((self.root / "new-output").glob("*.zip")))
 
     def test_game_paths_duplicates_and_hashes_are_checked(self):
         directory, metadata, result = self.game_manifest()

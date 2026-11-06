@@ -1,4 +1,5 @@
 #include "game/world_internal.h"
+#include "game/mstack.h"
 #include <algorithm>
 #include <cmath>
 
@@ -9,8 +10,20 @@ void IdleChoice(Task&) {}
 void DrawChoice(World::Impl& w) {
     const auto& choice=w.typingChapterChooser;
     const auto& status=w.typing.chapterChoice().status;
+    // Source scene0 selects section4: tables5922FC/592334 resolve its
+    // library model1289 (st1_02.bin), viewed from camera preset0 (0,17,0).
+    // Combat is frozen here, so use its own view without changing the rail camera.
+    const int model=w.LoadTypingModel(w.typingReference.SourceModel(0x1289));
+    Mat4 view=Mat4::Identity();mx::Translate(view,0,-17,0);
+    if (model) if (auto* draw=w.Draw(model,view,8,-1,false,-1,true)) {
+        draw->fn=0x00493C60;draw->light.table=false;
+        draw->light.pitch=9410;draw->light.yaw=39558;
+        draw->light.intensity=.7f;
+        for (float& color:draw->light.color) color=.6f;
+    }
     // Source493B90/493C60: six cards orbit the authored screen-space centre.
-    w.TypingSprite(0xE1E,252,118,1,.1f,0,0x00493C60);
+    w.TypingSprite(0xB9A,320,80,1,.1f,0xA,0x00494280);
+    w.TypingSprite(0xBD6,192,80,1,.05f,0,0x00494280);
     for (int chapter=0;chapter<6;++chapter) {
         const float angle=(choice.rotation-float(chapter)*60.f)*.017453292519943295f;
         const float cosine=std::cos(angle);
@@ -45,7 +58,9 @@ bool StartTypingChapterChoice(World::Impl& w) {
     w.flags5900|=0x10;
     w.typingResultsActive=true;
     w.typing.syncTargets({});
+    w.typing2.syncTargets({});
     w.typingCharacters.clear();
+    w.typingCharacters2.clear();
     w.typingQuestion.clear(); w.typingQuestionSeconds=0;
     w.targets.clear(); w.targetCopy.clear();
     w.hud.menuText.clear(); w.hud.menuPanels.clear();

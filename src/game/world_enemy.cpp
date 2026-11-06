@@ -454,6 +454,33 @@ struct BloodTask : WTask {  // 0x00407230 (task +0x34 obj, +0x44 counter, +0x48 
 };
 }  // namespace
 
+void World::Impl::AdvanceNativeVisualEffects() {
+    if (paused) return;
+    for (auto& effect : nativeVisualEffects) ++effect.frame;
+    std::erase_if(nativeVisualEffects, [](const NativeVisualEffect& effect) { return effect.frame >= effect.duration; });
+}
+
+// Naomi 0x0C02CBC8 / callback 0x0C02CB60: the USA gameplay hit
+// spawns 58 opaque three-dimensional blood meshes. The PC call 0x0041EBB0
+// is a RET stub. Keep its restoration entirely outside PC simulation tasks.
+void World::Impl::EmitNativePolygonBlood(const EnemyTask& enemy, int node) {
+    if (gameMode != 6 || cfg.portTyping) return;
+    const EnemyNode& hit = enemy.anim.nodes[std::clamp(node, 0, 15)];
+    Mat4 camera = cam.inverse;
+    if (runner) {
+        const auto& director = runner->camera;
+        memcpy(camera.m, director.ctx[director.activeCtx & 3].camera, sizeof(camera.m));
+    }
+    float position[3];
+    mx::Transform(camera, hit.hit, position);
+    const float scale = 0.3999999761581421f * hit.radius;  // original 0x3ECCCCCC
+    NativeVisualEffect effect;
+    effect.serial = ++nativeVisualSerial;
+    mx::Translate(effect.world, position[0], position[1], position[2]);
+    mx::Scale(effect.world, scale, scale, scale);
+    nativeVisualEffects.push_back(effect);
+}
+
 // Enemy_HitEffects 0x00454050
 void World::Impl::EnemyHitEffects(EnemyTask& e, int p) {
     const int type = hitType[p], slot = std::clamp(hitSlot[p], 0, 15);
@@ -481,6 +508,7 @@ void World::Impl::EnemyHitEffects(EnemyTask& e, int p) {
     }
     switch (type) {
     case 1: case 3: case 4:
+        EmitNativePolygonBlood(e, slot);
         EnemyArmVariant(e);  // 0x00454270
         [[fallthrough]];
     case 2: {  // 0x00407310: blood on the hit node

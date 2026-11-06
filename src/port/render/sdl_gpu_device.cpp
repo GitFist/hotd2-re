@@ -138,6 +138,7 @@ private:
     SDL_GPUTexture* depth_ = nullptr;
     SDL_GPUTexture* white_ = nullptr;  // bound when a draw has no texture (the shaders do not sample it then)
     SDL_GPUShader* modelVs_ = nullptr;
+    SDL_GPUShader* naomiPrelitVs_ = nullptr;
     SDL_GPUShader* modelPs_ = nullptr;
     SDL_GPUShader* spriteVs_ = nullptr;
     SDL_GPUShader* spritePs_ = nullptr;
@@ -199,6 +200,8 @@ private:
     SDL_GPUBuffer* staticVb_ = nullptr;
     SDL_GPUBuffer* dynVb_ = nullptr;
     SDL_GPUBuffer* spriteVb_ = nullptr;
+    SDL_GPUBuffer* naomiPrelitVb_ = nullptr;
+    uint32_t naomiPrelitCap_=0;
     uint32_t staticCap_ = 0, dynCap_ = 0, spriteCap_ = 0;
     std::vector<uint8_t> dynData_, spriteData_;
     bool dynPending_ = false, spritePending_ = false;
@@ -288,11 +291,11 @@ SdlGpuDevice::~SdlGpuDevice() {
     for (SDL_GPUTexture* t : textures_) SDL_ReleaseGPUTexture(dev_, t);
     for (SDL_GPUTexture* t : { color_, multisampleColor_, postColor_, depth_, white_ })
         if (t) SDL_ReleaseGPUTexture(dev_, t);
-    for (SDL_GPUBuffer* b : { staticVb_, dynVb_, spriteVb_ })
+    for (SDL_GPUBuffer* b : { staticVb_, dynVb_, spriteVb_, naomiPrelitVb_ })
         if (b) SDL_ReleaseGPUBuffer(dev_, b);
     if (transfer_) SDL_ReleaseGPUTransferBuffer(dev_, transfer_);
     if (readback_) SDL_ReleaseGPUTransferBuffer(dev_, readback_);
-    for (SDL_GPUShader* s : { modelVs_, modelPs_, spriteVs_, spritePs_, presentVs_, presentPs_ })
+    for (SDL_GPUShader* s : { modelVs_, naomiPrelitVs_, modelPs_, spriteVs_, spritePs_, presentVs_, presentPs_ })
         if (s) SDL_ReleaseGPUShader(dev_, s);
     if (window_) SDL_ReleaseWindowFromGPUDevice(dev_, window_);
     SDL_DestroyGPUDevice(dev_);
@@ -395,6 +398,7 @@ bool SdlGpuDevice::CreateShaders(std::string* error) {
     auto shadowVs=vs;shadowVs.push_back({"SHADOW_CB_REG","register(b1, space1)"});
     auto modelPs=ps;modelPs.push_back({"RASTER_SHADOW_MAP","1"});
     modelPs.push_back({"SHADOW_CB_REG","register(b1, space3)"});modelPs.push_back({"SHADOW_TEX_REG","register(t3, space2)"});modelPs.push_back({"SHADOW_SAMP_REG","register(s3, space2)"});
+    auto prelitVs=vs;prelitVs.push_back({"NAOMI_PRELIT","1"});prelitVs.push_back({"IN3","TEXCOORD3"});
     Def defs[] = {
         {kSceneEffectsShaderHlsl,sizeof(kSceneEffectsShaderHlsl)-1,"reflectionps","ps_5_1",ps,SDL_GPU_SHADERSTAGE_FRAGMENT,4,1,&sceneEffectsPs_[0]},
         {kSceneEffectsShaderHlsl,sizeof(kSceneEffectsShaderHlsl)-1,"fogps","ps_5_1",ps,SDL_GPU_SHADERSTAGE_FRAGMENT,4,1,&sceneEffectsPs_[1]},
@@ -403,6 +407,7 @@ bool SdlGpuDevice::CreateShaders(std::string* error) {
         {kReflectionSurfaceShaderHlsl,sizeof(kReflectionSurfaceShaderHlsl)-1,"psmain","ps_5_1",ps,SDL_GPU_SHADERSTAGE_FRAGMENT,2,1,&reflectionSurfacePs_},
 
         { kModelShaderHlsl, sizeof(kModelShaderHlsl) - 1, "vsmain", "vs_5_1", vs, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, &modelVs_ },
+        { kModelShaderHlsl, sizeof(kModelShaderHlsl)-1,"vsmain","vs_5_1",prelitVs,SDL_GPU_SHADERSTAGE_VERTEX,0,1,&naomiPrelitVs_ },
         { kModelShaderHlsl, sizeof(kModelShaderHlsl) - 1, "psmain", "ps_5_1", modelPs, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 2, &modelPs_ },
         { kSpriteShaderHlsl, sizeof(kSpriteShaderHlsl) - 1, "vsmain", "vs_5_1", spriteVs, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, &spriteVs_ },
         { kSpriteShaderHlsl, sizeof(kSpriteShaderHlsl) - 1, "psmain", "ps_5_1", ps, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1, &spritePs_ },
@@ -635,9 +640,9 @@ bool SdlGpuDevice::EnsureTaaTargets() {
 }
 
 SDL_GPUGraphicsPipeline* SdlGpuDevice::ReactivePipeline(GpuDraw::Pipeline kind,const GpuState& state) {
-    const bool sprite=kind==GpuDraw::Pipeline::Sprite;const int key=state.zfunc|(state.cull<<4)|(sprite?1<<8:0);
+    const bool sprite=kind==GpuDraw::Pipeline::Sprite,prelit=kind==GpuDraw::Pipeline::NaomiPrelit;const int key=state.zfunc|(state.cull<<4)|(sprite?1<<8:0)|(prelit?1<<9:0);
     auto found=reactivePipelines_.find(key);if(found!=reactivePipelines_.end())return found->second;
-    SDL_GPUVertexBufferDescription buffer{};buffer.slot=0;buffer.pitch=sprite?sizeof(game::TLVertex):sizeof(game::ModelVertex);buffer.input_rate=SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    SDL_GPUVertexBufferDescription buffer{};buffer.slot=0;buffer.pitch=sprite?sizeof(game::TLVertex):prelit?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex);buffer.input_rate=SDL_GPU_VERTEXINPUTRATE_VERTEX;
     SDL_GPUVertexAttribute attributes[3]={{0,0,sprite?SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4:SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,0},
         {1,0,sprite?SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM:SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,sprite?16u:12u},{2,0,SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,24}};
     SDL_GPUColorTargetDescription target{};target.format=SDL_GPU_TEXTUREFORMAT_R8_UNORM;
@@ -673,9 +678,9 @@ void SdlGpuDevice::DrawReactive(const GpuDrawList& list) {
     auto* pass=SDL_BeginGPURenderPass(cmd_,&color,1,&depth);if(!pass)return;reactiveCleared_=true;
     const SDL_GPUViewport viewport={0,0,static_cast<float>(list.width),static_cast<float>(list.height),0,1};SDL_SetGPUViewport(pass,&viewport);
     for(const auto& draw:list.draws){if(!draw.reactive||draw.hud)continue;
-        auto* pipeline=ReactivePipeline(draw.pipeline,draw.state);auto* vertices=draw.stream==GpuDraw::Stream::Static?staticVb_:draw.stream==GpuDraw::Stream::Dynamic?dynVb_:spriteVb_;if(!pipeline||!vertices)continue;
+        auto* pipeline=ReactivePipeline(draw.pipeline,draw.state);auto* vertices=draw.stream==GpuDraw::Stream::Static?staticVb_:draw.stream==GpuDraw::Stream::Dynamic?dynVb_:draw.stream==GpuDraw::Stream::NaomiPrelit?naomiPrelitVb_:spriteVb_;if(!pipeline||!vertices)continue;
         SDL_BindGPUGraphicsPipeline(pass,pipeline);const SDL_GPUBufferBinding buffer={vertices,0};SDL_BindGPUVertexBuffers(pass,0,&buffer,1);
-        if(draw.pipeline==GpuDraw::Pipeline::Model){SDL_PushGPUVertexUniformData(cmd_,0,&list.model[draw.constants],sizeof(ModelConstants));SDL_PushGPUFragmentUniformData(cmd_,0,&list.model[draw.constants],sizeof(ModelConstants));}
+        if(draw.pipeline!=GpuDraw::Pipeline::Sprite){SDL_PushGPUVertexUniformData(cmd_,0,&list.model[draw.constants],sizeof(ModelConstants));SDL_PushGPUFragmentUniformData(cmd_,0,&list.model[draw.constants],sizeof(ModelConstants));}
         else SDL_PushGPUFragmentUniformData(cmd_,0,&list.sprite[draw.constants],sizeof(SpriteConstants));
         const SDL_GPUTextureSamplerBinding sampler={draw.texture&&draw.texture<=textures_.size()?textures_[draw.texture-1]:white_,Sampler(draw.state)};
         SDL_BindGPUFragmentSamplers(pass,0,&sampler,1);SDL_DrawGPUPrimitives(pass,draw.count,1,draw.first,0);
@@ -911,8 +916,9 @@ void SdlGpuDevice::UpdateHdrCapabilities() const {
         SDL_WindowSupportsGPUSwapchainComposition(dev_,window_,SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR);
 }
 
-bool SdlGpuDevice::ConfigureGraphics(const GraphicsOptions& options, std::string* error) {
-    if (!ValidateGraphicsOptions(options, error)) return false;
+bool SdlGpuDevice::ConfigureGraphics(const GraphicsOptions& requested, std::string* error) {
+    if (!ValidateGraphicsOptions(requested, error)) return false;
+    const GraphicsOptions options = ApplyGraphicsModePolicy(requested);
     if (cmd_) { if (error) *error = "Apply graphics options between frames"; return false; }
     if(options.outputResolutionHud&&!EnsureHudTargets(error))return false;
     if((options.shadowMaps||options.volumetricFog)&&!EnsureShadowMap(options.shadowMaps?options.shadowMaps:1)){if(error)*error="Directional shadow map resources are unavailable";return false;}
@@ -1108,26 +1114,28 @@ void SdlGpuDevice::SetSpriteVertices(const game::TLVertex* v, size_t count) {
 
 SDL_GPUGraphicsPipeline* SdlGpuDevice::Pipeline(GpuDraw::Pipeline kind, const GpuState& s, bool coverage) {
     const bool sprite = kind == GpuDraw::Pipeline::Sprite;
+    const bool prelit=kind==GpuDraw::Pipeline::NaomiPrelit;
     const uint32_t key = (sprite ? 1u : 0u) | (s.blendEnable ? 2u : 0u) | (s.blendEnable ? (s.srcBlend << 2) | (s.dstBlend << 6) : 0u) |
                          (static_cast<uint32_t>(s.zfunc) << 10) | (s.zwrite ? 1u << 14 : 0u) | (static_cast<uint32_t>(s.cull & 3) << 15) |
-                         (coverage ? 1u << 17 : 0u) | (hudReady_?1u<<18:0u);
+                         (coverage ? 1u << 17 : 0u) | (hudReady_?1u<<18:0u) | (prelit?1u<<19:0u);
     auto it = pipelines_.find(key);
     if (it != pipelines_.end()) return it->second;
 
     SDL_GPUVertexBufferDescription vb = {};
     vb.slot = 0;
     vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute attrs[3] = {};
+    SDL_GPUVertexAttribute attrs[4] = {};
     if (sprite) {
         vb.pitch = sizeof(game::TLVertex);
         attrs[0] = { 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 0 };
         attrs[1] = { 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 16 };  // ARGB dword: bytes B, G, R, A (swizzled in the shader)
         attrs[2] = { 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 24 };
     } else {
-        vb.pitch = sizeof(game::ModelVertex);
+        vb.pitch = prelit?sizeof(NaomiPrelitVertex):sizeof(game::ModelVertex);
         attrs[0] = { 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0 };
         attrs[1] = { 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12 };
         attrs[2] = { 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 24 };
+        if(prelit)attrs[3]={3,0,SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,32};
     }
     SDL_GPUColorTargetDescription ct = {};
     ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -1140,12 +1148,12 @@ SDL_GPUGraphicsPipeline* SdlGpuDevice::Pipeline(GpuDraw::Pipeline kind, const Gp
     ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
     SDL_GPUGraphicsPipelineCreateInfo pi = {};
-    pi.vertex_shader = sprite ? spriteVs_ : modelVs_;
+    pi.vertex_shader = sprite ? spriteVs_ : prelit?naomiPrelitVs_:modelVs_;
     pi.fragment_shader = sprite ? spritePs_ : modelPs_;
     pi.vertex_input_state.vertex_buffer_descriptions = &vb;
     pi.vertex_input_state.num_vertex_buffers = 1;
     pi.vertex_input_state.vertex_attributes = attrs;
-    pi.vertex_input_state.num_vertex_attributes = 3;
+    pi.vertex_input_state.num_vertex_attributes = prelit?4:3;
     pi.primitive_type = sprite ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     // D3DCULL 1 none / 2 CW / 3 CCW (screen-space winding; front faces are clockwise here, as in the D3D11 backend)
@@ -1226,6 +1234,17 @@ bool SdlGpuDevice::BeginFrame(const float clear[4]) {
 
 void SdlGpuDevice::Submit(const GpuDrawList& list) {
     if (!cmd_) return;
+    if(!list.naomiPrelitVertices.empty()) {
+        const size_t bytes=list.naomiPrelitVertices.size()*sizeof(NaomiPrelitVertex);
+        if(bytes>UINT32_MAX/2)return;
+        EnsureBuffer(naomiPrelitVb_,naomiPrelitCap_,static_cast<uint32_t>(bytes*2));
+        if(!naomiPrelitVb_)return;
+        auto* pass=SDL_BeginGPUCopyPass(cmd_);
+        const bool uploaded=pass&&Upload(pass,naomiPrelitVb_,list.naomiPrelitVertices.data(),static_cast<uint32_t>(bytes),true);
+        if(pass)SDL_EndGPUCopyPass(pass);
+        if(!uploaded)return;
+    }
+
     // Pending per-frame streams first (copy pass), then one render pass for the list.
     if (dynPending_ || spritePending_) {
         const uint32_t dynBytes = static_cast<uint32_t>(dynData_.size()), sprBytes = static_cast<uint32_t>(spriteData_.size());
@@ -1282,7 +1301,7 @@ void SdlGpuDevice::Submit(const GpuDrawList& list) {
         const bool coverage = d.pipeline == GpuDraw::Pipeline::Model && graphics_.alphaToCoverage && graphics_.msaa > 1 &&
             !state.blendEnable && list.model[d.constants].flags[2] >= 0;
         SDL_GPUGraphicsPipeline* p = Pipeline(d.pipeline, state, coverage);
-        SDL_GPUBuffer* vb = d.stream == GpuDraw::Stream::Static ? staticVb_ : d.stream == GpuDraw::Stream::Dynamic ? dynVb_ : spriteVb_;
+        SDL_GPUBuffer* vb = d.stream == GpuDraw::Stream::Static ? staticVb_ : d.stream == GpuDraw::Stream::Dynamic ? dynVb_ : d.stream==GpuDraw::Stream::NaomiPrelit?naomiPrelitVb_:spriteVb_;
         if (!p || !vb) continue;
         if (p != boundPipe) {
             SDL_BindGPUGraphicsPipeline(rp, p);
@@ -1296,7 +1315,7 @@ void SdlGpuDevice::Submit(const GpuDrawList& list) {
         SDL_GPUTexture* tex = d.texture && d.texture <= textures_.size() ? textures_[d.texture - 1] : white_;
         const SDL_GPUTextureSamplerBinding ts = { tex, Sampler(state) };
         SDL_BindGPUFragmentSamplers(rp, 0, &ts, 1);
-        if (d.pipeline == GpuDraw::Pipeline::Model) {
+        if (d.pipeline != GpuDraw::Pipeline::Sprite) {
             ModelConstants c = list.model[d.constants];
             c.depthEffects[3]=opaqueReady_?1.0f:0.0f;
             const bool material=d.normalRoughnessTexture&&d.normalRoughnessTexture<=textures_.size();

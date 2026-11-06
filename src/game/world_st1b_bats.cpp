@@ -1095,6 +1095,111 @@ static void TaskBatInit(Task& t) {
     t.fn = TaskBat;
 }
 
+const float* TrainBatPosition(const ActorTask& actor) {
+    const auto* b = dynamic_cast<const BatTask*>(&actor);
+    return b ? b->pos : nullptr;
+}
+
+static void RemoveTrainBat(World::Impl& w, BatTask& b) {
+    w.batList[b.idx] = nullptr;
+    b.flags34 = (b.flags34 & ~1u) | 0x80018000u;
+    BatSyncLock(b);
+    for (auto& target : w.targetCopy) if (target.obj == &b) target.obj = nullptr;
+    w.ts.KillCurrent();
+}
+
+// 0x0043DB70: Enemy Sweep retains the enemy counts until the death animation ends.
+static void TaskTrainBatDead(Task& t) {
+    World::Impl& w = *CurrentWorld();
+    BatTask& b = t.As<BatTask>();
+    w.actor8E4C = &b;
+    if (b.counter++ > 59) {
+        --w.liveEnemies;
+        --w.attackers;
+        RemoveTrainBat(w, b);
+        return;
+    }
+    BatSkelDraw(w, b);
+    memcpy(b.lock->point, b.pos, 12);
+    BatSyncLock(b);
+    w.lockOn.Register(b.lock, w.playerPos);
+    ++b.c.anim.time;
+}
+
+// 0x0043D800: the training leech moves straight through the alley, at the
+// selected level's speed. The lesson controller owns the escape/failure test.
+static void TaskTrainBat(Task& t) {
+    World::Impl& w = *CurrentWorld();
+    BatTask& b = t.As<BatTask>();
+    w.actor8E4C = &b;
+    if (b.lock) b.slot120 = static_cast<int8_t>(b.lock->slot);
+    if (b.flags34 & 8) {
+        w.SpawnBlood430BD0(b.pos);
+        BatAnimBlend(b.c.anim, 0x219, 0, 4);
+        w.Sound((w.Rand(0x0043D84C) & 1) == 0 ? 0x1E18A9u : 0x1D18A9u);
+        w.SpawnSplash43E4C0(b.rot[1], b.pos[0], w.ground + F32(w.exe, 0x004C4CC0), b.pos[2], 1.0f);
+        b.counter = 0;
+        b.dying = 1;
+        b.vy = 0;
+        b.state = 6;
+        if (b.slot120 != -1) w.lockOn.Release(b.slot120);
+        b.fn = 0x0043DB70;
+        t.fn = TaskTrainBatDead;
+    }
+    b.pos[2] -= w.modes->lessonDiff * F32(w.exe, 0x004E3100) + F32(w.exe, 0x004D1D24);
+    if (b.pos[2] < F32(w.exe, 0x0055D2DC)) {
+        RemoveTrainBat(w, b);
+        return;
+    }
+    w.LightChar();
+    BatSkelDraw(w, b);
+    w.LightScene();
+    ++b.c.anim.time;
+    Mat4 shadow = Mat4::Identity();
+    mx::Translate(shadow, b.pos[0] - 1.0f, -8.25f, b.pos[2] + 1.0f);
+    mx::RotY(shadow, b.rot[1]);
+    mx::Scale(shadow, 4.0f, 1.0f, 8.0f);
+    w.Draw(0x10D0, shadow);
+    mx::Transform(w.cam.view, b.pos, b.viewPos);
+    w.RegisterTarget(&b);
+    memcpy(b.lock->point, b.pos, 12);
+    BatSyncLock(b);
+    w.lockOn.Register(b.lock, w.playerPos);
+    memcpy(b.c.prev, b.pos, 12);
+}
+
+static void TaskTrainBatInit(Task& t) {  // 0x0043D6E0
+    World::Impl& w = *CurrentWorld();
+    BatTask& b = t.As<BatTask>();
+    w.actor8E4C = &b;
+    memcpy(b.c.prev, b.pos, 12);
+    BatAnimInit(w, b.c.anim, b.wing);
+    b.c.anim.time = w.Rand(0x0043D752) % 0x33;
+    b.radius = b.scale * F32(w.exe, 0x004C4CA0);
+    BatSyncLock(b);
+    w.lockOn.AddDirect(b.lock);
+    b.slot120 = static_cast<int8_t>(b.lock->slot);
+    ++w.attackers;
+    ++w.liveEnemies;
+    memcpy(b.lock->point, b.pos, 12);
+    mx::Transform(w.cam.view, b.pos, b.viewPos);
+    w.RegisterTarget(&b);
+    b.fn = 0x0043D800;
+    t.fn = TaskTrainBat;
+}
+
+void SpawnTrainBat(World::Impl& w, const SpawnRecord& r) {  // 0x0043BE60
+    BatTask* b = w.NewTask<BatTask>(TaskTrainBatInit, 0x0043D6E0);
+    memcpy(b->pos, r.pos, 12);
+    b->rot[1] = r.rot[1];
+    b->flags34 = 0x10000;
+    b->lock = &w.lockTargets[w.nextLockTarget++];
+    for (auto& entry : w.batList) entry = nullptr;
+    w.batList[0] = b;
+    w.batAlive = 1;
+    w.actor8E4C = b;
+}
+
 // 0x0043BD30 (actor type 0x40 variants 0 / 1): the group (variant 0: 1 bat; 1: 8, 10 with two players; scenes 0xE /
 // 0x12: 6 / 8; scene 0x19: 4)
 void World::Impl::SpawnBatGroup(const SpawnRecord& r, int variant, int count) {

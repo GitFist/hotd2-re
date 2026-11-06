@@ -32,8 +32,8 @@ struct Profile {
         ControlMask(Control::Start)
     };
 
-    // Replace one action's bindings with the next/previous physical control.
-    // A physical control belongs to one action at a time.
+    // Cycle the first control, preserving alternates and swapping conflicts.
+    // A physical control belongs to one action at a time; other actions stay bound.
     void CycleBinding(int action, int direction);
     void Normalize();
     bool operator==(const Profile&) const = default;

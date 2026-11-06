@@ -41,6 +41,11 @@ public:
         const game::Model* model = nullptr;
         std::string polName;
         float transform[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        // Naomi camera-space flashes/blood already supply this exact matrix.
+        // Keep it for projection/depth instead of round-tripping through a far
+        // world camera. transform remains available for world-space metadata.
+        bool directModelView = false;
+        float modelView[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
         bool cullable = true;  // whole-model frustum culling (off for camera-following skies)
         uint32_t priority = 8;  // pass-1 list priority (0x007E78BC; 8 default, 7 for stage objects with draw mode 2)
         // >= 0: alpha draw path (0x004185A0 -> 0x004AA350 -> Mdl_DrawAlt 0x004A8440): pass-1 key | 0x60000000, every mesh
@@ -90,9 +95,16 @@ public:
         float diffuse[3] = { 1, 1, 1 };     // directional light 0 (0 when disabled, e.g. the light table)
         float ambient[3] = { 0, 0, 0 };     // light's own ambient
         float ambientRS[3] = { 0, 0, 0 };   // D3DRENDERSTATE_AMBIENT
+        // Original directional inputs, before the PC conversion's 1.4 diffuse
+        // multiplier and extra ambient. Table lights retain their own path.
+        bool naomiStandard = false;
+        bool naomiTable = false;
+        float naomiTableAmbient[3] = {};
+        float naomiColor[3] = { 1, 1, 1 };
+        float naomiIntensity = .7f;
         // point / spot lights (the light table 0x004AA8B0), world space, D3DLIGHT7 semantics
         struct Local {
-            int type = 1;                   // 1 point, 2 spot
+            int type = 1;                   // 1 point, 2 spot, 3 directional
             float diffuse[3] = { 1, 1, 1 };
             float pos[3] = {}, dir[3] = { 0, 0, 1 };
             float range = 1e30f, falloff = 1, att[3] = { 1, 0, 0 }, theta = 0, phi = 0;
@@ -119,6 +131,7 @@ public:
         uint32_t textureId = 0;     // global texture id (diagnostics)
         bool linear = false;        // explicit port UI atlas opt-in; original sprites retain authored state
         bool hud = true;             // false for scene-space effects; only consumed by opted-in processing
+        bool naomiAutosort = false;  // original native gameplay sprite/list; requires DrawGame's real camera/projection
     };
     void DrawSprites(int width, int height, const std::vector<SpriteDraw>& sprites);
 
@@ -156,6 +169,8 @@ private:
         float diffuse[4] = { 1, 1, 1, 1 };
         float ambientScale = 1;     // material word 10: D3DMATERIAL7 ambient = scale * diffuse
         float specular[4] = {};     // material words 16..18 and power 1 << word 9 (power 0: no specular, Mdl_Draw)
+        int naomiSpecularIndex = 0; // original material word 9, including -1 constant-intensity materials
+        float naomiSpecular[3] = {}; // original RGB also for native indices >=31
         bool translucent = false;   // drawn in pass 1 (TSP & 0x180000 != 0x80000): alpha test >= 1/255 + blending
         int srcBlend = 1, dstBlend = 0;  // D3D7 D3DBLEND values
         int zfunc = 4;              // D3D7 D3DCMPFUNC
@@ -163,6 +178,8 @@ private:
         bool linear = false;        // TSP bits 14-13 != 0
         int addrU = 1, addrV = 1;   // D3D7 D3DTEXTUREADDRESS (1 wrap, 2 mirror, 3 clamp)
         bool alphaFromTexture = false;  // TSP shading instruction 1: ALPHAOP SELECTARG1 (texture alpha only)
+        uint8_t naomiDecal = 0;     // TSP shading 0: 1 uses texture RGBA, 2 ignores texture alpha
+        uint8_t naomiTsp = 0;       // ShadInstr | IgnoreTexAlpha<<2 | UseAlpha<<3
         bool fog = false;           // FOGENABLE: TSP bit 23 clear
         float sphere[4] = {};       // material bounding sphere (words 4-7), model space
         bool dynamic = false;       // vertices live in the per-frame dynamic buffer
@@ -173,6 +190,7 @@ private:
         uint64_t topology = 0;      // source strip structure, independent of skin deformation and UV animation
         uint32_t ordinal = 0;       // stable run within model, independent of cache vertex offsets
         float shadowBounds[6] = {}; // actual deformed mesh AABB; source material spheres can be absent/loose
+        float geometryCenter[3] = {}; // emitted-vertex centroid; native view-space effect sort only
     };
     struct ModelGpu {
         std::vector<Mesh> meshes;
@@ -194,18 +212,22 @@ private:
     // Appends one draw (state + constants) to the list.
     static void AddModelDraw(GpuDrawList& list, const Mesh& m, const ModelConstants& fc, const GpuState& st);
     void AddSpriteDraw(GpuDrawList& list, int width, int height, const SpriteDraw& s, size_t index);
+    bool AddNaomiSpriteDraw(GpuDrawList& list,const SpriteDraw& s,const ModelConstants& frame,bool fogEnabled);
     static GpuState StateOf(bool blend, int src, int dst, int zfunc, bool zwrite, bool linear, int addrU, int addrV);
     GpuTexture TextureView(const RgbaImage* img, bool alphaWeighted = false);
     bool BeginTemporal(int width, int height, const float* view, const float* projection);
     void AddMotionDraw(GpuDrawList& list, const Batch& batch, const GpuDraw& draw);
     void SubmitGame(GpuDrawList& list);
+    void SortNaomiFlashes(GpuDrawList& list, const std::vector<size_t>& draws);
 
     GpuDevice* device_ = nullptr;
-    std::map<std::tuple<const game::Model*, std::string,int>, ModelGpu> models_;  // geometry uploaded once per model
+    std::map<std::tuple<const game::Model*, std::string,int,bool>, ModelGpu> models_;  // includes source list interpretation
     std::vector<game::ModelVertex> cacheVerts_;
     bool cacheDirty_ = false, boundsValid_ = false;
     bool haveStatic_ = false, haveDynamic_ = false;  // the device holds a static / (at some point) a dynamic stream
     std::vector<std::array<float, 16>> itemWorld_;
+    std::vector<std::array<float, 16>> itemModelView_;
+    std::vector<uint8_t> itemDirectModelView_;
     std::vector<std::unique_ptr<ModelGpu>> dynModels_;  // this frame's dynamic-geometry items
     std::vector<game::ModelVertex> dynVerts_;
     bool dynUploadPending_ = false;

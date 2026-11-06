@@ -185,6 +185,30 @@ void ChallengeDamageFails() {
             "an actual hit fails the wave even while lives remain above the wave-start value");
 }
 
+void ChallengeFailureCleanup() {
+    for (bool timeout:{false,true}) {
+        game::World::Impl world;world.cfg.portTyping=true;world.gameMode=6;
+        world.runner=std::make_unique<game::EventRunner>(world.mem,world,nullptr,nullptr);
+        auto& challenge=world.typingChallenge;
+        challenge.active=true;challenge.state=1;challenge.shared=timeout?1:0;challenge.deadline=timeout?1:-1;
+        auto* mission=world.NewTask<game::EnemyTask>([](game::Task&){},0);
+        mission->hp=3;mission->slot120=-1;mission->target=-1;mission->behaviour=2;
+        challenge.enemies.push_back(world.ts.Live().back()->serial);
+        auto* unrelated=world.NewTask<game::EnemyTask>([](game::Task&){},0);
+        unrelated->hp=3;world.liveEnemies=2;
+        world.typingCharacters=world.typingCharacters2="PENDING";
+        world.TypingChallengeStep();
+        Require(challenge.state==2 && !challenge.success && challenge.inputBlocked,"damage and timeout both fail the mission");
+        Require(mission->hp==0 && mission->behaviour==6 && (mission->flags38&2) && world.liveEnemies==1,
+                "mission failure kills and releases every surviving owned enemy");
+        Require(unrelated->hp==3 && world.typing.stats().points==0 && world.typing2.stats().points==0,
+                "failure leaves unrelated actors alone and awards neither player points");
+        Require(world.typingCharacters.empty()&&world.typingCharacters2.empty(),"failure drops pending text for both players");
+        world.TypingChallengeStep();
+        Require(world.liveEnemies==1,"failure cannot decrement the enemy count twice");
+    }
+}
+
 void SourceSpriteDepth() {
     game::SpriteDef def;
     def.depth = .1f; def.x = 320; def.y = 120; def.flags = 0xA;
@@ -263,6 +287,6 @@ void DrillCheckpoints() {
 } // namespace
 
 int main() {
-    WordCommands(); ConditionalBranches(); ClearWaits(); UnsupportedCommands(); ChallengeRewards(); ChallengeContinueGate(); ChallengeDamageFails(); SourceSpriteDepth(); SpawnedAxeWords(); DrillCheckpoints();
+    WordCommands(); ConditionalBranches(); ClearWaits(); UnsupportedCommands(); ChallengeRewards(); ChallengeContinueGate(); ChallengeDamageFails(); ChallengeFailureCleanup(); SourceSpriteDepth(); SpawnedAxeWords(); DrillCheckpoints();
     std::puts("typing_event_test: OK");
 }

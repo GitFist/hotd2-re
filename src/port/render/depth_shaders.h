@@ -1,10 +1,11 @@
 #pragma once
+#include "material_opacity_hlsl.h"
 
 // Optional single-sample opaque depth prepass. Both backends use this exact model
 // projection path and write reversed NDC depth to an R32_FLOAT color texture.
 // It deliberately avoids unsupported hardware resolves of an MSAA depth target.
 namespace port {
-inline const char kDepthShaderHlsl[] = R"(
+inline const char kDepthShaderHlsl[] = HOTD2_MATERIAL_OPACITY_HLSL R"(
 #ifndef CB_REG
 #define CB_REG register(b0)
 #endif
@@ -57,7 +58,7 @@ float psmain(VSOut i) : SV_Target {
     // also supports future explicit cutout materials without solid silhouettes.
     if (flags.z >= 0) {
         float ta = flags.x > 0.5 ? tex.Sample(samp, i.uv).a : 1;
-        float alpha = flags.x > 0.5 ? (flags.w > 1.5 ? ta : ta * diffuse.a) : diffuse.a;
+        float alpha = SourceMaterialAlpha(ta,diffuse.a,flags.w,flags.x > 0.5);
         clip(alpha - flags.z);
     }
     return i.pos.z;

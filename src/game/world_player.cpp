@@ -245,11 +245,13 @@ bool World::Impl::UseCredit(int, bool cont) {
     return true;
 }
 
-// 0x007DCCA4 (top of Evt_Run 0x0045ECC0): a player in state 5 with lives, or a non-interactive mode
+// 0x007DCCA4 (top of Evt_Run 0x0045ECC0): Training tests playing state alone;
+// other game types require lives, or a non-interactive mode.
 bool World::Impl::GameRunning() {
-    // PC44E000's training branch tests playing state alone. Cleanup attacks
-    // may exhaust lives after the result has latched without stopping its VM.
-    if(TypingDrillGameActive(*this))return player[0].state==5||player[1].state==5;
+    // Failed lessons retain state 5 at zero lives. Their results script must
+    // finish restoring character lighting and process Retry / Quit / Back.
+    if ((runner && runner->cfg.gameType == 2) || TypingDrillGameActive(*this))
+        return player[0].state == 5 || player[1].state == 5;
     if ((player[0].lives >= 1 && player[0].state == 5) || (player[1].lives >= 1 && player[1].state == 5)) return true;
     return NonInteractive();
 }
@@ -357,6 +359,7 @@ void World::Impl::UpdateRank() {
 
 // 0x004606D0: one stage frame (task run, rank, rank timer, per-player hit timers)
 void World::Impl::StageFrame() {
+    AdvanceNativeVisualEffects();
     ts.RunFrame();  // Task_RunFrom 0x004A7240
     UpdateRank();
     if (rankTimerOn) ++rankTimer;
@@ -366,6 +369,7 @@ void World::Impl::StageFrame() {
 
 // Game_SetState 0x0040E850 (0x007C17A0) applied at the end of the frame by Game_ApplyState 0x0040E860
 void World::Impl::SetGameMode(int m) {
+    nativeVisualEffects.clear();
     if (m != 6 && prototype) { prototype.reset(); animLight = 1; }
     if (m == 3 || m == 4 || m == 15) RandomizerBegin(*this, false);
     stageResults = {};

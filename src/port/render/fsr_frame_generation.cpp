@@ -1,4 +1,5 @@
 #include "fsr_frame_generation.h"
+#include "fsr_depth.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <wrl/client.h>
@@ -20,7 +21,7 @@ struct FsrFrameGeneration::Impl {
     ComPtr<ID3D12Resource> generated,retained,disable,flagValues;
     int width=0,height=0,renderWidth=0,renderHeight=0;
     DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
-    uint64_t lastFrame=0;bool haveFrame=false,available=false;
+    uint64_t lastFrame=0;bool haveFrame=false,available=false,infiniteDepth=false;
     std::string version;
 #if defined(HOTD2_FSR_SDK)
     HMODULE module=nullptr;ffxFunctions api{};ffxContext context=nullptr;
@@ -54,14 +55,13 @@ void Transition(ID3D12GraphicsCommandList* commands,ID3D12Resource* resource,D3D
 void Uav(ID3D12GraphicsCommandList* commands,ID3D12Resource* resource){D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;b.UAV.pResource=resource;commands->ResourceBarrier(1,&b);}
 bool SameDevice(ID3D12Resource* resource,ID3D12Device* device){ComPtr<ID3D12Device> actual;return resource&&SUCCEEDED(resource->GetDevice(IID_PPV_ARGS(&actual)))&&actual.Get()==device;}
 bool Texture(ID3D12Resource* resource,int width,int height){if(!resource)return false;const auto d=resource->GetDesc();return d.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D&&d.Width==UINT64(width)&&d.Height==UINT(height)&&d.DepthOrArraySize==1&&d.MipLevels==1&&d.SampleDesc.Count==1&&!(d.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);}
-bool Camera(const NativeD3D12FrameInterop& frame,ffxDispatchDescFrameGenerationPrepareV2* p){
+bool Camera(const NativeD3D12FrameInterop& frame,ffxDispatchDescFrameGenerationPrepareV2* p,bool* infiniteDepth){
     if(!frame.camera.valid||!std::isfinite(frame.frameTimeMs)||frame.frameTimeMs<=0)return false;
     const auto& projection=frame.camera.projection;float inverseView[16],inverseProjection[16];
     if(std::abs(projection[11])<1e-8f||std::abs(projection[5])<1e-8f||!InvertSceneMatrix(frame.camera.view,inverseView)||!InvertSceneMatrix(projection,inverseProjection))return false;
     const double nearZ=double(inverseProjection[10])+inverseProjection[14],nearW=double(inverseProjection[11])+inverseProjection[15];
-    if(std::abs(nearW)<1e-12||std::abs(inverseProjection[15])<1e-12)return false;
-    p->cameraNear=static_cast<float>(std::abs(nearZ/nearW));p->cameraFar=static_cast<float>(std::abs(double(inverseProjection[14])/inverseProjection[15]));
-    if(!std::isfinite(p->cameraNear)||!std::isfinite(p->cameraFar)||p->cameraNear<=0||p->cameraFar<=p->cameraNear)return false;
+    FsrDepthRange depth;if(std::abs(nearW)<1e-12||!DecodeFsrDepthRange(nearZ,nearW,inverseProjection[14],inverseProjection[15],&depth))return false;
+    p->cameraNear=depth.nearPlane;p->cameraFar=depth.farPlane;*infiniteDepth=depth.infinite;
     p->cameraFovAngleVertical=2*std::atan(1/std::abs(projection[5]));p->viewSpaceToMetersFactor=1;
     const float forward=projection[11]<0?-1.f:1.f;
     for(int k=0;k<3;++k){p->cameraPosition[k]=inverseView[12+k];p->cameraRight[k]=inverseView[k];p->cameraUp[k]=inverseView[4+k];p->cameraForward[k]=inverseView[8+k]*forward;}
@@ -105,19 +105,19 @@ bool FsrFrameGeneration::Evaluate(const NativeD3D12FinalFrame& input,NativeD3D12
        !Texture(input.hudless,int(desc.Width),int(desc.Height))||input.hudless->GetDesc().Format!=desc.Format||desc.Format!=DXGI_FORMAT_R8G8B8A8_UNORM)
         return Fail("FSR FG requires matching SDR final/HUDless textures",error);
     if(motion.Format!=DXGI_FORMAT_R16G16_FLOAT&&motion.Format!=DXGI_FORMAT_R32G32_FLOAT)return Fail("FSR FG requires actual two-channel float motion",error);
-    ffxDispatchDescFrameGenerationPrepareV2 prepare{};if(!Camera(frame,&prepare))return Fail("FSR FG needs actual finite perspective camera and render interval",error);
-    if(impl_->width!=int(desc.Width)||impl_->height!=int(desc.Height)||impl_->renderWidth!=frame.width||impl_->renderHeight!=frame.height||impl_->format!=desc.Format)impl_->Release();
+    bool infiniteDepth=false;ffxDispatchDescFrameGenerationPrepareV2 prepare{};if(!Camera(frame,&prepare,&infiniteDepth))return Fail("FSR FG needs actual perspective camera and render interval",error);
+    if(impl_->width!=int(desc.Width)||impl_->height!=int(desc.Height)||impl_->renderWidth!=frame.width||impl_->renderHeight!=frame.height||impl_->format!=desc.Format||impl_->infiniteDepth!=infiniteDepth)impl_->Release();
     const bool create=!impl_->context;
     if(create){
         impl_->create={};impl_->create.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;impl_->create.header.pNext=&impl_->backend.header;
-        impl_->create.flags=FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED;impl_->create.displaySize={unsigned(desc.Width),desc.Height};impl_->create.maxRenderSize={unsigned(frame.width),unsigned(frame.height)};
+        impl_->create.flags=FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED|(infiniteDepth?FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE:0);impl_->create.displaySize={unsigned(desc.Width),desc.Height};impl_->create.maxRenderSize={unsigned(frame.width),unsigned(frame.height)};
         impl_->create.backBufferFormat=ffxApiGetSurfaceFormatDX12(desc.Format);
         if(!Api(impl_->api.CreateContext(&impl_->context,&impl_->create.header,nullptr),"FSR FG context creation",error))return false;
         D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CreationNodeMask=heap.VisibleNodeMask=1;
         auto target=desc;target.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS|D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;target.Alignment=0;
         if(FAILED(frame.device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&target,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&impl_->generated)))||
            FAILED(frame.device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&target,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&impl_->retained))))return Fail("FSR FG output allocation failed",error);
-        impl_->width=int(desc.Width);impl_->height=int(desc.Height);impl_->renderWidth=frame.width;impl_->renderHeight=frame.height;impl_->format=desc.Format;
+        impl_->width=int(desc.Width);impl_->height=int(desc.Height);impl_->renderWidth=frame.width;impl_->renderHeight=frame.height;impl_->format=desc.Format;impl_->infiniteDepth=infiniteDepth;
     }
     if(!impl_->disable||!impl_->flagValues){impl_->disable.Reset();impl_->flagValues.Reset();D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC buffer{};buffer.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;buffer.Width=4;buffer.Height=buffer.DepthOrArraySize=buffer.MipLevels=1;buffer.SampleDesc.Count=1;buffer.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;buffer.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;

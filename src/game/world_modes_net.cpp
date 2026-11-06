@@ -40,7 +40,7 @@ constexpr uint32_t kUp = 0x10, kDown = 0x20, kOk = 0xC, kBack = 2;  // P1's bits
 void RoomFrame(World::Impl& w) {
     auto& m = *w.modes;
     m.netState = 1;
-    constexpr int difficultyRow = 7, rows = 9;
+    constexpr int difficultyRow = 8, rows = 10;
     constexpr float rowStart = 5.0f, rowStep = 1.0f;
     uint32_t buttons = w.pressed & 0xFFFF;
     const auto& gun = w.input[0];
@@ -73,8 +73,8 @@ void RoomFrame(World::Impl& w) {
         w.Note("network room: host selected difficulty " + std::to_string(w.cfg.difficulty));
     } else if ((buttons & kOk) && w.front.menuCursor < difficultyRow) {
         const int choice = w.front.menuCursor;
-        w.cfg.portTyping = choice == 6;
-        w.cfg.typingOriginal = true;
+        w.cfg.portTyping = choice == 6 || choice == 7;
+        w.cfg.typingOriginal = choice != 7;
         w.cfg.typingOptions.difficulty = TypingDifficulty(std::clamp(w.cfg.difficulty,0,4));
         w.front.sceneSelect = choice == 2;
         w.front.sceneStart = -1;
@@ -91,7 +91,7 @@ void RoomFrame(World::Impl& w) {
         w.Note("network room: host selected " + std::to_string(choice));
         return;
     }
-    static const std::array<const char*, rows> labels = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "TYPING ORIGINAL", "", "LEAVE ROOM" };
+    static const std::array<const char*, rows> labels = { "ARCADE", "ORIGINAL", "SCENE SELECTION", "BOSS MODE", "HORDE MODE", "RANDOMIZER", "TYPING ORIGINAL", "TYPING ARCADE", "", "LEAVE ROOM" };
     const std::string difficultyName = w.exe.CStr(0x00569758 + static_cast<uint32_t>(w.cfg.difficulty) * 10);
     if (w.cfg.portFeatures && w.cfg.portModernMenu) {
         NightShiftNetworkRoomFrame(w, labels, difficultyName);
@@ -106,9 +106,9 @@ void RoomFrame(World::Impl& w) {
     const std::string difficulty = "DIFFICULTY: " + difficultyName;
     for (int i = 0; i < rows; ++i)
         text(12, rowStart + i * rowStep, i == difficultyRow ? difficulty.c_str() : labels[i], i == w.front.menuCursor ? 0x10 : 1);
-    text(0, 14.0f, w.cfg.creditSetting < 0 ? "UNLIMITED CONTINUES ON" : "UNLIMITED CONTINUES OFF", 0x42);
-    text(0, 15.2f, "HOST: LEFT/RIGHT OR ENTER TO CHANGE", 0x42);
-    text(0, 16.5f, "ESC LEAVES ROOM", 0x42);
+    text(0, 15.0f, w.cfg.creditSetting < 0 ? "UNLIMITED CONTINUES ON" : "UNLIMITED CONTINUES OFF", 0x42);
+    text(0, 16.0f, "HOST: LEFT/RIGHT OR ENTER TO CHANGE", 0x42);
+    text(0, 17.0f, "ESC LEAVES ROOM", 0x42);
 }
 
 }  // namespace

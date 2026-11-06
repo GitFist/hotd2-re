@@ -58,7 +58,7 @@ if(WIN32)
 endif()
 
 # Asset loading + the backend-neutral model / sprite renderer on top of the native decoders in src/game.
-add_library(port_render STATIC render/asset_store.cpp render/model_renderer.cpp render/render_pose.cpp scene/scene.cpp render/front_screens.cpp
+add_library(port_render STATIC render/asset_store.cpp assets/naomi_visuals.cpp render/model_renderer.cpp render/naomi_flash_sort.cpp render/render_pose.cpp scene/scene.cpp render/front_screens.cpp
                                render/png_read.cpp render/ui_font.cpp)
 target_include_directories(port_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(port_render PUBLIC game port_assets)

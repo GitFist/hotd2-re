@@ -1,4 +1,4 @@
-// typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--miss-recovery|--chapter2-regression]
+// typing_campaign_test <game dir> [--campaign|--arcade-campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--miss-recovery|--chapter2-regression]
 // Real stage scripts, enemies and boss damage windows; all campaign damage comes
 // through the same queued text API used by the local keyboard frontend.
 #include <algorithm>
@@ -357,9 +357,10 @@ int SourceEnding(game::World& world, bool twoPlayer = false) {
     return 0;
 }
 
-void Campaign(const char* dir, int firstChapter = 0, bool humanRate = false, bool twoPlayer = false) {
+void Campaign(const char* dir, int firstChapter = 0, bool humanRate = false, bool twoPlayer = false, bool original = true) {
     game::World world;
     auto cfg = Config();
+    cfg.typingOriginal=original;
     cfg.eventMode = firstChapter;
     if (twoPlayer) cfg.playerState[1] = 0;
     cfg.portStageResults = true;
@@ -841,6 +842,7 @@ void MenuFlow(const char* dir) {
     Step(world,8);
     for(int frame=0;frame<48;++frame)Step(world);
     Require(world.Hud().typingHome&&world.Hud().nightShiftPage==0,"game switch enters Typing Home",&world);
+    Step(world,0x20);Step(world); // Original follows Arcade.
     Step(world, 8);
     Step(world);
     Require(world.GameMode() == 4 && world.Hud().nightShiftPage == 11,
@@ -869,7 +871,7 @@ void MenuFlow(const char* dir) {
     Step(world);
     Require(world.GameMode()==4&&world.Hud().typingHome&&world.Hud().nightShiftPage==0,
             "return from Typing gameplay restores Typing Home",&world);
-    for (int row=0;row<5;++row) {Step(world,0x20);Step(world);}
+    for (int row=0;row<6;++row) {Step(world,0x20);Step(world);}
     Step(world,8);
     for(int frame=0;frame<48;++frame)Step(world);
     Require(!world.Hud().typingHome,"game switch returns to HOTD2 Home",&world);
@@ -1337,16 +1339,17 @@ void Eligibility() {
 
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
-        std::fprintf(stderr, "usage: typing_campaign_test <game dir> [--campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--eligibility|--miss-recovery|--chapter2-regression]\n");
+        std::fprintf(stderr, "usage: typing_campaign_test <game dir> [--campaign|--arcade-campaign|--two-player|--human-campaign|--ending|--bosses|--human-bosses|--menu|--lifecycle|--gun|--eligibility|--miss-recovery|--chapter2-regression]\n");
         return 2;
     }
     const std::string only = argc == 3 ? argv[2] : "";
     const bool fromChapter = only.size() == 15 && only.starts_with("--from-chapter") && only.back() >= '1' && only.back() <= '6';
-    if (!only.empty() && !fromChapter && only != "--campaign" && only != "--two-player" && only != "--human-campaign" && only != "--ending" && only != "--bosses" && only != "--human-bosses" && only != "--menu" && only != "--lifecycle" && only != "--gun" && only != "--eligibility" && only != "--miss-recovery" && only != "--chapter2-regression") return 2;
+    if (!only.empty() && !fromChapter && only != "--campaign" && only != "--arcade-campaign" && only != "--two-player" && only != "--human-campaign" && only != "--ending" && only != "--bosses" && only != "--human-bosses" && only != "--menu" && only != "--lifecycle" && only != "--gun" && only != "--eligibility" && only != "--miss-recovery" && only != "--chapter2-regression") return 2;
     if (only.empty() || only=="--chapter2-regression") {
         Chapter2Opening(argv[1]); HierophantWaterWindow(argv[1]);
         if (!only.empty()) return 0;
     }
+    if (only == "--arcade-campaign") { Campaign(argv[1],0,false,false,false); return 0; }
     if (only == "--two-player") { Campaign(argv[1],0,false,true); return 0; }
     if (only == "--miss-recovery") { AxeMissRecovery(argv[1]); AxeContinueRecovery(argv[1]); return 0; }
     if (fromChapter) { Campaign(argv[1],only.back()-'1'); return 0; }

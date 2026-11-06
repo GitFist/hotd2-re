@@ -52,11 +52,23 @@ void Profile::CycleBinding(int action, int direction) {
     for (int i = 0; i < kControlCount; ++i) {
         if (bindings[action] & (uint16_t(1) << i)) { current = i; break; }
     }
-    const int next = current < 0 ? (direction > 0 ? 0 : kControlCount - 1) :
-                     (current + (direction > 0 ? 1 : kControlCount - 1)) % kControlCount;
-    const uint16_t chosen = uint16_t(1) << next;
-    for (auto& binding : bindings) binding &= ~chosen;
-    bindings[action] = chosen;
+    const uint16_t previous = current < 0 ? 0 : uint16_t(1) << current;
+    int next = current < 0 ? (direction > 0 ? -1 : 0) : current;
+    for (int attempt = 0; attempt < kControlCount; ++attempt) {
+        next = (next + (direction > 0 ? 1 : kControlCount - 1) + kControlCount) % kControlCount;
+        const uint16_t chosen = uint16_t(1) << next;
+        // Keep alternate controls (for example RT alongside A) on this action.
+        if (bindings[action] & chosen) continue;
+        bool used = false;
+        for (int other = 0; other < int(bindings.size()); ++other)
+            if (other != action && (bindings[other] & chosen)) used = true;
+        if (!previous && used) continue;  // an unassigned action can claim a free control
+        for (int other = 0; other < int(bindings.size()); ++other)
+            if (other != action && (bindings[other] & chosen))
+                bindings[other] = (bindings[other] & ~chosen) | previous;
+        bindings[action] = (bindings[action] & ~previous) | chosen;
+        return;
+    }
 }
 
 bool Settings::Load(const std::string& path) {

@@ -87,7 +87,7 @@ void ShoulderCategories() {
         Check(settings == unchanged && sounds.empty(), "bumper category switching changes no settings and is silent");
     };
     shoulder(Button::LeftShoulder);
-    Check(options.CurrentPage() == Display::kPacks, "LB/L1 wraps Display to the last category from a value row");
+    Check(options.CurrentPage() == Display::kRetro, "LB/L1 wraps Display to the last category from a value row");
     shoulder(Button::RightShoulder);
     Check(options.CurrentPage() == Display::kDisplay, "RB/R1 wraps the last category to Display");
     shoulder(Button::RightShoulder, 1);
@@ -143,7 +143,7 @@ void ShoulderCategoriesFromPause() {
     pause.Update(Tap(pads, Button::LeftShoulder, 0, true), settings, sounds);
     Check(pause.Display().CurrentPage() == play::DisplayMenu::kDisplay, "LB/L1 switches back inside paused Options");
     pause.Update(Tap(pads, Button::LeftShoulder, 0, true), settings, sounds);
-    Check(pause.Display().CurrentPage() == play::DisplayMenu::kPacks && pause.DisplayOpen(),
+    Check(pause.Display().CurrentPage() == play::DisplayMenu::kRetro && pause.DisplayOpen(),
           "paused Options category navigation wraps without resuming");
     Check(settings == unchanged && sounds.empty(), "paused category navigation changes no settings and is silent");
 }
@@ -216,6 +216,9 @@ void PadEditing() {
     const auto oldFire = pads.settings.player[1].bindings[0];
     pad(Button::Right);
     Check(pads.settings.player[1].bindings[0] != oldFire, "right cycles Fire binding");
+    Check(pads.settings.player[1].bindings[0] & Mask(input::gamepad::Control::RightTrigger), "Fire remap preserves the alternate trigger");
+    { game::WorldHud notice; menu.ModernHud(pads, notice);
+      Check(Text(notice, "Shared button swapped; alternate buttons kept."), "conflicting remap visibly explains the swap"); }
     pad(Button::Down);
     const auto oldReload = pads.settings.player[1].bindings[1];
     pad(Button::Left);

@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import zipfile
+import zlib
 
 import check_release_privacy
 
@@ -37,6 +38,7 @@ MAX_PUBLIC_TOTAL_BYTES = 1024 * 1024 * 1024
 MAX_FILE_INDEX_BYTES = 2 * 1024 * 1024
 MAX_FILE_ASSETS_BYTES = 512 * 1024 * 1024
 MAX_TYPING_REFERENCE_BYTES = 128 * 1024 * 1024
+MAX_NAOMI_VISUALS_BYTES = 512 * 1024 * 1024
 PUBLIC_MANAGED_PATH = re.compile(
     r"hotd2\.exe|scenes/st1_play\.scene|README\.txt|BUILD\.txt|CREDITS\.txt|LICENSE-SDL\.txt|"
     r"LICENSE-native-code\.txt|THIRD_PARTY_NOTICES\.txt|nvngx_dlss\.dll|nvngx_dlssg\.dll|"
@@ -329,6 +331,33 @@ def typing_reference_info(path):
                 complete=True, bytes=size, sha256=sha256(path))
 
 
+def naomi_visuals_info(path, source_dir):
+    """Require the exact runtime-pinned bank, including its v2 envelope/CRC."""
+    path = require_file(path)
+    size = path.stat().st_size
+    if not 32 <= size <= MAX_NAOMI_VISUALS_BYTES:
+        raise ValueError("Invalid prepared Naomi visual bank size")
+    source = require_file(source_dir / "src/port/update/naomi_content.h").read_text(encoding="utf-8")
+    sizes = re.findall(r'\bkNaomiContentBytes\s*=\s*(\d+)\s*;', source)
+    hashes = re.findall(r'\bkNaomiContentSha256\s*=\s*"([0-9a-f]{64})"\s*;', source)
+    digest = sha256(path)
+    if len(sizes) != 1 or len(hashes) != 1 or size != int(sizes[0]) or digest != hashes[0]:
+        raise ValueError("Naomi visual bank does not match the client's pinned size and SHA-256")
+    with path.open("rb") as stream:
+        magic, version, length, crc, resources, aliases, models = struct.unpack("<8s6I", stream.read(32))
+        if (magic != b"H2NVIS01" or version != 2 or length != size - 32 or
+                not 1 <= resources <= 1024 or aliases > 100000 or models > 100000):
+            raise ValueError("Invalid prepared Naomi visual bank header")
+        actual_crc = 0
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            actual_crc = zlib.crc32(block, actual_crc)
+        if actual_crc != crc:
+            raise ValueError("Invalid prepared Naomi visual bank CRC")
+    privacy_check(path)
+    return dict(path="game/naomi_visuals.bank", format="H2NVIS01", version=2,
+                bytes=size, sha256=digest)
+
+
 def write_manifest(package_dir, metadata):
     def files():
         return sorted(path for path in package_dir.rglob("*") if path.is_file())
@@ -421,12 +450,15 @@ def write_file_assets(package_dir, out, info):
         stream.write(f"{hashlib.sha256(encoded).hexdigest()}  {name}\n")
 
 
-def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, game_manifest=None, typing_reference=None):
+def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, game_manifest=None,
+                  typing_reference=None, naomi_visuals=None):
     source_dir, exe, out = source_dir.resolve(strict=True), exe.resolve(strict=True), out.resolve()
     if out.exists():
         raise ValueError("Output already exists. Choose a fresh -Out directory; existing files are never removed")
     if typing_reference is not None and kind != "complete":
         raise ValueError("Prepared Typing reference is original game data and is allowed only in complete packages")
+    if naomi_visuals is not None and kind != "complete":
+        raise ValueError("Prepared Naomi visuals are original game data and are allowed only in complete packages")
     info = executable_info(exe, source_dir, architecture)
     notices = require_file(source_dir / "THIRD_PARTY_NOTICES.txt")
     scene = require_file(source_dir / "scenes/st1_play.scene")
@@ -434,11 +466,15 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     licenses = [(sdl_license(source_dir, exe), "LICENSE-SDL.txt"), (notices, "THIRD_PARTY_NOTICES.txt")]
     if (source_dir / "LICENSE").is_file():
         licenses.append((require_file(source_dir / "LICENSE"), "LICENSE-native-code.txt"))
-    game, game_metadata, typing_metadata = [], None, None
+    game, game_metadata, typing_metadata, naomi_metadata = [], None, None, None
     if kind == "complete":
         if game_dir is None:
             raise ValueError("Complete-local packaging requires explicit -GameDir")
         game_dir = game_dir.resolve(strict=True)
+        if naomi_visuals is None and (source_dir / "src/port/update/naomi_content.h").exists():
+            naomi_visuals = game_dir / "naomi_visuals.bank"
+            if not naomi_visuals.is_file():
+                raise ValueError("Complete packages for this client require --naomi-visuals or game/naomi_visuals.bank")
         if out.is_relative_to(game_dir):
             raise ValueError("Package output must not be inside the read-only game directory")
         game_manifest = game_manifest or game_dir.parent / "original/game-manifest.json"
@@ -446,6 +482,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         game_metadata = dict(files=len(game), extractionManifestSha256=sha256(game_manifest))
         if typing_reference is not None:
             typing_metadata = typing_reference_info(typing_reference)
+        if naomi_visuals is not None:
+            naomi_metadata = naomi_visuals_info(naomi_visuals, source_dir)
     elif kind != "public":
         raise ValueError("Unknown package kind")
     revision = source_revision(source_dir)
@@ -476,6 +514,11 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
         shutil.copy2(typing_reference, destination)
         if destination.stat().st_size != typing_metadata["bytes"] or sha256(destination) != typing_metadata["sha256"]:
             raise ValueError("Prepared Typing reference changed during packaging")
+    if naomi_metadata is not None:
+        destination = package_dir / naomi_metadata["path"]
+        shutil.copy2(naomi_visuals, destination)
+        if destination.stat().st_size != naomi_metadata["bytes"] or sha256(destination) != naomi_metadata["sha256"]:
+            raise ValueError("Prepared Naomi visual bank changed during packaging")
     (package_dir / "game").mkdir(exist_ok=True)
     if kind == "public":
         (package_dir / "game/PUT_YOUR_GAME_FILES_HERE.txt").write_text("Copy your own House of the Dead 2 installation here: Hod2.exe and its data folders.\n", encoding="ascii")
@@ -490,6 +533,8 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
                     thirdPartyBuildPathExceptions=runtime_exceptions, game=game_metadata)
     if typing_metadata is not None:
         metadata["typingReference"] = typing_metadata
+    if naomi_metadata is not None:
+        metadata["naomiVisuals"] = naomi_metadata
     write_manifest(package_dir, metadata)
     privacy_check(package_dir)
     if kind == "public":
@@ -518,6 +563,7 @@ def main():
     parser.add_argument("--game-dir", type=Path)
     parser.add_argument("--game-manifest", type=Path)
     parser.add_argument("--typing-reference", type=Path, help="complete packages only: complete prepared TOTDREF1 v5 bank")
+    parser.add_argument("--naomi-visuals", type=Path, help="complete packages only: runtime-pinned H2NVIS01 v2 bank")
     args = parser.parse_args()
     default_build = "build-x64" if args.architecture == "x64" else "build"
     exe = args.exe or REPO / default_build / "src/port/Release/hotd2.exe"
@@ -526,7 +572,7 @@ def main():
     try:
         archive = stage_package(kind=args.kind, architecture=args.architecture, exe=resolve(exe), source_dir=resolve(args.source_root),
                                 out=resolve(out), game_dir=resolve(args.game_dir), game_manifest=resolve(args.game_manifest),
-                                typing_reference=resolve(args.typing_reference))
+                                typing_reference=resolve(args.typing_reference), naomi_visuals=resolve(args.naomi_visuals))
         print(f"Package: {archive.name} ({archive.stat().st_size} bytes); SHA256 manifest written")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:

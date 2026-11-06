@@ -1,5 +1,6 @@
 #include "scene.h"
 #include "render/viewport.h"
+#include "render/naomi_deformation.h"
 #include "prototype_model.h"
 
 #include "game/crt_qsort.h"
@@ -7,13 +8,17 @@
 #include "game/skin.h"
 #include "game/sprite.h"
 #include "game/stage.h"
+#include "game/naomi_math.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
+#include <tuple>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
@@ -21,6 +26,16 @@
 namespace port {
 
 namespace {
+
+void NaomiRasterProjection(game::Mat4& p,bool nativeDepth=true) {
+    game::naomi::ProjectionXY(&p.m[0],&p.m[5]);
+    if(!nativeDepth)return; // port pause overlays retain their established depth adapter
+    // The original NL path clips at 1e-5 and submits reciprocal eye depth.
+    // This adapter gives reversed GPU depth near/eyeDepth, preserving that
+    // ordering without imposing the SDK's non-universal far3000 parameter.
+    p.m[10]=1.f;
+    p.m[14]=-9.999999747378752e-6f;
+}
 
 // Applies a game::ModelEdit to a copy of the model. Inline vertex k = the k-th distinct vertex record in file order
 // (references point back at earlier inline records, so the sorted distinct offsets are the inline records in order;
@@ -110,6 +125,8 @@ void ApplyModelEdit(const game::ModelEdit& e, game::Model& m, SrcModel srcModel)
         for(game::ModelMesh& mesh:m.meshes)mesh.material.words[9]=0;
     if (e.tspOr)
         for (game::ModelMesh& mesh : m.meshes) mesh.material.words[2] |= e.tspOr;
+    if (e.alpha >= 0.0f)
+        for (game::ModelMesh& mesh : m.meshes) memcpy(&mesh.material.words[11], &e.alpha, sizeof(float));
     if (!e.uvs.empty()) {
         const std::vector<uint32_t> offs = InlineOffsets(m);
         std::unordered_map<uint32_t, const float*> at;
@@ -196,6 +213,8 @@ bool SceneDef::Load(const std::string& path, std::string* error) {
 bool Scene::Init(AssetStore& assets, const SceneDef& def, std::string* error) {
     renderPose_.Reset();
     assets_ = &assets;
+    visualRevision_ = assets.VisualRevision();
+    lighting.naomiStandard = false;
     def_ = def;
     auto load = [&](int id, std::vector<Item>& out) {
         Item it;
@@ -279,6 +298,9 @@ bool Scene::Init(AssetStore& assets, const SceneDef& def, std::string* error) {
         env.LightDiffuse(d);
         env.LightAmbient(amb);
         const uint32_t rs = env.AmbientRenderState();
+        lighting.naomiStandard = true;
+        lighting.naomiIntensity = env.lightIntensity;
+        std::copy(env.lightColor,env.lightColor+3,lighting.naomiColor);
         for (int k = 0; k < 3; ++k) lightColor_[k] = env.lightColor[k];
         for (int k = 0; k < 3; ++k) {
             lighting.diffuse[k] = d[k];
@@ -308,15 +330,28 @@ bool Scene::Init(AssetStore& assets, const SceneDef& def, std::string* error) {
     return true;
 }
 
-bool Scene::PrepareWorld(ModelRenderer& renderer, const game::World& world) {
-    const int mode = world.GameMode(), chapter = world.Hud().titleChapter;
-    const bool changed = mode != cacheMode_ || chapter != cacheChapter_ || world.Frame() < cacheFrame_;
-    cacheMode_ = mode; cacheChapter_ = chapter; cacheFrame_ = world.Frame();
-    if (!changed) return false;
+void Scene::InvalidateVisuals(ModelRenderer& renderer, bool clearAssets) {
     renderPose_.Reset();
     renderer.ClearCache();
-    worldModels_.clear(); uvScroll_.clear(); skinned_.clear(); missingModels_.clear();
-    assets_->ClearCache();
+    worldModels_.clear(); naomiModels_.clear(); naomiDeformModels_.clear(); naomiPolygonBloodModels_.clear(); naomiStageExtraModels_.clear(); naomiNodeModels_.clear(); uvScroll_.clear(); skinned_.clear(); missingModels_.clear();
+    skinDefs_.clear();
+    if (clearAssets) assets_->ClearCache();
+    visualRevision_ = assets_->VisualRevision();
+    // Static/sky scene models are immutable owning PC geometry values; they do
+    // not retain image pointers. The renderer/AssetStore caches above retire all
+    // texture views, so rebuilding their draws resolves the current profile.
+}
+
+bool Scene::PrepareWorld(ModelRenderer& renderer, const game::World& world) {
+    const int mode = world.GameMode(), chapter = world.Hud().titleChapter;
+    const bool profileChanged = assets_->VisualRevision() != visualRevision_;
+    const bool changed = mode != cacheMode_ || chapter != cacheChapter_ || world.Frame() < cacheFrame_ ||
+                         profileChanged;
+    cacheMode_ = mode; cacheChapter_ = chapter; cacheFrame_ = world.Frame();
+    if (!changed) return false;
+    // SetNaomiGraphics already retired asset images. Do not retire a second
+    // time after callers have prepared their current-profile sprite pointers.
+    InvalidateVisuals(renderer,!profileChanged);
     return true;
 }
 
@@ -346,6 +381,9 @@ ModelRenderer::Lighting Scene::MakeLighting(const game::WorldLight& l, const gam
     ModelRenderer::Lighting out;
     out.enabled = true;
     if (!l.table) {
+        out.naomiStandard = true;
+        out.naomiIntensity = l.intensity;
+        std::copy(l.color,l.color+3,out.naomiColor);
         // 0x004AA120: AMBIENT trunc(255 i c), light 0 directional, diffuse 1.4 i c, ambient 0.3 c; direction toward the
         // light = (0, 0, 1) Rx(pitch) Ry(yaw) (0x0040E0B0, negated by 0x004AA0E0 into the D3D direction)
         float d[3], a[3];
@@ -362,6 +400,12 @@ ModelRenderer::Lighting Scene::MakeLighting(const game::WorldLight& l, const gam
         return out;
     }
     // 0x004AA8B0: AMBIENT 0x007E8138 (0x004AA720: trunc(255 v)), only the table's lights
+    // Native AF610/C4E00 retains the unquantized TABLE ambient and uses the
+    // global color when preparing material face colors, independently of PC's
+    // D3D ambient render state.
+    out.naomiTable = true;
+    std::copy(frame.tableAmbient,frame.tableAmbient+3,out.naomiTableAmbient);
+    std::copy(l.color,l.color+3,out.naomiColor);
     for (int k = 0; k < 3; ++k) {
         out.diffuse[k] = out.ambient[k] = 0;
         out.ambientRS[k] = static_cast<float>(static_cast<int>(frame.tableAmbient[k] * 255.0f) & 0xFF) / 255.0f;
@@ -385,6 +429,7 @@ ModelRenderer::Lighting Scene::MakeLighting(const game::WorldLight& l, const gam
 }
 
 game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& world, const std::vector<game::WorldDraw>* drawsOverride) {
+    if (assets_->VisualRevision() != visualRevision_) InvalidateVisuals(renderer,false);
     const game::WorldCamera& cam = world.Camera();
     const auto& events = world.Events();
     TemporalSceneStamp temporal;
@@ -406,8 +451,12 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     auto lightIndex = [&](const game::WorldLight& l) {
         for (size_t i = 0; i < lightKeys.size(); ++i) {
             const game::WorldLight& k = lightKeys[i];
-            if (k.table == l.table && (l.table || (k.pitch == l.pitch && k.yaw == l.yaw && k.intensity == l.intensity &&
-                                                   k.color[0] == l.color[0] && k.color[1] == l.color[1] && k.color[2] == l.color[2])))
+            const bool sameColor=k.color[0]==l.color[0] && k.color[1]==l.color[1] && k.color[2]==l.color[2];
+            // PC TABLE lighting ignores this global color. Native TABLE uses
+            // it in material face RGB, so differently tinted draws cannot share
+            // the first item's light entry.
+            if (k.table == l.table && (l.table ? (!assets_->NaomiGraphics() || sameColor) :
+                (k.pitch==l.pitch && k.yaw==l.yaw && k.intensity==l.intensity && sameColor)))
                 return static_cast<int>(i);
         }
         lightKeys.push_back(l);
@@ -436,7 +485,54 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     if (skinDefs_.empty()) skinDefs_ = game::SkinDefsByModel(assets_->Exe());
     std::map<int, game::Model*> waved;  // models 0x1731..0x1734 with this frame's vertex wave
     std::map<MotionIdentity,uint32_t> motionOccurrences;
-    for (const game::WorldDraw& d : drawsOverride ? *drawsOverride : world.Draws()) {
+    struct RenderSource { const game::WorldDraw* draw; const Item* extra = nullptr; };
+    std::vector<RenderSource> sources;
+    const auto& submissions=drawsOverride?*drawsOverride:world.Draws();
+    sources.reserve(submissions.size());
+    using SourceKey=std::tuple<std::string,uint32_t,std::array<uint32_t,16>,uint32_t,uint32_t,std::array<uint32_t,7>>;
+    std::set<SourceKey> originalStageObjects;
+    auto appendSource=[&](const game::WorldDraw& d,const Item* extra,const std::string& bank,uint32_t part,bool grouped) {
+        if (grouped) {
+            std::array<uint32_t,16> matrix;std::memcpy(matrix.data(),d.world.m,sizeof(d.world.m));
+            uint32_t alpha=0;std::memcpy(&alpha,&d.alpha,sizeof(alpha));
+            const uint32_t role=d.drawMode|(d.alt?0x100u:0u)|(d.cullFlip?0x200u:0u)|
+                (d.cull?0x400u:0u)|(d.unitSpecular?0x800u:0u)|(d.sortBackToFront?0x1000u:0u);
+            std::array<uint32_t,7> light={static_cast<uint32_t>(d.light.pitch),static_cast<uint32_t>(d.light.yaw),
+                0,0,0,0,d.light.table?1u:0u};
+            std::memcpy(&light[2],&d.light.intensity,sizeof(float));
+            std::memcpy(&light[3],d.light.color,sizeof(d.light.color));
+            if(!originalStageObjects.emplace(bank,part,matrix,role,alpha,light).second)return;
+        }
+        sources.push_back({&d,extra});
+    };
+    for(const auto& d:submissions) {
+        std::string bank;uint32_t part=0,evidence=0;
+        const bool rigidStage=assets_->NaomiGraphics() && d.fn==0x00401260 && !d.viewSpace &&
+            d.skinCount==0 && !d.edit && d.wavePhase<0 && d.uvScroll<0 && !d.envMap;
+        const bool grouped=rigidStage && assets_->NaomiModelSourceById(d.model,&bank,&part,&evidence) && evidence==14;
+        appendSource(d,nullptr,bank,part,grouped);
+        if(!grouped)continue;
+        // A merged PC surface may contain two original stage objects. Expand
+        // every source independently even if the primary was already submitted.
+        for(int ordinal=0;ordinal<32;++ordinal) {
+            const auto key=std::make_pair(d.model,ordinal);
+            auto extra=naomiStageExtraModels_.find(key);
+            std::string extraBank;uint32_t extraPart=0,extraEvidence=0;
+            if(extra==naomiStageExtraModels_.end()) {
+                Item model;
+                if(!assets_->NaomiAdditionalStageModelById(d.model,ordinal,model.model,&extraBank,&extraPart,&extraEvidence))break;
+                model.polName=extraBank;
+                model.nativePart=extraPart;
+                extra=naomiStageExtraModels_.emplace(key,std::move(model)).first;
+            } else {
+                extraBank=extra->second.polName;
+                extraPart=extra->second.nativePart;
+            }
+            appendSource(d,&extra->second,extraBank,extraPart,true);
+        }
+    }
+    for (const auto& sourceDraw:sources) {
+        const game::WorldDraw& d=*sourceDraw.draw;
         auto it = worldModels_.find(d.model);
         if (it == worldModels_.end()) {
             Item m;
@@ -462,11 +558,64 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         si.shadowCaster=!d.viewSpace && d.fn!=0x004132D0 && !d.cullFlip && d.drawMode<=8;
         si.model = &it->second.model;
         si.polName = it->second.polName;
+        const bool deform=d.skinCount>0 || d.edit || d.wavePhase>=0 || d.uvScroll>=0 || d.envMap;
+        if (assets_->NaomiGraphics()) {
+            auto& cache=deform?naomiDeformModels_:naomiModels_;
+            auto native=cache.find(d.model);
+            if (native==cache.end()) {
+                Item m;
+                if (deform || !assets_->NaomiModelById(d.model,m.model,&m.polName)) {
+                    // Split PC stage containers do not share native part IDs.
+                    // Bind their individually verified meshes, retaining all
+                    // unmatched geometry rather than dropping a larger model.
+                    m=it->second;
+                    for (size_t mesh=0;mesh<m.model.meshes.size();++mesh) {
+                        game::ModelMesh source;uint32_t evidence=0;
+                        if (!assets_->NaomiMeshById(d.model,static_cast<uint32_t>(mesh),source,nullptr,&evidence)) continue;
+                        if (evidence==12) {
+                            game::ModelMesh prepared;
+                            if (!deform && TransferNaomiSourceUv(m.model.meshes[mesh],source,&prepared))
+                                m.model.meshes[mesh]=std::move(prepared);
+                        } else if (deform) {
+                            game::ModelMesh prepared;
+                            if (PrepareNaomiDeformationMesh(m.model.meshes[mesh],source,&prepared,evidence==16))
+                                m.model.meshes[mesh]=std::move(prepared);
+                        } else m.model.meshes[mesh]=std::move(source);
+                    }
+                }
+                native=cache.emplace(d.model,std::move(m)).first;
+            }
+            si.model=&native->second.model;
+            si.polName=native->second.polName;
+            // The mount reuses PC668 at two joints; the original has different
+            // models there. Apply only an explicitly proven rigid joint role.
+            if(!deform && d.fn==0x0048FE90 && d.node>=0) {
+                const auto key=std::make_pair(d.model,d.node);
+                auto role=naomiNodeModels_.find(key);
+                if(role==naomiNodeModels_.end()) {
+                    Item model;
+                    assets_->NaomiNodeModelById(d.model,static_cast<uint32_t>(d.node),model.model,&model.polName);
+                    role=naomiNodeModels_.emplace(key,std::move(model)).first;
+                }
+                if(!role->second.model.meshes.empty()) {
+                    si.model=&role->second.model;
+                    si.polName=role->second.polName;
+                }
+            }
+        }
+        if(sourceDraw.extra) {
+            si.model=&sourceDraw.extra->model;
+            si.polName=sourceDraw.extra->polName;
+        }
+        const game::Model* deformSource=si.model;
         // viewSpace draws hand over the model-view matrix: world = model-view * camera matrix (inverse view).
         game::Mat4 mv = d.world;
         if(d.viewSpace&&d.model==0x93E&&ViewportXScale(viewportAspect_)!=1.f)
             for(int row=0;row<4;++row)mv.m[row*4]/=ViewportXScale(viewportAspect_);
-        if (d.viewSpace && d.model == 0x93E && d.alpha >= 0 && mv.m[14] < 0 && mv.m[14] > -0.8f) {
+        const bool nativeCloseOverlay=assets_->NaomiGraphics() && !world.Hud().paused &&
+            (world.GameMode()==6 || world.GameMode()==7) && !world.PortTypingActive() && !world.PortTypingReportActive() &&
+            d.viewSpace && d.model==0x93E && d.alpha>=0;
+        if (!nativeCloseOverlay && d.viewSpace && d.model == 0x93E && d.alpha >= 0 && mv.m[14] < 0 && mv.m[14] > -0.8f) {
             // nearer than the port's fixed near plane (0.8): the original moves its own near plane for such draws (the
             // pause overlay: 1e-5 by 0x004194C0). Scaling about the eye keeps the projected image: z to -1.
             const float k = -1.0f / mv.m[14];
@@ -475,7 +624,12 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         }
         const game::Mat4 w = d.viewSpace ? mv * cam.inverse : d.world;
         memcpy(si.transform, w.m, sizeof(si.transform));
-        si.cullable = d.cull;
+        const bool nativeBlood=(d.model>=0x3A && d.model<=0x52) || (d.model>=0x276 && d.model<=0x28E);
+        if (assets_->NaomiGraphics() && d.viewSpace && (d.drawMode == 0xC || (d.drawMode==8 && nativeBlood) || nativeCloseOverlay)) {
+            si.directModelView = true;
+            memcpy(si.modelView, mv.m, sizeof(si.modelView));
+        }
+        si.cullable = d.cull && !si.directModelView;
         si.priority = d.drawMode;
         si.alpha = d.alpha;
         si.unitSpecular = d.unitSpecular;
@@ -483,7 +637,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         si.sortBackToFront = d.sortBackToFront;
         si.cullFlip = d.cullFlip;
         // the pause overlay (above): scaled to the near plane, its material sphere misses the frustum test; never cull it
-        si.noMeshCull = d.viewSpace && d.model == 0x93E && d.alpha >= 0;
+        si.noMeshCull = si.directModelView || (d.viewSpace && d.model == 0x93E && d.alpha >= 0);
         if (d.skinCount > 0) {
             // Skinned attachment: deform a copy (game::SkinDeform, as 0x004198B0 / 0x00419980 do before drawing).
             ++skinnedDraws_;
@@ -502,7 +656,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
             if (def != skinDefs_.end()) {
                 game::SkinDef sd;
                 if (game::LoadSkinDef(assets_->Exe(), def->second, sd)) {
-                    skinned_.push_back(std::make_unique<game::Model>(it->second.model));
+                    skinned_.push_back(std::make_unique<game::Model>(*deformSource));
                     game::SkinDeform(sd, skinned_.back()->blockStart, d.world, d.skin, d.skinCount, *skinned_.back(), twin);
                     si.model = skinned_.back().get();
                     si.dynamicGeometry = true;
@@ -514,7 +668,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
             // Decoration vertex wave (0x0046DAB0 edits the loaded model; game::DecorWave on one copy per frame)
             game::Model*& wm = waved[d.model];
             if (!wm) {
-                skinned_.push_back(std::make_unique<game::Model>(it->second.model));
+                skinned_.push_back(std::make_unique<game::Model>(*deformSource));
                 if (!game::DecorWave(*skinned_.back(), d.model - 0x1731, d.wavePhase)) {
                     static bool warned = false;
                     if (!warned) fprintf(stderr, "scene: model %d has a non-reference strip (vertex wave walk differs)\n", d.model);
@@ -532,7 +686,7 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
             UvScrollState& u = uvScroll_[d.model];
             if (!u.model || u.steps > d.uvScroll) {
                 u = UvScrollState{};
-                u.model = std::make_unique<game::Model>(it->second.model);
+                u.model = std::make_unique<game::Model>(*deformSource);
                 const std::vector<uint32_t> offs = InlineOffsets(*u.model);
                 u.v.assign(offs.size(), 0.0f);
                 u.uses.assign(offs.size(), {});
@@ -606,6 +760,27 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
         items.push_back(si);
         itemIds_.push_back(d.model);
     }
+    if (assets_->NaomiGraphics()) {
+        for (const auto& effect:world.NativeVisualEffects()) {
+            if (effect.kind!=game::NativeVisualEffect::Kind::PolygonBlood || effect.frame<0 || effect.frame>=58) continue;
+            auto model=naomiPolygonBloodModels_.find(effect.frame);
+            if (model==naomiPolygonBloodModels_.end()) {
+                Item m;
+                assets_->NaomiPolygonBloodFrame(static_cast<uint32_t>(effect.frame),m.model,&m.polName);
+                model=naomiPolygonBloodModels_.emplace(effect.frame,std::move(m)).first;
+            }
+            if (model->second.model.meshes.empty()) continue;
+            ModelRenderer::SceneItem item;
+            item.model=&model->second.model;item.polName=model->second.polName;
+            std::memcpy(item.transform,effect.world.m,sizeof(item.transform));
+            item.cullable=false;item.noMeshCull=true;item.shadowCaster=false;
+            item.motionReactive=true;
+            // This is opaque authored geometry, not the translucent 25-frame
+            // camera-space spray. Retain its original material/depth/lighting.
+            items.push_back(item);
+            itemIds_.push_back(-1);
+        }
+    }
     // Simulation matrices, input rays, source models and materials remain
     // current. Only the optional render copies/camera use the completed pair.
     if (drawsOverride || world.Hud().paused) renderPose_.Reset();
@@ -619,6 +794,8 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
     shift.m[12] = cx * 0.0031250000465661287f - 1.0f;  // 0x004ED1DC
     shift.m[13] = 1.0f - cy * 0.004166666883975267f;   // 0x004ED1D8
     auto deviceProjection = game::DeviceProjection();
+    if(assets_->NaomiGraphics())
+        NaomiRasterProjection(deviceProjection,!world.Hud().paused);
     if (world.PortTypingActive() || world.PortTypingReportActive() || world.Hud().nightShiftPage==12) {
         // English PC487710 ->4C18C0: the same FOV, with near .5 / far8000.
         // The authored30.2-depth book lettering must lie in front of its
@@ -632,12 +809,18 @@ game::Mat4 Scene::BuildFromWorld(ModelRenderer& renderer, const game::World& wor
 }
 
 game::Mat4 Scene::Build(ModelRenderer& renderer, float t, int frame) {
+    if (assets_->VisualRevision() != visualRevision_) InvalidateVisuals(renderer,false);
     if (world_) {
         game::Mat4 vp;
         if (BuildWorld(renderer, t, frame, &vp)) return vp;
     }    int roll = 0;
-    camera_.Evaluate(cameraIndex_, t, pos, target, &roll);
-    game::LookAngles(pos, target, &pitch, &yaw);
+    if(assets_->NaomiGraphics()) {
+        camera_.EvaluateNaomi(cameraIndex_,t,pos,target,&roll);
+        game::NaomiLookAngles(pos,target,&pitch,&yaw);
+    } else {
+        camera_.Evaluate(cameraIndex_, t, pos, target, &roll);
+        game::LookAngles(pos, target, &pitch, &yaw);
+    }
     view = game::ViewMatrix(pos, pitch, yaw, 0);  // roll flag was 0 in every capture
 
     std::vector<ModelRenderer::SceneItem> items;
@@ -693,7 +876,9 @@ game::Mat4 Scene::Build(ModelRenderer& renderer, float t, int frame) {
     for (const auto& s : def_.skies) itemIds_.push_back(s.modelId);
     for (int id : staticIds_) itemIds_.push_back(id);
     renderer.SetScene(*assets_, items);
-    projection = game::DeviceView() * game::DeviceProjection();
+    auto deviceProjection=game::DeviceProjection();
+    if(assets_->NaomiGraphics())NaomiRasterProjection(deviceProjection);
+    projection = game::DeviceView() * deviceProjection;
     return view * projection;
 }
 
@@ -708,13 +893,14 @@ std::vector<ModelRenderer::SpriteDraw> Scene::BuildSprites(int frame) {
 }
 
 std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<game::SpriteDef>& defs, float zNear,
-                                                             const std::vector<uint8_t>* texFiles) {
+                                                             const std::vector<uint8_t>* texFiles,bool nativeGameplay) {
     game::SpriteTables tables;
     tables.Load(assets_->Exe());
     struct Item {
         game::SpriteRecord rec;
         int file;
         bool typing;
+        bool original;
     };
     std::vector<Item> items;
     for (const auto& d : defs) {
@@ -728,7 +914,8 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
         }
         if (texFiles && file >= 0 && file < static_cast<int>(texFiles->size()) && (*texFiles)[static_cast<size_t>(file)] != 4)
             continue;  // Spr_Draw 0x0041C630: the sprite's texture file is not loaded (0x009C7328[file * 12] != 4)
-        items.push_back({ game::MakeSpriteRecord(d, tex, d.tinted ? d.tint : lightColor_), file, d.id >= 0x4000 });
+        items.push_back({ game::MakeSpriteRecord(d, tex, d.tinted ? d.tint : lightColor_), file, d.id >= 0x4000,
+                          d.id>=0 && d.id<0x4000 && !d.atlas });
     }
     // Submission order; ModelRenderer::DrawGame sorts them into the pass-1 list together with the translucent models.
     std::vector<ModelRenderer::SpriteDraw> out;
@@ -748,6 +935,10 @@ std::vector<ModelRenderer::SpriteDraw> Scene::MakeSpriteDraws(const std::vector<
         s.depth = it.rec.depth;
         s.textureId = it.rec.texture;
         s.tsp = game::SpriteTsp(it.rec);
+        // The caller supplies the original unpaused gun-game context. Native
+        // texture IDs alone cannot distinguish a port menu reusing that art.
+        s.naomiAutosort=nativeGameplay && assets_->NaomiGraphics() && it.original;
+        if(s.naomiAutosort)s.linear=(it.rec.flags&0x1000u)!=0;
         out.push_back(s);
     }
     return out;

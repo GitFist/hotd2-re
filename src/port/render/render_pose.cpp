@@ -188,6 +188,9 @@ void RenderPoseHistory::Apply(std::vector<ModelRenderer::SceneItem>& items,const
     for(auto& item:items) {
         if(!item.motionTracked || !item.model)continue;
         if(item.motionIdentity.role&1) {
+            // Native camera-space effects retain their exact immediate matrix;
+            // projection/depth do not depend on the interpolated world camera.
+            if(item.directModelView)continue;
             if(std::memcmp(renderCamera.m,cameraWorld.m,sizeof(cameraWorld.m))==0)continue;
             // A gun/overlay supplied in view space must remain immediate even
             // while the world camera is interpolated behind it.

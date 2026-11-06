@@ -54,6 +54,36 @@ void StartLocalArcade(game::World& world, int players) {
     Step(world);
 }
 
+void UnlimitedContinues(const char* gameDir, const game::ExeImage& exe, const std::filesystem::path& scratch) {
+    const auto path = scratch / "unlimited-credits.bin";
+    game::SaveData saved; saved.Defaults(exe); saved.SetU8(game::SaveData::kFlags, 0);
+    Require(saved.SaveNative(path.string()), "create profile without any completion unlocks");
+    game::WorldConfig config; config.portFeatures = config.applySaveSettings = true; config.savePath = path.string();
+    game::World world; std::string error;
+    Require(world.Load(gameDir, 0, &error), error.c_str());
+    world.Boot(config); world.ForceMode(4, 0x10000, 0, 0);
+    auto choices = world.GetPortGameOptions(); choices.credits = 0;
+    Require(world.SetPortGameOptions(choices), "Unlimited can be saved before earning any unlocks");
+    game::SaveData persisted;
+    Require(persisted.LoadNative(path.string()) && persisted.U8(game::SaveData::kCredits) == 0xFF &&
+            persisted.U8(game::SaveData::kFlags) == 0, "Unlimited uses native Free Play storage without granting progression");
+    SameSaveExceptPreferences(saved, persisted);
+    for (int players : {1, 2}) {
+        world.Boot(config);
+        Require(world.GetPortGameOptions().credits == 0, "Unlimited survives a fresh boot");
+        StartLocalArcade(world, players);
+        Require(world.GameMode() == 6 && world.Hud().credits == 0, "Arcade starts with Unlimited rather than a finite counter");
+        for (int p = 0; p < players; ++p)
+            Require(world.Hud().player[p].state == 5 && world.Hud().player[p].lives > 0,
+                    "both players can join with zero credits under Unlimited");
+    }
+    world.Boot(config); world.ForceMode(4, 0x10000, 0, 0);
+    choices = world.GetPortGameOptions(); choices.credits = 2;
+    Require(world.SetPortGameOptions(choices), "Unlimited can be switched back to a finite allowance");
+    world.Boot(config); StartLocalArcade(world, 1);
+    Require(world.Hud().credits == 2, "finite continue allowance is restored after restarting");
+}
+
 void FreshBootRules(const char* gameDir, const game::ExeImage& exe, const std::filesystem::path& scratch) {
     // These are the original initial gameplay ranks after one/two players join, before
     // any hit, kill or timed rank growth. Checking the live HUD catches settings that
@@ -178,13 +208,11 @@ int main(int argc, char** argv) {
     world.ForceMode(4, 0x10000, 0, 0);
     for (int i = 0; i < 3; ++i) Step(world);
     auto options = world.GetPortGameOptions();
-    Require(options.editable && !options.freePlayUnlocked, "idle local menu exposes locked Free Play accurately");
+    Require(options.editable && options.freePlayUnlocked && (options.creditsMask & 1), "idle local menu offers Unlimited without completion flags");
     const auto initial = options;
     auto invalid = options;
-    invalid.credits = 0;
-    invalid.freePlayUnlocked = true;
-    invalid.editable = true;
-    Require(!world.SetPortGameOptions(invalid), "caller metadata cannot bypass Free Play unlock");
+    invalid.credits = -1;
+    Require(!world.SetPortGameOptions(invalid), "negative credit counts are rejected; zero encodes Unlimited");
     invalid = options; invalid.difficulty = 5;
     Require(!world.SetPortGameOptions(invalid), "invalid difficulty is rejected");
     invalid = options; invalid.lives = 0;
@@ -254,6 +282,7 @@ int main(int argc, char** argv) {
     world.ForceMode(7, 0x10000, 0, 0);
     Require(!world.GetPortGameOptions().editable, "game-over flow remains locked until returning to the menu");
     FreshBootRules(argv[1], exe, scratch);
+    UnlimitedContinues(argv[1], exe, scratch);
     std::printf("PASS unified gameplay bridge: validation, all five fresh local/online gameplay difficulties, saved lives/continues, demo return, explicit opt-out, native persistence, safe defaults, progression/calibration preservation and lockstep guards\n");
     return 0;
 }

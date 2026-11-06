@@ -124,13 +124,7 @@ int PreparedModel(World::Impl& w, int raw) {
             edit->clearSpecular=true;current=std::move(edit);
         }
     }
-    if (model >= int(w.modelLoaded.size()) || !w.modelLoaded[model]) {
-        int file = w.typingReference.ModelFile(model);
-        if (file < 0 && model < 0x4000 && w.exe.InData(0x004E83B4 + uint32_t(model) * 2))
-            file = w.exe.S16(0x004E83B4 + uint32_t(model) * 2);
-        if (file >= 0) w.ProcessRequest({0x52, uint32_t(file)});
-    }
-    return model;
+    return w.LoadTypingModel(model);
 }
 
 void Model(World::Impl& w, int raw, const Poster& p, float x, float y, float sx, float sy,
@@ -770,10 +764,14 @@ void DrawTypingDrillPrompt(World::Impl& w,std::string_view text,size_t progress)
 
 void TypingWordHud(World::Impl& w) {
     if (!w.typingReferenceActive || w.typingReference.SourceModel(0x129E) <= 0 || w.focal <= 0) return;
-    if (w.gameMode == 6 && !w.paused && !w.typingResultsActive && !w.stageResults.shown && !TypingDrillGameActive(w)) {
-        if (w.typingPlayer == 0) { LifeHud(w); ContinueHud(w); }
-        PerfectHud(w);
-        if (w.typingPlayer == 0) QuestionHud(w);
+    if (w.gameMode == 6 && !w.paused &&
+        !w.typingResultsActive && !w.stageResults.shown && !TypingDrillGameActive(w)) {
+        if (w.typingPlayer == 0) ContinueHud(w);
+        if (w.canShoot && !(w.flags5900 & 0x18)) {
+            if (w.typingPlayer == 0) LifeHud(w);
+            PerfectHud(w);
+            if (w.typingPlayer == 0) QuestionHud(w);
+        }
     }
     if (w.gameMode == 6 && w.subState == 2 && !w.paused &&
         TypingDrillGameActive(w) &&

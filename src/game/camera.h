@@ -31,8 +31,11 @@ public:
     void Channels(int k, int32_t out[8]) const;
     // Mirror of Cam_Curve 0x004040F0 at time t (binary search + cubic Hermite).
     float EvalCurve(int32_t channelWord, float t) const;
+    // Opt-in original Naomi 0x0C0290AA arithmetic (FPSCR.RZ/DN + FMAC).
+    float EvalCurveNaomi(int32_t channelWord, float t) const;
     // Mirror of Cam_Evaluate: position, target, roll (roll only meaningful when the game's flag 0x009A21B0 is set).
     void Evaluate(int k, float t, float pos[3], float target[3], int* roll) const;
+    void EvaluateNaomi(int k, float t, float pos[3], float target[3], int* roll) const;
     // Last key time of camera k's position channels (path length in frames).
     float Duration(int k) const;
 
@@ -53,6 +56,7 @@ public:
     bool Has(int id) const { return ids_.count(id) != 0; }
     // Cam_Evaluate: pos/target; roll = curve 6 when the roll channel is on (0x009A21B0), else 0.
     bool Evaluate(int id, float t, float pos[3], float target[3], int* roll, bool rollEnabled) const;
+    bool EvaluateNaomi(int id,float t,float pos[3],float target[3],int* roll,bool rollEnabled) const;
 
 private:
     std::vector<std::unique_ptr<CameraFile>> files_;
@@ -62,6 +66,8 @@ private:
 // Cam_LookAngles 0x00403AC0 / Cam_DirToAngles 0x004016B0: engine angles (0x10000 = 360 degrees) looking from pos at
 // target, with the game's 24-bit FPU precision (game::DirToAngles).
 void LookAngles(const float pos[3], const float target[3], int* pitch, int* yaw);
+// Opt-in Naomi LookAngles 0x0C028AEC / DirToAngles 0x0C026028.
+void NaomiLookAngles(const float pos[3],const float target[3],int* pitch,int* yaw);
 
 // Cam_BuildViews: V = T(-pos) * Ry(-yaw) * Rx(-pitch) * Rz(-roll)  (row vectors), built with the engine's matrix-stack
 // operations (the game first normalises the angles, see game::BuildContextViews).

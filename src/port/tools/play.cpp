@@ -1,6 +1,6 @@
 // play.exe <game dir> [--audio] [--width W --height H] [--script file --screenshot out.png --frame F]
 //          [--renderer d3d11|sdlgpu] [--input auto|raw|mouse|touch] [--audio-backend sdl|xaudio2]
-//          [--blood red|green|blue|purple] [--no-update-check]
+//          [--blood red|green|blue|purple] [--graphics-mode pc|naomi] [--naomi-visuals bank] [--no-update-check]
 //
 // The game from boot on the native world runtime (World::Boot, notes/agents/frontend.md): boot logos, title, attract
 // loop, START -> mode select -> game (game mode 6, notes/agents/gameplay.md) -> game over -> title. --direct starts a game
@@ -83,7 +83,6 @@
 #include "port/play/menu_game_switch.h"
 #include "port/play/model_gallery.h"
 #include "port/play/model_gallery_audio.h"
-#include "port/play/pack_preview.h"
 #include "port/play/pause_menu.h"
 #include "port/play/renderer_fallback.h"
 #include "port/play/username_prompt.h"
@@ -121,6 +120,7 @@
 #include "update/update_check.h"
 #include "update/update_install.h"
 #include "update/typing_content.h"
+#include "update/naomi_content.h"
 
 namespace {
 
@@ -213,20 +213,20 @@ uint32_t WorldHash(const game::World& w) {
 }
 
 // Public releases advance by one tenth: 1.0, 1.1, ... 1.9, 2.0.
-const char* const kReleaseVersion = "1.9";
+const char* const kReleaseVersion = "2.0";
 // Internal build labels retain the date format understood by already-installed
 // updaters. Advance these and kUpdateBuildName when publishing each release.
 // kBuildId is exchanged in the netplay handshake: bump it when game/protocol
 // changes affect compatibility, independently of the public release version.
 #if INTPTR_MAX == INT64_MAX
-constexpr uint32_t kBuildId = 2026110220;
-const char* const kBuildName = "2026 11 02 A";
+constexpr uint32_t kBuildId = 2026110520;
+const char* const kBuildName = "2026 11 05 A";
 #else
-constexpr uint32_t kBuildId = 2026110221;
-const char* const kBuildName = "2026 11 02 NS32 A";
+constexpr uint32_t kBuildId = 2026110521;
+const char* const kBuildName = "2026 11 05 NS32 A";
 #endif
 // Release ordering is architecture-independent; keep this in step with build labels.
-const char* const kUpdateBuildName = "2026 11 02 A";
+const char* const kUpdateBuildName = "2026 11 05 A";
 const char* const kRejoinTicket = "hotd2re_rejoin.bin";
 
 // The lobby server (server/lobby): "host:port"; hotd2re_settings.ini lobby=, HOTD2_LOBBY or --lobby override it.
@@ -330,28 +330,6 @@ double ThreadCpuMilliseconds() {
     }
 #endif
     return 0;
-}
-port::GraphicsOptions SupportedGraphicsOptions(port::GraphicsOptions g, const port::GraphicsCapabilities& caps) {
-    if (g.msaa == 4 && !caps.msaa4) g.msaa = caps.msaa2 ? 2 : 1;
-    if (g.msaa == 2 && !caps.msaa2) g.msaa = 1;
-    if (!caps.msaa2 && !caps.msaa4) g.alphaToCoverage = false;
-    int af = 1;
-    for (int value : {2, 4, 8, 16})
-        if (value <= caps.maxAnisotropy && value <= g.anisotropy) af = value;
-    g.anisotropy = af;
-    if ((g.postAA == 2 && !caps.smaa) || (g.postAA == 3 && !caps.cmaa2)) g.postAA = 0;
-    if (!caps.temporalAA) g.temporalAA = false;
-    if (!caps.spatialFSR1) g.spatialUpscaler = 0;
-    if (!caps.outputResolutionHud) g.outputResolutionHud = false;
-    if (!caps.softParticles) g.softParticles = 0;
-    if (!caps.materialMaps) g.materialMaps = false;
-    if (!caps.ambientOcclusion) g.ambientOcclusion = 0;
-    if (!caps.shadowMaps) g.shadowMaps = 0;
-    if (!caps.sceneEffects) g.volumetricFog = g.reflections = g.cinematicFocus = 0;
-    if (!caps.hdrOutput) g.hdrOutput = false;
-    if (!caps.tearing) g.allowTearing = false;
-    if (!caps.lowLatency) g.lowLatency = false;
-    return g;
 }
 
 // The in-game online lobby over the world's Network screen (mode 15 state 1 with WorldConfig::portFeatures:
@@ -847,6 +825,8 @@ int main(int argc, char** argv) {
     std::string configPath;          // --config: a mid-game stage start (WorldConfig + carry from world_test --save-config)
     std::string settingsOverride;    // explicit isolated settings file, also usable by screenshot comparisons
     std::string typingReferenceOverride; // a direct shortcut can select the isolated test data without a shell launcher
+    std::string naomiVisualsOverride;
+    int graphicsModeOverride = -1;
     int p2mode = 6;  // --p2mode M: P2's device mode for --script (the hook's captures: 0, calibration path; world_test --p2mode)
     std::string scriptPath, screenshot, scenePath = "scenes/st1_play.scene", savePath = "hotd2re_save.bin";
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> savePatch;
@@ -964,6 +944,18 @@ int main(int argc, char** argv) {
                 return 1;
             }
             bloodOverrideGiven = true;
+        } else if (a == "--graphics-mode") {
+            if (i + 1 >= argc || (std::string(argv[i + 1]) != "pc" && std::string(argv[i + 1]) != "naomi")) {
+                std::fprintf(stderr, "--graphics-mode must be pc or naomi\n");
+                return 2;
+            }
+            graphicsModeOverride = std::string(argv[++i]) == "naomi";
+        } else if (a == "--naomi-visuals") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--naomi-visuals requires a bank path\n");
+                return 2;
+            }
+            naomiVisualsOverride = argv[++i];
         } else if (a == "--no-hud")
             noHud = true;  // screenshots: the 3D scene only (no HUD / world 2D / bitmap screens)
         else if (a == "--no-update-check")
@@ -1019,6 +1011,9 @@ int main(int argc, char** argv) {
     // the command line win for this run. Interactive runs only: headless screenshots keep the defaults (1x, no filter,
     // the --width x --height target as before).
     play::Settings volumes;
+    // Unconfigured diagnostic captures keep their legacy PC reference. Normal
+    // launches and captures with an explicit settings file use the game default.
+    if (!screenshot.empty() && settingsOverride.empty()) volumes.display.graphics.naomiGraphics = false;
     const std::string settingsPath = settingsOverride.empty() ? "hotd2re_settings.ini" : settingsOverride;
     bool sizeGiven = false;
     for (int k = firstOpt; k < argc; ++k) sizeGiven = sizeGiven || std::string(argv[k]) == "--width" || std::string(argv[k]) == "--height";
@@ -1053,18 +1048,54 @@ int main(int argc, char** argv) {
         width = 640 * volumes.display.windowScale;
         height = 480 * volumes.display.windowScale;
     }
-    if (!volumes.assets.empty()) port::SetAssetDir(volumes.assets);  // optional asset pack (assets= line; HOTD2_ASSET_DIR wins)
-    if (bloodOverrideGiven) volumes.display.bloodColor = bloodOverride;
+    if (graphicsModeOverride >= 0) volumes.display.graphics.naomiGraphics = graphicsModeOverride != 0;
+    // Older updaters intentionally manage only client files. Install missing
+    // data before AssetStore discovers banks, preserving an explicit PC choice.
+    const bool allowContentDownload = checkUpdates && screenshot.empty() && runFrames == 0 && scriptPath.empty() && !direct &&
+        !netHostMode && !netJoinMode && !getenv("HOTD2_PLAY_KEYS") && !getenv("HOTD2_PLAY_MENU") &&
+        !getenv("HOTD2_WII_MENU") && !getenv("HOTD2_LIGHTGUN_MENU");
+    if (allowContentDownload && naomiVisualsOverride.empty()) {
+        std::string contentError;
+        if (!port::update::EnsureNaomiContent(dir, &contentError)) {
+            if (!contentError.empty()) {
+                const std::string message = "Naomi graphics data could not be installed. "
+                    "Restart to retry, or install the complete release.\n\n" + contentError;
+                std::fprintf(stderr, "%s\n", message.c_str());
+#ifdef _WIN32
+                MessageBoxA(nullptr, message.c_str(), "HOTD2RE - Naomi graphics", MB_OK | MB_ICONWARNING);
+#endif
+            }
+            if (volumes.display.graphics.naomiGraphics) return contentError.empty() ? 0 : 1;
+        }
+    }
     static port::AssetStore assets;
     static port::ModelRenderer renderer;
     port::SceneDef def;
     port::Scene scene;
     std::string err;
-    if (!assets.Open(dir, &err) || !def.Load(scenePath, &err) || !scene.Init(assets, def, &err)) {
+    if (!assets.Open(dir, &err)) {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
-    assets.SetBloodColor(volumes.display.bloodColor);
+    if (!naomiVisualsOverride.empty() && !assets.LoadNaomiVisuals(naomiVisualsOverride, &err)) {
+        std::fprintf(stderr, "Naomi visuals: %s\n", err.c_str());
+        return 1;
+    }
+    std::string naomiStartupNotice;
+    if (volumes.display.graphics.naomiGraphics && !assets.SetNaomiGraphics(true, &err)) {
+        naomiStartupNotice = "Naomi graphics data is missing or damaged. Restore the Naomi visual bank and try again. " + err;
+        std::fprintf(stderr, "%s\n", naomiStartupNotice.c_str());
+#ifdef PLAY_GUI
+        if (screenshot.empty()) MessageBoxA(nullptr, naomiStartupNotice.c_str(), "HOTD2RE - Naomi graphics", MB_OK | MB_ICONERROR);
+#endif
+        return 1;
+    }
+    if (bloodOverrideGiven) volumes.display.EffectiveBloodColor() = bloodOverride;
+    assets.SetBloodColor(volumes.display.EffectiveBloodColor());
+    if (!def.Load(scenePath, &err) || !scene.Init(assets, def, &err)) {
+        fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
     if (!typingReferenceOverride.empty()) {
 #ifdef _WIN32
         const int referenceEnvironmentResult = _putenv_s("HOTD2_TYPING_REFERENCE",typingReferenceOverride.c_str());
@@ -1077,10 +1108,7 @@ int main(int argc, char** argv) {
         }
     }
     const char* typingReferenceSetting = std::getenv("HOTD2_TYPING_REFERENCE");
-    if (checkUpdates && screenshot.empty() && runFrames == 0 && scriptPath.empty() && !direct &&
-        !netHostMode && !netJoinMode && !getenv("HOTD2_PLAY_KEYS") && !getenv("HOTD2_PLAY_MENU") &&
-        !getenv("HOTD2_WII_MENU") && !getenv("HOTD2_LIGHTGUN_MENU") &&
-        (!typingReferenceSetting || !*typingReferenceSetting)) {
+    if (allowContentDownload && (!typingReferenceSetting || !*typingReferenceSetting)) {
         std::string contentError;
         if (!port::update::EnsureTypingContent(dir, &contentError) && !contentError.empty()) {
             const std::string message = "Typing of the Dead data could not be installed. "
@@ -1408,21 +1436,21 @@ int main(int argc, char** argv) {
         rayShadows = false;
     }
     if (plat.CurrentInput() == platform::Input::RawInput) volumes.display.graphics.crtCurvature = 0;
-    const auto compatible = SupportedGraphicsOptions(volumes.display.graphics, gpu->GetGraphicsCapabilities());
-    if (compatible != volumes.display.graphics) {
-        volumes.display.graphics = compatible;
-        displayNotice = "Unsupported options are disabled on the active renderer. Other image settings are retained.";
-    }
     if (headless) {
         volumes.display.graphics.syncInterval = 0;
         volumes.display.graphics.allowTearing = false;
         volumes.display.graphics.lowLatency = false;
     }
-    if (!gpu->ConfigureGraphics(volumes.display.graphics, &err)) {
+    const auto compatible = play::SupportedGraphicsOptions(volumes.display.graphics, gpu->GetGraphicsCapabilities());
+    if (compatible != volumes.display.graphics)
+        displayNotice = "Some saved options are unavailable on this renderer. Your preferences have been kept.";
+    // World is loaded but has not booted yet; its HUD cannot identify a
+    // --typing start until startGame() below.
+    if (!gpu->ConfigureGraphics(compatible, &err)) {
         displayNotice = err;
         fprintf(stderr, "Graphics settings: %s; previous settings retained\n", err.c_str());
     }
-    volumes.display.graphics = gpu->EffectiveGraphics();
+    volumes.display.graphics = play::PreserveGraphicsPreferences(volumes.display.graphics, gpu->EffectiveGraphics(), gpu->GetGraphicsCapabilities());
     auto warmGraphics = [&] {
         if (!gpu->GetGraphicsCapabilities().pipelineWarmup) return;
         port::GraphicsWarmupStats stats;
@@ -1439,12 +1467,12 @@ int main(int argc, char** argv) {
     scene.SetViewportAspect(viewportAspect);
     bool rayAvailable = false, rayActive = false;
 #ifdef _WIN32
-    if (rayShadows && !port::ConfigureNativeD3D12Raytracing(*gpu, true, &displayNotice))
+    if (rayShadows && !gpu->EffectiveGraphics().naomiGraphics && !port::ConfigureNativeD3D12Raytracing(*gpu, true, &displayNotice))
         std::fprintf(stderr, "Ray shadows unavailable: %s\n", displayNotice.c_str());
     const auto rayInfo = port::GetNativeD3D12RaytracingInfo(*gpu);
     rayAvailable = rayInfo.supported && rayInfo.compilerAvailable;
     rayActive = rayInfo.enabled;
-    if (!startupRendererFallback) volumes.display.rayShadows = rayActive;
+    if (!startupRendererFallback && !gpu->EffectiveGraphics().naomiGraphics) volumes.display.rayShadows = rayActive;
     DlssRuntime dlss;
     FrameGenerationRuntime generatedFrames;
     if (dlssQuality >= 0) {
@@ -1488,7 +1516,7 @@ int main(int argc, char** argv) {
         generatedFrames.active = graphicsReady && port::SetNativeD3D12FinalFrameCallback(
                                                      *gpu, FrameGenerationRuntime::Process, &generatedFrames, &displayNotice);
         if (generatedFrames.active)
-            volumes.display.graphics = gpu->EffectiveGraphics();
+            volumes.display.graphics = play::PreserveGraphicsPreferences(volumes.display.graphics, gpu->EffectiveGraphics(), gpu->GetGraphicsCapabilities());
         else if (graphicsReady && beforeGeneration.crtCurvature) {
             std::string restoreError;
             if (!gpu->ConfigureGraphics(beforeGeneration, &restoreError))
@@ -1521,7 +1549,6 @@ int main(int argc, char** argv) {
         displayNotice = "Dynamic resolution is inactive with the current renderer / reconstruction mode. Saved choice retained.";
     port::UiFont uiFont;
     uiFont.Init();
-    play::PackPreview packPreview;
     // Version discovery never waits on the game thread. Automated and direct gameplay launches stay deterministic.
     port::update::UpdateCheck updates;
     if (checkUpdates && !headless && !direct && !netplay && runFrames == 0 && scriptPath.empty() && !getenv("HOTD2_PLAY_KEYS") &&
@@ -1563,6 +1590,7 @@ int main(int argc, char** argv) {
     input::GunSource* guns = headless ? nullptr : &focusedGuns;
     if (!headless) printf("play: renderer %s, input %s\n", gpu->Name(), guns ? guns->Name() : "none");
     play::DisplaySettings appliedDisplay = volumes.display;
+    port::BloodColor appliedBloodColor = assets.NaomiGraphics() ? volumes.display.naomiBloodColor : volumes.display.bloodColor;
     port::GpuBudgetController gpuBudget;
     gpuBudget.Configure(1000.0 / volumes.display.gpuBudgetFps);
     bool timingEnabled = false;
@@ -1615,40 +1643,67 @@ int main(int argc, char** argv) {
     auto applyDisplay = [&] {  // after a change on a display page: window / fullscreen / internal resolution
         play::DisplaySettings& d = volumes.display;
         displayNotice.clear();
+        const bool requestedNaomi = d.graphics.naomiGraphics;
+        bool visualModeChanged = requestedNaomi != assets.NaomiGraphics();
+        if (visualModeChanged) {
+            // Meshes retain pointers to decoded images; release them before the
+            // asset store changes profiles. Scene notices VisualRevision next.
+            renderer.ClearCache();
+            std::string modeError;
+            if (!assets.SetNaomiGraphics(requestedNaomi, &modeError)) {
+                d.graphics.naomiGraphics = false;
+                displayNotice = "Naomi visuals could not be enabled. PC graphics are active. " + modeError;
+            }
+            resetTemporalHistory = true;
+            latestGpuMs = 0;
+            gpuBudget.Reset();
+        }
         // Windows HDR and the current monitor can change between frames. Do not
         // let an unrelated edit submit a now-unsupported stale HDR request.
-        if (d.graphics.hdrOutput && !gpu->GetGraphicsCapabilities().hdrOutput) {
-            d.graphics.hdrOutput = false;
-            displayNotice = "HDR switched to SDR because HDR is unavailable on the current display.";
+        const bool hdrUnavailable = d.graphics.hdrOutput && !gpu->GetGraphicsCapabilities().hdrOutput;
+        if (hdrUnavailable)
+            displayNotice = "HDR is unavailable on the current display. Your saved HDR preference has been kept.";
+        if (plat.CurrentInput() == platform::Input::RawInput && d.graphics.crtCurvature) {
+            d.graphics.crtCurvature = 0;
+            displayNotice = "Curvature is disabled for raw light-gun input.";
         }
-        if (d.rayShadows != appliedDisplay.rayShadows) {
+        if (d.graphics != appliedDisplay.graphics || d.graphics.naomiGraphics != gpu->EffectiveGraphics().naomiGraphics ||
+            (d.graphics.hdrOutput != gpu->EffectiveGraphics().hdrOutput && !hdrUnavailable) ||
+            (hdrUnavailable && gpu->EffectiveGraphics().hdrOutput)) {
+            std::string graphicsError;
+            if (!gpu->ConfigureGraphics(play::SupportedGraphicsOptions(d.graphics, gpu->GetGraphicsCapabilities()), &graphicsError))
+                displayNotice = graphicsError;
+            else
+                warmGraphics();
+            d.graphics = play::PreserveGraphicsPreferences(d.graphics, gpu->EffectiveGraphics(), gpu->GetGraphicsCapabilities());
+            d.graphics.naomiGraphics = gpu->EffectiveGraphics().naomiGraphics;
+        }
+        if (assets.NaomiGraphics() != gpu->EffectiveGraphics().naomiGraphics) {
+            renderer.ClearCache();
+            std::string modeError;
+            if (!assets.SetNaomiGraphics(gpu->EffectiveGraphics().naomiGraphics, &modeError))
+                displayNotice = "Naomi visuals could not be restored. " + modeError;
+            visualModeChanged = true;
+            resetTemporalHistory = true;
+        }
+        const bool requestedRay = d.rayShadows && !gpu->EffectiveGraphics().naomiGraphics;
+        if (requestedRay != rayActive || d.rayShadows != appliedDisplay.rayShadows) {
 #ifdef _WIN32
-            // A requested saved ray mode may be inactive after backend fallback.
-            // Clearing that preference must remain possible without a DXR device.
-            if ((d.rayShadows || rayActive) && !port::ConfigureNativeD3D12Raytracing(*gpu, d.rayShadows, &displayNotice))
-                d.rayShadows = appliedDisplay.rayShadows;
+            if ((requestedRay || rayActive) && !port::ConfigureNativeD3D12Raytracing(*gpu, requestedRay, &displayNotice)) {
+                if (d.rayShadows != appliedDisplay.rayShadows) d.rayShadows = appliedDisplay.rayShadows;
+            }
             rayActive = port::GetNativeD3D12RaytracingInfo(*gpu).enabled;
             resetTemporalHistory = true;
 #endif
             latestGpuMs = 0;
             gpuBudget.Reset();
         }
-        if (plat.CurrentInput() == platform::Input::RawInput && d.graphics.crtCurvature) {
-            d.graphics.crtCurvature = 0;
-            displayNotice = "Curvature is disabled for raw light-gun input.";
-        }
-        if (d.graphics != appliedDisplay.graphics) {
-            std::string graphicsError;
-            if (!gpu->ConfigureGraphics(d.graphics, &graphicsError))
-                displayNotice = graphicsError;
-            else
-                warmGraphics();
-            d.graphics = gpu->EffectiveGraphics();
-        }
-        if (d.bloodColor != appliedDisplay.bloodColor) {
-            assets.SetBloodColor(d.bloodColor);
-            renderer.ClearCache();  // cached model meshes retain GPU texture handles
-            if (!headless && !volumes.Save(settingsPath)) fprintf(stderr, "Blood color setting could not be saved\n");
+        const auto activeBlood = assets.NaomiGraphics() ? d.naomiBloodColor : d.bloodColor;
+        if (activeBlood != appliedBloodColor || visualModeChanged) {
+            renderer.ClearCache();
+            assets.SetBloodColor(activeBlood);
+            appliedBloodColor = activeBlood;
+            if (!headless && !volumes.Save(settingsPath)) fprintf(stderr, "Visual setting could not be saved\n");
         }
         if (d.gpuBudgetFps != appliedDisplay.gpuBudgetFps) gpuBudget.Configure(1000.0 / d.gpuBudgetFps);
         if (d.dynamicResolution != appliedDisplay.dynamicResolution || d.gpuBudgetFps != appliedDisplay.gpuBudgetFps)
@@ -1803,6 +1858,8 @@ int main(int argc, char** argv) {
                                std::to_string(static_cast<int>(monitor.refresh + .5f)) + " Hz");
     optionsPage.SetMonitors(monitorNames);
     menu.Display().SetMonitors(monitorNames);
+    optionsPage.SetNaomiAvailability(assets.NaomiAvailable(), assets.NaomiError());
+    menu.Display().SetNaomiAvailability(assets.NaomiAvailable(), assets.NaomiError());
     auto gpuCapabilities = gpu->GetGraphicsCapabilities();
     optionsPage.SetGraphicsCapabilities(gpuCapabilities);
     optionsPage.SetNightShiftActive(activeNightShift && uiFont.Available());
@@ -1813,72 +1870,42 @@ int main(int argc, char** argv) {
     menu.Display().SetRaytracingAvailable(rayAvailable);
     if (!startupRendererNotice.empty())
         displayNotice = startupRendererNotice + (displayNotice.empty() || displayNotice == startupRendererNotice ? "" : " " + displayNotice);
+    if (!naomiStartupNotice.empty()) displayNotice = naomiStartupNotice + (displayNotice.empty() ? "" : " " + displayNotice);
     const std::string initialGraphicsStatus = displayNotice.empty() ? std::string("Active renderer: ") + gpu->Name() : displayNotice;
     optionsPage.SetStatus(initialGraphicsStatus);
     menu.Display().SetStatus(initialGraphicsStatus);
+    bool lastEffectiveHdr = gpu->EffectiveGraphics().hdrOutput;
     auto refreshLiveGraphics = [&] {
+        // Enabling a discovered bank validates its full contents lazily. A
+        // failed validation must also disable the selector on the next frame.
+        optionsPage.SetNaomiAvailability(assets.NaomiAvailable(), assets.NaomiError());
+        menu.Display().SetNaomiAvailability(assets.NaomiAvailable(), assets.NaomiError());
+        const bool hadHdrSupport = gpuCapabilities.hdrOutput;
         gpuCapabilities = gpu->GetGraphicsCapabilities();
         optionsPage.SetGraphicsCapabilities(gpuCapabilities);
         menu.Display().SetGraphicsCapabilities(gpuCapabilities);
-        // Only HDR can fall back automatically inside BeginFrame. Reconcile that
-        // field alone; saved color controls and next-launch choices stay intact.
+        if (!hadHdrSupport && gpuCapabilities.hdrOutput && volumes.display.graphics.hdrOutput) applyDisplay();
+        // HDR may fall back inside BeginFrame. Report the effective output,
+        // keeping the saved request for a compatible display or renderer.
         const bool effectiveHdr = gpu->EffectiveGraphics().hdrOutput;
-        if (effectiveHdr != appliedDisplay.graphics.hdrOutput) {
-            volumes.display.graphics.hdrOutput = effectiveHdr;
-            appliedDisplay.graphics.hdrOutput = effectiveHdr;
+        if (effectiveHdr != lastEffectiveHdr) {
+            lastEffectiveHdr = effectiveHdr;
             displayNotice = effectiveHdr ? "HDR output is active on the current display."
-                                         : "HDR switched to SDR because HDR is unavailable on the current display.";
+                          : volumes.display.graphics.hdrOutput ? "HDR is unavailable. Your saved HDR preference has been kept."
+                                                               : "HDR output is disabled.";
             optionsPage.SetStatus(displayNotice);
             menu.Display().SetStatus(displayNotice);
             std::fprintf(stderr, "Graphics: %s\n", displayNotice.c_str());
         }
     };
-    std::vector<play::DisplayMenu::PackChoice> packChoices{{"Original", "", "Original game textures. Applies on next launch.", true}};
-    std::vector<std::filesystem::path> packRoots{std::filesystem::path(dir).parent_path() / "remaster",
-                                                 std::filesystem::path(dir).parent_path() / "packs",
-                                                 std::filesystem::current_path() / "packs"};
-    if (!volumes.assets.empty()) packRoots.emplace_back(volumes.assets);
-    for (const auto& pack : port::DiscoverTexturePacks(packRoots))
-        packChoices.push_back({pack.name, pack.path.string(),
-                               pack.valid ? std::to_string(pack.textures) + " textures / " + std::to_string(pack.frontScreens) +
-                                                " screens / " + std::to_string(pack.materialMaps) + " materials / " +
-                                                std::to_string(pack.refinedModels) + " refined models." +
-                                                (pack.hasAudio ? " Includes audio replacements." : " Visual pack.") + " Restart to apply."
-                                          : pack.error,
-                               pack.valid});
-    // Retain the configured spelling so opening a page never silently changes its selection.
-    if (!volumes.assets.empty())
-        for (auto& pack : packChoices) {
-            std::error_code ec;
-            if (!pack.path.empty() && std::filesystem::equivalent(pack.path, volumes.assets, ec) && !ec) pack.path = volumes.assets;
-        }
-    optionsPage.SetPacks(packChoices, volumes.assets);
-    menu.Display().SetPacks(packChoices, volumes.assets);
-    // This metadata follows actual asset lookups (and their environment override),
-    // not the selector that saves a different pack for the next process launch.
-    const auto activePack = assets.ActivePackInfo();
-    const size_t activeMaterialMaps = activePack.valid ? activePack.materialMaps : 0;
-    const size_t activeRefinedModels = activePack.valid ? activePack.refinedModels : 0;
-    const char* assetPackOverride = getenv("HOTD2_ASSET_DIR");
-    const bool activePackOverridden = assetPackOverride && *assetPackOverride;
-    const std::string activePackName = activePack.name + (activePackOverridden ? " (override)" : "");
-    optionsPage.SetActivePackFeatures(activeMaterialMaps, activeRefinedModels);
-    menu.Display().SetActivePackFeatures(activeMaterialMaps, activeRefinedModels);
-    optionsPage.SetActivePackName(activePackName);
-    menu.Display().SetActivePackName(activePackName);
-    auto applyPackChoice = [&](play::DisplayMenu& page) {
-        std::string chosen;
-        if (page.TakePackChange(&chosen)) {
-            volumes.assets = chosen;
-            // Both entry points edit the same next-launch choice. Active pack
-            // metadata and asset lookups remain fixed for this process.
-            optionsPage.SetPacks(packChoices, volumes.assets);
-            menu.Display().SetPacks(packChoices, volumes.assets);
-            if (!headless && !volumes.Save(settingsPath))
-                page.SetStatus("Could not save texture pack choice.");
-            else
-                page.SetStatus(activePackOverridden ? "Saved. HOTD2_ASSET_DIR still overrides this choice."
-                                                         : "Texture pack saved. Restart the game to apply.");
+    auto syncGraphicsProfile = [&] {
+        const bool activeNaomi = volumes.display.graphics.naomiGraphics;
+        const auto activeBlood = activeNaomi ? volumes.display.naomiBloodColor : volumes.display.bloodColor;
+        if (activeNaomi != assets.NaomiGraphics() || activeNaomi != gpu->EffectiveGraphics().naomiGraphics ||
+            activeBlood != appliedBloodColor) {
+            applyDisplay();
+            optionsPage.SetStatus(displayNotice);
+            menu.Display().SetStatus(displayNotice);
         }
     };
     // Every entry point edits the same saved values. The page holds only a UI snapshot;
@@ -1898,6 +1925,10 @@ int main(int argc, char** argv) {
         values.crosshair[1] = saved.crosshair[1];
         values.freePlayUnlocked = saved.freePlayUnlocked;
         values.gameplayEditable = saved.editable;
+        values.typing = saved.typing;
+        values.livesMask = saved.livesMask;
+        values.creditsMask = saved.creditsMask;
+        page.SetGraphicsMode(volumes.display.graphics.naomiGraphics);
         values.username = volumes.username;
         page.SetOptionValues(values);
     };
@@ -1926,16 +1957,16 @@ int main(int argc, char** argv) {
                 saved.crosshair[0] = values.crosshair[0];
                 saved.crosshair[1] = values.crosshair[1];
                 page.SetStatus(world.SetPortGameOptions(saved) ? "Gameplay settings saved for the next run."
-                                                              : "Gameplay settings are unavailable during a run or online session.");
+                                                              : "Could not save gameplay settings. Return to the main menu and check folder access.");
             }
         }
         if (page.TakeGameplayReset()) {
             if (world.ResetPortGameOptions()) {
-                volumes.display.bloodColor = play::DisplaySettings{}.bloodColor;
+                volumes.display.EffectiveBloodColor() = port::BloodColor::Red;
                 volumes.display.showCrosshairs = true;
                 page.SetStatus("Gameplay defaults restored. Records, unlocks and device calibration are preserved.");
             } else {
-                page.SetStatus("Gameplay defaults could not be restored during a run or online session.");
+                page.SetStatus("Could not save gameplay defaults. Return to the main menu and check folder access.");
             }
         }
         bindOptionValues(page);
@@ -2170,6 +2201,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "world: %s\n", err.c_str());
         return 1;
     }
+    syncGraphicsProfile();
     int modeAge = 0;
     // Fixed 60 Hz game clock (the original runs one game frame per 1/60 s); rendering follows the display.
     platform::FixedClock clock;
@@ -2719,7 +2751,7 @@ int main(int argc, char** argv) {
                     menu.Open();
                     menu.SetNetworkRoom(world.NetworkRoom());
                     if (const char* dbg = getenv("HOTD2_PLAY_MENU");
-                        dbg && std::string(dbg) == "display") {  // debug: straight to the display page (screenshots)
+                        dbg && (std::string(dbg) == "display" || std::string(dbg) == "graphics")) {  // debug: settings capture entry
                         std::vector<uint32_t> ignore;
                         play::PauseMenu::Input step;
                         for (int k = 0; k < play::PauseMenu::kDisplay; ++k) {
@@ -2728,6 +2760,7 @@ int main(int argc, char** argv) {
                         }
                         step.pressed = 0x8;
                         menu.Update(step, volumes, ignore);
+                        if (std::string(dbg) == "graphics") menu.Display().SetPage(play::DisplayMenu::kGraphics);
                     }
                 }
                 if (!hh.paused && menu.IsOpen()) {
@@ -2758,12 +2791,12 @@ int main(int argc, char** argv) {
                         applyDisplay();
                         menu.Display().SetStatus(displayNotice);
                     }
-                    applyPackChoice(menu.Display());
                     if (graphicsReset) saveGraphicsReset(menu.Display());
                     if (sndDriver)
                         for (uint32_t id : menuSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
-                    if (volumes != before || act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen()))
-                        volumes.Save(settingsPath);  // leaving the menu / page keeps the settings
+                    if ((volumes != before || act != play::PauseMenu::Action::None || (pageWasOpen && !menu.DisplayOpen())) &&
+                        !volumes.Save(settingsPath))
+                        menu.Display().SetStatus("Could not save local options - check folder access.");
                     const auto deviceAction = menu.Display().TakeDeviceAction();
                     if (deviceAction == play::DisplayMenu::DeviceAction::Controllers) {
                         controllerPage.Open();
@@ -2971,7 +3004,6 @@ int main(int argc, char** argv) {
                     applyDisplay();
                     optionsPage.SetStatus(displayNotice);
                 }
-                applyPackChoice(optionsPage);
                 if (graphicsReset) saveGraphicsReset(optionsPage);
                 if (sndDriver)
                     for (uint32_t id : pageSounds) game::PlayOptionSound(*sndDriver, sndTable, id);
@@ -3728,6 +3760,7 @@ int main(int argc, char** argv) {
                     queueScore(record);
                 }
             }
+            syncGraphicsProfile();
             attract.Step(dir, (activeNightShift || world.Hud().typingHome) &&
                 (world.Hud().nightShiftPage >= 0 || lobby.page != Lobby::kOff) && world.Hud().nightShiftPage != 12 &&
                 !netplay && !modelGallery.IsOpen(),
@@ -4167,26 +4200,7 @@ int main(int argc, char** argv) {
             game::WorldHud displayHud;
             auto& displayPage = optionsPage.IsOpen() ? optionsPage : menu.Display();
             displayPage.ModernHud(volumes.display, displayHud);
-            if (!displayPage.UiHidden() && displayPage.CurrentPage() == play::DisplayMenu::kPacks) {
-                packPreview.Select(displayPage.SelectedPackPath());
-                const auto& info = packPreview.Info();
-                const float left = packPreview.Image() ? 340.f : 34.f;
-                auto detail = [&](float y, const std::string& text) {
-                    if (!text.empty()) displayHud.menuText.push_back({left, y, text.substr(0, 40), .44f, 0xFFC1BAAC});
-                };
-                detail(244, info.caption);
-                if (info.original)
-                    detail(264, "No visual pack selected for next launch.");
-                else {
-                    detail(264, info.name);
-                    if (!info.author.empty()) detail(284, "By " + info.author);
-                    if (!info.version.empty()) detail(304, "Version " + info.version);
-                }
-                detail(324, info.message);
-            }
             play::AppendNightShiftPanels(displayHud, sprites, viewportAspect, volumes.display.menuOpacity);
-            if (!displayPage.UiHidden() && displayPage.CurrentPage() == play::DisplayMenu::kPacks)
-                packPreview.AppendSprites(sprites, 30, 240, 280, 86, port::ViewportXScale(viewportAspect));
             uiFont.Append(displayHud.menuText, sprites, port::ViewportXScale(viewportAspect));
             play::AppendMenuScrollHint(displayPage.ScrollHint(), sprites, viewportAspect);
             appendMenuCrosshairs();
@@ -4307,7 +4321,10 @@ int main(int argc, char** argv) {
             // Game_UpdatePause 0x0040E500 sets the near plane to 0.001 (0x004194C0) before the PAUSE label
             if (!noHud) sprites = screens.Draws(world.Hud());                   // front-end bitmap screens first
             static const bool noTexRes = getenv("HOTD2_NO_TEXRES") != nullptr;  // comparisons: every sprite file loaded
-            const auto spr = scene.MakeSpriteDraws(defs, world.Hud().paused ? 0.001f : 0.8f, noTexRes ? nullptr : &world.Hud().texFiles);
+            const bool nativeGameplaySprites=world.GameMode()==6 && !world.Hud().paused && !world.PortTypingActive() &&
+                !world.PortTypingReportActive() && lobby.page==Lobby::kOff;
+            const auto spr = scene.MakeSpriteDraws(defs, world.Hud().paused ? 0.001f : 0.8f,
+                noTexRes ? nullptr : &world.Hud().texFiles,nativeGameplaySprites);
             sprites.insert(sprites.end(), spr.begin(), spr.end());
             if (!noHud && world.PortTypingActive() && !menu.IsOpen() && !optionsPage.IsOpen()) {
                 play::AppendNightShiftPanels(world.Hud(),sprites,viewportAspect,100);
@@ -4495,6 +4512,13 @@ int main(int argc, char** argv) {
         else
             renderer.DrawGame(gpu->TargetWidth(), gpu->TargetHeight(), vp.m, &scene.lighting, &scene.fog, scene.view.m, &sprites,
                               &scene.itemLights, scene.projection.m);
+        if(!gpu->NaomiSortError().empty()) {
+            if(headless) {std::fprintf(stderr,"Native transparency: frame %d, target %dx%d: %s\n",world.Frame(),gpu->TargetWidth(),gpu->TargetHeight(),gpu->NaomiSortError().c_str());return 1;}
+            if(gpu->NaomiSortError()!=displayNotice) {
+                displayNotice=gpu->NaomiSortError();optionsPage.SetStatus(displayNotice);menu.Display().SetStatus(displayNotice);
+                std::fprintf(stderr,"Native transparency: frame %d, target %dx%d: %s\n",world.Frame(),gpu->TargetWidth(),gpu->TargetHeight(),displayNotice.c_str());
+            }
+        }
         if (!gpu->HudCompositionError().empty() && gpu->HudCompositionError() != displayNotice) {
             displayNotice = gpu->HudCompositionError();
             optionsPage.SetStatus(displayNotice);

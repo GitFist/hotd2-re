@@ -1,15 +1,46 @@
 // strength_audio_test <game dir>: play both Strength fights and preserve their authored cue timing.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "game/world.h"
+#include "game/world_internal.h"
 #include "route_planner.h"
 
 static void Require(bool ok, const char* why) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(1); }
+}
+
+// Exercise the real shared-group creation/death callbacks rather than injecting
+// audio events: one motor starts for two Max enemies and stops after the last.
+static void RegularMotorGroup(const char* dir,int kind,bool port,bool typing,uint32_t on,uint32_t off,int startKind) {
+    auto w=std::make_unique<game::World::Impl>();
+    Require(w->exe.Load((std::filesystem::path(dir)/"Hod2.exe").string()),"load original tables for regular motor group");
+    Require(w->MotionTicks(0x3BC)>1,"regular motor fixture must remain within its active death callback");
+    w->runner=std::make_unique<game::EventRunner>(w->mem,*w,&w->env,&w->exe);
+    w->cfg.portFeatures=port;w->cfg.portTyping=typing;w->cfg.gameType=3;w->gameMode=6;
+    w->liveEnemies=w->attackers=2;
+    game::EnemyTask first,second;
+    for(auto* enemy:{&first,&second}) {
+        enemy->anim.kind=kind;enemy->anim.motion[0]=0x3BC;enemy->sub=1;
+        w->EnemySetupKind2(*enemy);
+    }
+    Require(w->GroupCount()==2 && first.c131B==1 && second.c131B==1,"real motor setup counted both living enemies");
+    Require(w->sounds.size()==1 && w->sounds[0].id==on && w->sounds[0].kind==startKind,
+            "first group member emits one intended motor start and second member does not restart it");
+    w->EnemyBeh6(first);
+    Require(w->GroupCount()==1 && first.c131B==0 && second.c131B==1 && w->sounds.size()==1,
+            "first real death leaves the surviving enemy's shared motor running");
+    w->EnemyBeh6(second);
+    Require(w->GroupCount()==0 && second.c131B==0 && w->sounds.size()==2 && w->sounds[1].id==off &&
+                w->sounds[1].kind==game::World::kPlayGameSound,
+            "last real death emits the existing generic motor-off cue once");
+    w->EnemyBeh6(second);
+    Require(w->GroupCount()==0 && w->sounds.size()==2,"later death ticks neither repeat stop nor underflow the shared group");
 }
 
 static std::vector<std::pair<int, uint32_t>> Fight(const char* dir, int scene, bool port) {
@@ -68,6 +99,11 @@ static std::vector<std::pair<int, uint32_t>> Fight(const char* dir, int scene, b
 
 int main(int argc, char** argv) {
     if (argc != 2) { std::fprintf(stderr, "usage: strength_audio_test <game dir>\n"); return 2; }
+    RegularMotorGroup(argv[1],2,true,false,0x4D17A9,0x4E17A9,game::World::kStrengthChainsawSound);
+    RegularMotorGroup(argv[1],2,false,false,0x4D17A9,0x4E17A9,game::World::kPlayGameSound);
+    RegularMotorGroup(argv[1],2,true,true,0x4D17A9,0x4E17A9,game::World::kPlayGameSound);
+    RegularMotorGroup(argv[1],3,true,false,0x1F25A9,0x2025A9,game::World::kPlayGameSound);
+    std::puts("PASS regular Max motor group start/last-death stop; stock, Typing and other shared-group cues retained");
     for (int scene : {27, 29}) {
         const auto original = Fight(argv[1], scene, false);
         const auto client = Fight(argv[1], scene, true);

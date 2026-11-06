@@ -6,8 +6,10 @@
 #include "game/world.h"
 namespace game {
 void NightShiftMenuFrame(World::Impl& w);
+void LoadTypingMenuSettings(World::Impl& w);
+bool SaveTypingMenuSettings(World::Impl& w);
 // Connected-room presentation only; host input and mode selection stay in RoomFrame.
-void NightShiftNetworkRoomFrame(World::Impl& w, const std::array<const char*, 9>& labels,
+void NightShiftNetworkRoomFrame(World::Impl& w, const std::array<const char*, 10>& labels,
                                 const std::string& difficulty);
 // The original Game Options handlers supply these presentation-only rows. Their
 // IDs and order also define the modern pointer bands; no settings live here.

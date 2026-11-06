@@ -90,7 +90,7 @@ public:
     // texFiles: the world's texture-file states (WorldHud::texFiles; empty = all loaded): Spr_Draw 0x0041C630 draws a
     // sprite only when its file 0x0057A5BC[id] is in state 4.
     std::vector<ModelRenderer::SpriteDraw> MakeSpriteDraws(const std::vector<game::SpriteDef>& defs, float zNear = 0.8f,
-                                                           const std::vector<uint8_t>* texFiles = nullptr);
+                                                         const std::vector<uint8_t>* texFiles = nullptr,bool nativeGameplay = false);
 
     // Sound commands (Snd_PlayGameSound ids) the world issued in the frames stepped since the last call (world scenes).
     std::vector<game::World::SoundEvent> TakeSounds() { std::vector<game::World::SoundEvent> s; s.swap(pendingSounds_); return s; }
@@ -117,6 +117,7 @@ private:
     struct Item {
         game::Model model;
         std::string polName;
+        uint32_t nativePart = 0; // only used by additional original stage-source cache entries
     };
     AssetStore* assets_ = nullptr;
     float viewportAspect_ = 4.f/3.f;
@@ -134,7 +135,13 @@ private:
     std::unique_ptr<game::World> world_;
     int worldFrame_ = -1;
     int cacheMode_ = -1, cacheChapter_ = -1, cacheFrame_ = -1;
+    uint64_t visualRevision_ = ~uint64_t{0};
     std::map<int, Item> worldModels_;  // models drawn by the world, by id (loaded on first use)
+    std::map<int, Item> naomiModels_; // rigid render-only replacements; PC source offsets remain untouched
+    std::map<int, Item> naomiDeformModels_; // native materials/UVs with the PC deformation record addresses
+    std::map<int, Item> naomiPolygonBloodModels_; // original arcade-only 58-frame opaque effect
+    std::map<std::pair<int,int>, Item> naomiStageExtraModels_; // additional original objects from a regrouped PC chunk
+    std::map<std::pair<int,int>, Item> naomiNodeModels_; // source-proven model roles sharing a PC model id
     // sky panel uv scroll 0x00413560 (WorldDraw::uvScroll), advanced incrementally across frames
     struct UvScrollState {
         int steps = 0;
@@ -153,6 +160,7 @@ public:
     long long skinnedDraws_ = 0, altDraws_ = 0;  // diagnostics: world draws not fully applied by the renderer
 private:
     bool BuildWorld(ModelRenderer& renderer, float t, int frame, game::Mat4* viewProj);  // env light colour (sprites with flag 0x2000)
+    void InvalidateVisuals(ModelRenderer& renderer, bool clearAssets);
 };
 
 }  // namespace port

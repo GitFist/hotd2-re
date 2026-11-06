@@ -738,11 +738,11 @@ void TaskTrain(Task& tk) {
 // ---- lesson actors 0x1A (0x00498FF0 -> 0x004991B0) / 0x1B (0x00499420 -> 0x00499530) ----
 
 // the object just created by World::Impl::Spawn (the newest live task)
-ActorTask* Newest(World::Impl& w) {
+WTask* Newest(World::Impl& w) {
     Task* best = nullptr;
     for (Task* t : w.ts.Live())
         if (t->data && (!best || best->serial < t->serial)) best = t;
-    return best ? static_cast<ActorTask*>(static_cast<WTask*>(best->data.get())) : nullptr;
+    return best ? static_cast<WTask*>(best->data.get()) : nullptr;
 }
 
 // 0x00408A20 (op 0x0B style) / 0x00408BC0 (op 0x0C style) of a record, the created object
@@ -841,9 +841,12 @@ void TaskLesson1A(Task& t) {  // 0x004991B0: one enemy or civilian at a time, in
         ActorTask* x = w.actor8E4C;
         if (!Alive(w, x)) break;  // (the original reads the last updated actor's block)
         const EnemyTask* xe = dynamic_cast<const EnemyTask*>(x);
-        if (!xe) break;
+        // The leech uses the second skeleton system, not EnemyTask. It still
+        // has to cross the same visibility and escape planes as the others.
+        const float* pos = xe ? xe->pos : TrainBatPosition(*x);
+        if (!pos) break;
         if (!(x->flags34 & 0x10000)) {
-            if (InFront(a.rot, xe->pos, a.pos)) {
+            if (InFront(a.rot, pos, a.pos)) {
                 if (w.liveEnemies == 0) {
                     release(Word(w, a.listB + 4 + static_cast<uint32_t>(a.civLeft) * 8));
                 } else {
@@ -852,7 +855,7 @@ void TaskLesson1A(Task& t) {  // 0x004991B0: one enemy or civilian at a time, in
                     a.state = 4;
                 }
             }
-        } else if (InFront(a.rot, xe->pos, a.point)) {
+        } else if (InFront(a.rot, pos, a.point)) {
             x->flags34 &= ~0x10000u;
         }
         break;

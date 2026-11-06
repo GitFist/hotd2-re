@@ -2,8 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.02-a
-Complete download: HOTD2RE-1.9-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.05-a
+Complete download: HOTD2RE-2.0-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation
@@ -166,3 +166,8 @@ the same seed. Original-mode inventory, unlocks and high scores are preserved.
 BUILD.txt identifies the actual executable architecture/build label. PACKAGE-MANIFEST.json
 records payload hashes, runtime notices and any reviewed vendor-byte privacy exceptions.
 SHA256SUMS.txt also hashes the manifest; the adjacent .zip.sha256 hashes the archive.
+
+NAOMI GRAPHICS
+Naomi is the default graphics profile; Options > Graphics > Graphics mode also
+offers PC graphics. The first normal launch downloads missing Naomi data once,
+with visible progress and verification. Saved graphics preferences are preserved.

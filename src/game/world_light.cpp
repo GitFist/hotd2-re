@@ -101,8 +101,14 @@ void World::Impl::TaskLightTable(Task&) {
 
 // End of a frame: the frame-level state the renderer reads.
 void World::Impl::UpdateLightsFrame() {
+    if (cfg.portTyping && typingInstructionFade > 0) {
+        for (auto& draw : draws)
+            for (float& color : draw.light.color) color += (.4f - color) * typingInstructionFade;
+    }
     lights.valid = true;
-    lights.fogOn = true;
+    // The chapter chooser is its own room, outside the completed scene's
+    // closing fog transition (whose start/end can both have reached 2).
+    lights.fogOn = !typingChapterChooser.active;
     for (int k = 0; k < 3; ++k) lights.fogColor[k] = env.fogColor[k];
     lights.fogStart = env.FogStart();
     lights.fogEnd = env.FogEnd();

@@ -16,10 +16,10 @@ namespace {
 struct Row { const char* label; int action; };
 enum { kPlay=100, kPractice, kLeaderboard, kOnline, kOptions, kExit, kHome, kHorde, kRandomizer, kScene,
        kHost, kBrowse, kPeer, kArcadeBoard, kOriginalBoard, kHordeBoard, kBossBoard, kBossPrev, kBossNext, kBoardSource, kPublish,
-       kHomeRoom, kExtras, kTyping, kTypingStart, kTypingBoard, kTypingDrill, kSwitchGame };
+       kHomeRoom, kExtras, kTyping, kTypingStart, kTypingBoard, kTypingDrill, kSwitchGame, kTypingArcade };
 constexpr Row kHomeRows[]={{"PLAY",kPlay},{"PRACTICE",kPractice},{"LEADERBOARD",kLeaderboard},{"ONLINE",kOnline},{"EXTRAS",kExtras},{"OPTIONS",kOptions},{"EXIT",kExit}};
 constexpr int kHomeCount = int(std::size(kHomeRows));
-constexpr Row kTypingHomeRows[]={{"ORIGINAL",kTyping},{"DRILL",kTypingDrill},{"LEADERBOARD",kLeaderboard},{"OPTIONS",kOptions},{"EXIT",kExit}};
+constexpr Row kTypingHomeRows[]={{"ARCADE",kTypingArcade},{"ORIGINAL",kTyping},{"DRILL",kTypingDrill},{"LEADERBOARD",kLeaderboard},{"OPTIONS",kOptions},{"EXIT",kExit}};
 constexpr Row kPlayRows[]={{"ARCADE",0},{"ORIGINAL",1},{"CHALLENGES",2},{"BOSS MODE",3},{"HORDE MODE",kHorde},{"RANDOMIZER",kRandomizer},{"BACK",kHome}};
 constexpr Row kPracticeRows[]={{"SCENE SELECT",kScene},{"BACK",kHome}};
 constexpr Row kBoardRows[]={{"SOURCE: LOCAL",kBoardSource},{"ARCADE",kArcadeBoard},{"ORIGINAL",kOriginalBoard},{"HORDE",kHordeBoard},{"BOSS MODE",kBossBoard},{"TYPING OF DEAD",kTypingBoard},{"BACK",kHome}};
@@ -76,8 +76,8 @@ void Logo(World::Impl& w,bool small) {
         d.depth=.01f; d.flags|=0x700; w.hudSprites.push_back(d);
     }
 }
-void TypingSettings(World::Impl& w, bool save) {
-    if (w.cfg.savePath.empty()) return;
+bool TypingSettings(World::Impl& w, bool save) {
+    if (w.cfg.savePath.empty()) return true;
     const std::filesystem::path path = w.cfg.savePath+".typing.ini";
     auto& o = w.cfg.typingOptions;
     if (save) {
@@ -85,7 +85,8 @@ void TypingSettings(World::Impl& w, bool save) {
         if (out) out << "difficulty=" << int(o.difficulty) << "\nlife=" << o.startingLives
                      << "\ncontinue=" << o.continues << "\nword_size=" << int(o.wordSize)
                      << "\nkeyboard=" << int(o.keyboard) << '\n';
-        return;
+        out.close();
+        return bool(out);
     }
     std::ifstream in(path);
     std::string line;
@@ -100,8 +101,9 @@ void TypingSettings(World::Impl& w, bool save) {
         else if (key == "continue" && (value == -1 || value == 0 || value == 3 || value == 5 || value == 9)) o.continues = value<0?0:value;
         else if (key == "word_size") o.wordSize = value == 1 ? TypingWordSize::Large : TypingWordSize::Normal;
         else if (key == "keyboard") o.keyboard = value == 0 ? TypingKeyboard::US : TypingKeyboard::UK;
-        else if (key == "blood") o.bloodEffects = value != 0;
+        // The retired blood toggle must not survive as an invisible preference.
     }
+    return true;
 }
 void Confirm(World::Impl& w,int action) {
     auto& f=w.front;
@@ -122,9 +124,9 @@ void Confirm(World::Impl& w,int action) {
             w.Sound(0x121A9);
         }
         return;
-    case kTyping:
+    case kTyping: case kTypingArcade:
         if (!f.typingOptionsLoaded) { TypingSettings(w,false); f.typingOptionsLoaded = true; }
-        w.cfg.typingOriginal = true; w.ResetTyping();
+        w.cfg.typingOriginal = action == kTyping; w.ResetTyping();
         f.sceneStart=-1;
         page(11); return;
     case kTypingDrill:
@@ -165,7 +167,7 @@ void Confirm(World::Impl& w,int action) {
     }
     // Keep the same player-join path, credits and unlocks as the original mode handlers.
     w.cfg.portTyping=action==kTypingStart;
-    w.cfg.typingOriginal=true;
+    if (action != kTypingStart) w.cfg.typingOriginal=true;
     w.ResetTyping();
     if(action==kTypingStart) {
         w.SoundStopAll();
@@ -195,7 +197,7 @@ void TypingOptionsPage(World::Impl& w) {
     auto& o = w.cfg.typingOptions;
     const auto unlocks = w.typing.originalProgress().unlocks();
     const auto lives = TypingLifeOptions((unlocks&1)!=0);
-    const auto continues = TypingContinueOptions((unlocks&2)!=0,(unlocks&32)!=0);
+    const auto continues = TypingContinueOptions((unlocks&2)!=0,w.cfg.portFeatures||(unlocks&32)!=0);
     if (std::find(lives.begin(),lives.end(),o.startingLives)==lives.end()) o.startingLives=3;
     if (std::find(continues.begin(),continues.end(),o.continues)==continues.end()) o.continues=3;
     auto cycle = [](const std::vector<int>& choices,int value,int step) {
@@ -238,13 +240,13 @@ void TypingOptionsPage(World::Impl& w) {
     }
     static constexpr const char* difficulties[] = {"VERY EASY","EASY","NORMAL","HARD","VERY HARD"};
     const std::string values[] = {difficulties[std::clamp(int(o.difficulty),0,4)],std::to_string(o.startingLives),
-        o.continues==0?"FREE PLAY":std::to_string(o.continues),o.wordSize == TypingWordSize::Large ? "LARGE" : "NORMAL",
+        o.continues==0?"UNLIMITED":std::to_string(o.continues),o.wordSize == TypingWordSize::Large ? "LARGE" : "NORMAL",
         o.keyboard == TypingKeyboard::US ? "US" : "UK"};
     const char* names[] = {"DIFFICULTY","LIFE","CONTINUES","WORD SIZE","KEYBOARD TYPE"};
     Panel(w,0,0,640,480,0xA8000000);
     Panel(w,84,84,556,416,0xF20C1114);
     Panel(w,84,84,556,87,0xFF92272D);
-    Text(w,104,107,"ORIGINAL MODE",.90f);
+    Text(w,104,107,w.cfg.typingOriginal?"ORIGINAL MODE":"ARCADE MODE",.90f);
     Button(w,512,98,544,128,"X",false,.59f);
     for (int row = 0; row < 5; ++row) {
         const float y=top+row*pitch;
@@ -558,6 +560,18 @@ void ExtrasPage(World::Impl& w) {
 
 } // namespace
 
+void LoadTypingMenuSettings(World::Impl& w) {
+    if (!w.front.typingOptionsLoaded) {
+        TypingSettings(w, false);
+        // Shared Options can be the first Typing page opened after HOTD boot.
+        // Load the same progression/unlocks that the Original popup uses.
+        w.cfg.typingOriginal = true;
+        w.ResetTyping();
+        w.front.typingOptionsLoaded = true;
+    }
+}
+bool SaveTypingMenuSettings(World::Impl& w) { return TypingSettings(w, true); }
+
 void NightShiftMenuFrame(World::Impl& w) {
     auto& f=w.front;
     // Older snapshots may still refer to the retired manual-publish page.
@@ -688,7 +702,7 @@ void NightShiftMenuFrame(World::Impl& w) {
     LoadSprites(w,spriteStart);
 }
 
-void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,9>& labels,
+void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,10>& labels,
                                 const std::string& difficulty) {
     w.hud.menuPanels.clear();
     w.hud.menuText.clear();
@@ -716,8 +730,8 @@ void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,9>& 
     for(size_t i=0;i<labels.size();++i) {
         const float top=(5.f+float(i))*24.f+10.f;
         const bool selected=int(i)==w.front.menuCursor;
-        Button(w,184,top,600,top+23,i==7?"DIFFICULTY":labels[i],selected,.67f);
-        if(i==7) {
+        Button(w,184,top,600,top+23,i==8?"DIFFICULTY":labels[i],selected,.67f);
+        if(i==8) {
             Text(w,420,top+5,difficultyLabel,.67f,selected?0xFFFFF4E5:0xFFD1CCC2);
             if(selected) {
                 Text(w,395,top+5,"<",.67f);
@@ -725,10 +739,10 @@ void NightShiftNetworkRoomFrame(World::Impl& w,const std::array<const char*,9>& 
             }
         }
     }
-    Panel(w,184,365,600,419,0x75101315);
-    Text(w,198,378,"UNLIMITED CONTINUES",.53f,0xFFB9AA91);
-    Text(w,546,375,w.cfg.creditSetting<0?"ON":"OFF",.67f);
-    Text(w,198,402,"PLAYER 1 CHOOSES THE MODE AND DIFFICULTY",.40f,0xFFB2B3AB);
+    Panel(w,184,389,600,431,0x75101315);
+    Text(w,198,397,"UNLIMITED CONTINUES",.53f,0xFFB9AA91);
+    Text(w,546,394,w.cfg.creditSetting<0?"ON":"OFF",.67f);
+    Text(w,198,420,"PLAYER 1 CHOOSES THE MODE AND DIFFICULTY",.40f,0xFFB2B3AB);
     Text(w,28,454,"HOST: ARROWS SELECT / ADJUST   ENTER / SHOOT CONFIRM   ESC LEAVES ROOM",.40f,0xFFB2B3AB);
     LoadSprites(w,first);
 }

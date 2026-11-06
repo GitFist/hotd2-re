@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "game/mstack.h"
+#include "game/hud.h"
 #include "game/world_internal.h"
 #include "game/world_modes.h"
 #include "game/world_st5.h"
@@ -30,6 +31,7 @@ struct VoiceTask : WTask {
 };
 struct TitleTask : WTask {
     int16_t timer = 0, sub = 0;  // obj +0x11C / +0x1312
+    ChapterCard typingCard;
 };
 struct CarTask : WTask {
     float pos[3] = {};      // +0x40
@@ -40,7 +42,13 @@ struct CarTask : WTask {
     int doorYaw = 0;        // +0x1334
 };
 struct CarLightTask : WTask {
-    int loaded = 0;  // +0x84 car models patched
+    int loaded = 0;             // one bit per patched glass model (original +0x84 counts them)
+    float oldCam[3] = {};       // +0x40..0x48 active camera position
+    float oldHeight = 0;        // +0x50 camera-context-0 height
+    float doorBase[2] = {};     // +0x34 / +0x3C first door-yaw delta
+    int oldDoorYaw = 0;         // +0x60
+    bool doorPhase = false;     // +0x58
+    bool doorInitialized = false;  // +0x64
 };
 struct Actor20Task : EnemyTask {  // 0x00448ED0: distant character (skeleton P[0], variant P[1])
     int dying = 0;  // +0x1330 frames left while sinking (0x00449430)
@@ -181,16 +189,34 @@ void World::Impl::TaskTitle(Task& t) {
         LightIntensity(0.7f);           // 0x004AA070
         a.sub = 1;
         a.timer = 0xB4;
+        a.typingCard = ChapterCard::Start(std::clamp<int>(cfg.eventMode,0,5));
     }
     if (a.sub == 1 && cfg.eventMode == 5) {  // stage 6 title draws model 0x1730
         Mat4 m = Mat4::Identity();
         mx::Translate(m, 0.0f, 0.0f, -30.0f);
         mx::RotY(m, 0x8000);
         mx::Scale(m, 2.0f, 2.0f, 2.0f);
-        Draw(0x1730, m, 8, -1.0f, false, -1, true);
+        const int model = typingReferenceActive ? LoadTypingModel(typingReference.SourceModel(0x17E4)) : 0x1730;
+        if (model) Draw(model, m, 8, -1.0f, false, -1, true);
     }
     hudTitleSerial = CurrentSerial();  // stage name / chapter sprites 0x00436AD0 / 0x00499F00: HUD (game::ChapterCard)
     if (cfg.portTyping) {
+        // Source422760 uses the same title animation with Typing's own artwork.
+        static constexpr int ids[6][8] = {
+            {0x210,0x211,0x212,0x213,0x214,0x215,0x216,0x217},
+            {0x218,0x219,0x21A,0x23F,0x21B,0x21C,0x21D,0x21E},
+            {0x21F,0x220,0x221,0x222,0x223,0x224,0x225,0x226},
+            {0x227,0x228,0x229,0x22A,0x22B,0x22C,0x22D,0x22E},
+            {0x22F,0x230,0x231,0x232,0x233,0x234,0x235,0x236},
+            {0x237,0x238,0x239,0x23A,0x23B,0x23C,0x23D,0x23E}};
+        for (const auto& sprite : a.typingCard.Run(0)) {
+            for (int i=0;i<8;++i) if (sprite.id==a.typingCard.Id(i)) {
+                const auto before=hudSprites.size();
+                TypingSprite(ids[a.typingCard.chapter][i],sprite.x,sprite.y,sprite.alpha,sprite.depth,sprite.flags,0x00422760);
+                if (hudSprites.size()>before) { hudSprites.back().sx=sprite.sx;hudSprites.back().sy=sprite.sy; }
+                break;
+            }
+        }
         if (a.sub > 0 && a.timer < 0xA0 && (pressed & 0x80008u)) a.timer = 1;
     } else if ((a.sub > 0 && a.timer < 0xA0 && (pressed & 2)) || (pressed & 0x20000)) a.timer = 1;
     if (--a.timer < 1) {
@@ -315,18 +341,109 @@ void World::Impl::TaskCar(Task& t) {
     }
 }
 
-// Komono kind 3 (0x00462DF0 -> task 0x004659D0 -> 0x00465BC0): patches the car models' geometry once they are loaded,
-// then (0x00465BC0) updates the car lights from the camera; ends with event flag 0xE0 or when camera 0x21 is skipped.
-// The model patch / light values are renderer state (not modelled).
+// Komono kind 3 (0x00462DF0 -> 0x004659D0 -> 0x00465BC0): translucent glass with scrolling reflection UVs.
+// The source mutates each loaded model cumulatively; immutable edits keep earlier submitted frames intact.
 void World::Impl::TaskCarLight(Task& t) {
     CarLightTask& c = t.As<CarLightTask>();
-    if (c.fn == 0x004659D0) {
-        c.loaded = 3;  // models 0x157E / 0x157D / 0x157B resident (resource residency not modelled)
-        c.fn = 0x00465BC0;
+    const int camId = runner->camera.camId - (typingReferenceActive ? 0x4010 : 0);
+    const int tick = runner->camera.tick;
+    if (runner->flags[0xE0] == 1 || (camId == 0x21 && skip2230 != 0)) {
+        ts.KillCurrent();
         return;
     }
-    if (runner->flags[0xE0] == 1) ts.KillCurrent();
-    if (runner->camera.camId == (typingReferenceActive ? 0x4031 : 0x21) && skip2230 != 0) ts.KillCurrent();
+    const int models[3] = { 0x157E, 0x157D, 0x157B };
+    auto pathId = [&](int native) { return native + (typingReferenceActive ? 0x4022 : 0); };
+    auto bits = [](uint32_t u) {
+        float f;
+        memcpy(&f, &u, 4);
+        return f;
+    };
+    auto flagV = [&](float v) {
+        uint32_t u;
+        memcpy(&u, &v, 4);
+        return bits(u | 1u);
+    };
+    if (c.fn == 0x004659D0) {
+        memcpy(c.oldCam, cam.pos, sizeof(c.oldCam));
+        for (int k = 0; k < 3; ++k) {
+            if (c.loaded & (1 << k)) continue;
+            const auto& records = InlineRecords(models[k]);
+            if (records.empty()) continue;
+            const auto previous = modelEdits.find(models[k]);
+            auto edit = previous == modelEdits.end() ? std::make_shared<ModelEdit>()
+                                                    : std::make_shared<ModelEdit>(*previous->second);
+            edit->tspOr |= 0x2000;
+            edit->alpha = 0.5f;
+            edit->uvs.clear();
+            edit->uvs.reserve(records.size());
+            for (size_t i = 0; i < records.size(); ++i) {
+                ModelEdit::Uv uv;
+                uv.index = static_cast<int>(i);
+                uv.uv[0] = bits(records[i][6]);
+                uv.uv[1] = bits(records[i][7]);
+                if (k == 0 || gameMode == 10) uv.uv[0] *= 1.0f / 3.0f;
+                uv.uv[1] = flagV(gameMode == 10 ? uv.uv[1] * (1.0f / 3.0f) + (k == 0 ? 0.7f : 0.5f)
+                                              : uv.uv[1] * (2.0f / 3.0f));
+                edit->uvs.push_back(uv);
+            }
+            modelEdits[models[k]] = std::move(edit);
+            c.loaded |= 1 << k;
+        }
+        if (c.loaded == 7) {
+            c.oldHeight = bits(0x4344C5C9);
+            c.doorPhase = false;
+            c.doorInitialized = false;
+            c.fn = 0x00465BC0;
+        }
+        return;
+    }
+
+    float dx = 0, dy = 0, dz = 0;
+    if (gameMode == 10) {
+        dx = (cam.pos[0] - c.oldCam[0]) * 0.0032f;
+        dy = (cam.pos[1] - c.oldCam[1]) * 0.0032f;
+        dz = (cam.pos[2] - c.oldCam[2]) * 0.0032f;
+    } else if (c.doorPhase || (camId == 0x21 && tick >= 350)) {
+        if (tick >= 0 && tick < 50) {
+            float pos[3] = {};
+            int ang[3] = {};
+            EvalPath(cameraBank, pathId(0xFF), static_cast<float>(tick) + 100.0f, pos, ang);
+            const int yaw = ang[1] - 0x4000;
+            const float amount = static_cast<float>(std::abs(yaw - c.oldDoorYaw)) * 0.001f;
+            if (!c.doorInitialized) {
+                c.doorBase[0] = c.doorBase[1] = amount;
+                c.doorInitialized = true;
+            } else {
+                dx = amount - c.doorBase[0];
+                dz = amount - c.doorBase[1];
+            }
+            c.oldDoorYaw = yaw;
+        }
+        c.doorPhase = true;
+    } else {
+        float pos[3] = {};
+        int ang[3] = {};
+        EvalPath(cameraBank, pathId(camId == 0x20 ? 0xFD : 0xFE), static_cast<float>(tick), pos, ang);
+        int difference = std::abs(ang[1] - cam.yaw);
+        if (difference > 0x4000) difference = 0x8000 - difference;
+        dx = dz = static_cast<float>(difference) * 0.0000225f;
+        const float height = runner->camera.ctx[0].pos[1];
+        dy = (height - c.oldHeight) * 0.006f;
+        c.oldHeight = height;
+    }
+    const float horizontal = std::sqrt(dx * dx + dz * dz) * 0.016f;
+    for (int k = 0; k < 3; ++k) {
+        const auto previous = modelEdits.find(models[k]);
+        if (previous == modelEdits.end()) continue;
+        auto edit = std::make_shared<ModelEdit>(*previous->second);
+        for (auto& uv : edit->uvs) {
+            if (k == 1) uv.uv[0] += horizontal;
+            else if (k == 2 && players > 1) uv.uv[0] -= horizontal;
+            uv.uv[1] = flagV(uv.uv[1] + dy);
+        }
+        modelEdits[models[k]] = std::move(edit);
+    }
+    memcpy(c.oldCam, cam.pos, sizeof(c.oldCam));
 }
 
 // Actor 0x22 (0x0049B0D0 -> 0x0049B260 = behaviour table 0x00598000[+0x1310]): the intro characters (skeleton 0x45,

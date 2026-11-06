@@ -13,12 +13,44 @@ constexpr uint32_t kSelected = 0x111, kNormal = 1;
 constexpr float kResetLeft = 128, kResetRight = 304, kCancelLeft = 336, kCancelRight = 512;
 constexpr float kResetTop = 278, kResetBottom = 316;
 int Wrap(int v, int n) { return ((v % n) + n) % n; }
+int CycleAllowed(int value, uint32_t mask, int delta) {
+    for (int i = 0, next = value; i < 10; ++i) {
+        next = Wrap(next + (delta > 0 ? 1 : -1), 10);
+        if (mask & (1u << next)) return next;
+    }
+    return value;
+}
+std::vector<std::string> StatusLines(std::string status) {
+    constexpr size_t width = 64;
+    std::replace(status.begin(), status.end(), '\n', ' ');
+    std::vector<std::string> lines;
+    while (!status.empty() && lines.size() < 2) {
+        if (status.size() <= width) { lines.push_back(status); break; }
+        if (lines.size() == 1) { lines.push_back(status.substr(0, width - 3) + "..."); break; }
+        auto split = status.rfind(' ', width);
+        if (split == std::string::npos || split == 0) split = width;
+        lines.push_back(status.substr(0, split));
+        status.erase(0, split + (status[split] == ' ' ? 1 : 0));
+    }
+    return lines;
+}
 template <size_t N>
 int Cycle(int v, const int (&a)[N], int delta) {
     auto it = std::find(std::begin(a), std::end(a), v);
     return a[Wrap(static_cast<int>(it == std::end(a) ? 0 : it - std::begin(a)) + delta, static_cast<int>(N))];
 }
 const char* OnOff(bool on) { return on ? "On" : "Off"; }
+bool NaomiSceneRow(int row) {
+    using D = DisplayMenu;
+    switch (row) {
+        case D::kPerPixel: case D::kAmbientOcclusion: case D::kShadowMaps:
+        case D::kFog: case D::kReflections: case D::kSoftParticles: case D::kCinematicFocus:
+        case D::kFiltering: case D::kAniso: case D::kRayShadows:
+        case D::kMsaa: case D::kCoverage:
+            return true;
+        default: return false;
+    }
+}
 const char* Strength(int level) {
     const char* values[] = {"Off", "Low", "Medium", "High"};
     return values[std::clamp(level, 0, 3)];
@@ -27,12 +59,12 @@ auto ImageChoices(const port::GraphicsOptions& g) {
     return std::make_tuple(g.msaa, g.anisotropy, g.textureFilter, g.postAA, g.temporalAA, g.outputResolutionHud, g.sharpening,
                            g.alphaToCoverage, g.downsample);
 }
-const char* const kPages[] = {"Display", "Graphics", "Gameplay", "Sound", "Devices", "CRT", "Packs"};
-constexpr float kTabWidths[] = {83, 91, 92, 75, 90, 61, 97};
+const char* const kPages[] = {"Display", "Graphics", "Gameplay", "Sound", "Devices", "CRT"};
+constexpr float kTabWidths[] = {83, 91, 92, 75, 90, 61};
 constexpr int kContentTop = 126, kContentBottom = 420, kRowHeight = 26, kGroupHeight = 20, kBackTop = 430;
 constexpr int kScrollButtonHeight = 32;
 constexpr float kPreviewTextX = 558, kPreviewTextY = 462, kPreviewTextScale = .3f;
-const char* GroupStart(DisplayMenu::Page page, int row) {
+const char* GroupStart(DisplayMenu::Page page, int row, bool naomi, bool typing) {
     using D = DisplayMenu;
     if (page == D::kDisplay) {
         if (row == D::kMonitor) return "SCREEN";
@@ -40,42 +72,41 @@ const char* GroupStart(DisplayMenu::Page page, int row) {
         if (row == D::kHdrOutput) return "CALIBRATION";
         if (row == D::kMenuStyle) return "INTERFACE";
     } else if (page == D::kGraphics) {
-        if (row == D::kRenderer) return "RENDERING & RESOLUTION";
+        if (row == D::kGraphicsMode) return "RENDERING & RESOLUTION";
         if (row == D::kPreset) return "IMAGE CLARITY";
-        if (row == D::kPerPixel) return "LIGHTING & EFFECTS";
+        if (row == (naomi ? D::kBloom : D::kPerPixel)) return "LIGHTING & EFFECTS";
         if (row == D::kContrast) return "COLOR";
         if (row == D::kStatistics) return "DIAGNOSTICS";
     } else if (page == D::kGameplay) {
         if (row == D::kUsername) return "LEADERBOARD";
-        if (row == D::kDifficulty) return "NEW GAME RULES";
-        if (row == D::kCrosshairP1) return "SIGHTS & APPEARANCE";
+        if (row == D::kDifficulty) return typing ? "TYPING RULES" : "NEW GAME RULES";
+        if (row == (typing ? D::kBlood : D::kCrosshairP1)) return "SIGHTS & APPEARANCE";
     } else if (page == D::kSound && row == D::kMasterVolume) return "VOLUME";
     else if (page == D::kDevices && row == D::kLightguns) return "SETUP & CALIBRATION";
     else if (page == D::kRetro && row == D::kCrt) return "CRT PRESENTATION";
-    else if (page == D::kPacks && row == D::kPack) return "INSTALLED CONTENT";
     return "";
 }
-int ContentRowTop(int row, DisplayMenu::Page page) {
+int ContentRowTop(int row, DisplayMenu::Page page, bool naomi, bool typing) {
     if (row == DisplayMenu::kBack) return kBackTop;
     int top = kContentTop;
-    for (int item : DisplayMenu::Rows(page)) {
+    for (int item : DisplayMenu::Rows(page, naomi, typing)) {
         if (item == DisplayMenu::kBack) break;
-        if (*GroupStart(page, item)) top += kGroupHeight;
+        if (*GroupStart(page, item, naomi, typing)) top += kGroupHeight;
         if (item == row) return top;
         top += kRowHeight;
     }
     return -10000;
 }
-int MaxScroll(DisplayMenu::Page page) {
+int MaxScroll(DisplayMenu::Page page, bool naomi, bool typing) {
     int bottom = kContentTop;
-    for (int row : DisplayMenu::Rows(page))
-        if (row != DisplayMenu::kBack) bottom = ContentRowTop(row, page) + 24;
+    for (int row : DisplayMenu::Rows(page, naomi, typing))
+        if (row != DisplayMenu::kBack) bottom = ContentRowTop(row, page, naomi, typing) + 24;
     return std::max(0, bottom - kContentBottom);
 }
-const char* SectionAt(DisplayMenu::Page page, int row) {
+const char* SectionAt(DisplayMenu::Page page, int row, bool naomi, bool typing) {
     const char* section = "";
-    for (int item : DisplayMenu::Rows(page)) {
-        if (*GroupStart(page, item)) section = GroupStart(page, item);
+    for (int item : DisplayMenu::Rows(page, naomi, typing)) {
+        if (*GroupStart(page, item, naomi, typing)) section = GroupStart(page, item, naomi, typing);
         if (item == row) break;
     }
     return section;
@@ -116,9 +147,6 @@ const char* Help(int r) {
             return "FXAA, SMAA or CMAA2 smooth the finished scene. Can combine with MSAA/TAA. Sharp HUD keeps text after AA.";
         case DisplayMenu::kTemporalAA:
             return "Accumulate the moving scene with depth and motion validation. HUD stays sharp.";
-        case DisplayMenu::kUpscaler:
-            return "Spatial upscaling when render pixels are below the window size. Separate from vendor upscaling; no motion "
-                   "history.";
         case DisplayMenu::kAniso:
             return "Clearer angled floors and walls. Native magnification stays.";
         case DisplayMenu::kFiltering:
@@ -133,8 +161,6 @@ const char* Help(int r) {
             return "Smooth lighting on opaque models. Mapped materials always use pixel lighting; alpha effects stay native.";
         case DisplayMenu::kSoftParticles:
             return "Fade supported smoke where it meets opaque geometry.";
-        case DisplayMenu::kMaterialMaps:
-            return "Uses normal and roughness maps from the currently loaded pack. Selecting Next Launch does not load a pack yet.";
         case DisplayMenu::kAmbientOcclusion:
             return "Depth-based contact shading on opaque surfaces. Costs GPU time.";
         case DisplayMenu::kShadowMaps:
@@ -160,14 +186,12 @@ const char* Help(int r) {
             return "Independent phosphor patterns. Inspect at native output pixels.";
         case DisplayMenu::kCrtCurvature:
             return "Barrel geometry with matching aim mapping. Disabled for raw gun input and frame generation.";
-        case DisplayMenu::kCrtGlow:
-            return "Bounded phosphor glow. Off preserves native contrast.";
         case DisplayMenu::kCalibration:
             return "Full-screen black, white, gamma and geometry reference patterns.";
         case DisplayMenu::kRenderer:
             return "Restart required. Direct3D 12 enables optional vendor reconstruction on Windows x64.";
         case DisplayMenu::kTemporalUpscaler:
-            return "Restart required. Genuine vendor SDK; unavailable GPUs keep native rendering.";
+            return "FSR 1 spatial upscaling or DLSS/FSR 2/FSR 3/XeSS reconstruction. Renderer changes require a restart.";
         case DisplayMenu::kTemporalQuality:
             return "Quality trades render pixels for speed. Native AA uses full input pixels and is unavailable with FSR 2. Restart "
                    "required.";
@@ -183,9 +207,6 @@ const char* Help(int r) {
         case DisplayMenu::kCrosshairs:
             return "Show both players' sights on this computer. Menu and calibration pointers stay visible. Aiming and shooting unchanged; "
                    "applies immediately.";
-        case DisplayMenu::kMeshRefinement:
-            return "Smooths selected models listed by the loaded pack. Higher levels add triangles. Collision and hit timing stay "
-                   "original.";
         case DisplayMenu::kBloom:
             return "Optional SDR highlight glow. Off preserves original contrast.";
         case DisplayMenu::kBrightness:
@@ -216,9 +237,7 @@ const char* Help(int r) {
             return "Night Shift background strength. Lower values reveal more of the scene; text stays readable. H hides the graphics UI.";
         case DisplayMenu::kResetGraphics:
             return "Reset all display and graphics defaults: renderer, upscaling, frame generation, ray shadows and menu opacity. "
-                   "Keeps gameplay, sound, packs and menu theme.";
-        case DisplayMenu::kPack:
-            return "Saved content pack for next launch; may include textures, materials, model rules and audio. No download.";
+                   "Keeps gameplay, sound and menu theme.";
         case DisplayMenu::kCrt:
             return "Scanlines follow the original 480 game rows.";
         case DisplayMenu::kBlood:
@@ -230,7 +249,7 @@ const char* Help(int r) {
         case DisplayMenu::kLives:
             return "Starting lives for your next local run. This does not refill lives in a running game.";
         case DisplayMenu::kContinues:
-            return "Continue credits for your next local run. Free Play remains tied to the original unlock.";
+            return "Continue credits for your next local run. Unlimited lets you continue without a credit limit.";
         case DisplayMenu::kCrosshairP1:
         case DisplayMenu::kCrosshairP2:
             return "Choose this player's original sight design. Gameplay Crosshairs hides both players' sights.";
@@ -259,19 +278,30 @@ const char* Help(int r) {
     }
 }
 }  // namespace
-const std::vector<int>& DisplayMenu::Rows(Page p) {
+const std::vector<int>& DisplayMenu::Rows(Page p, bool naomi, bool typing) {
     static const std::vector<int> rows[] = {
         {kMonitor, kFullscreen, kScale, kViewport, kAspect, kInteger, kVsync, kFrameCap, kTearing, kLowLatency,
          kHdrOutput, kPaperWhite, kBrightness, kGamma, kCalibration, kMenuStyle, kMenuOpacity, kResetGraphics, kBack},
-        {kRenderer, kResolutionMode, kRender, kDynamicResolution, kGpuBudget, kTemporalUpscaler, kTemporalQuality,
-         kUpscaler, kFrameGeneration, kRenderInterpolation, kPreset, kMsaa, kPostAA, kTemporalAA, kAniso, kFiltering,
+        {kGraphicsMode, kRenderer, kResolutionMode, kRender, kDynamicResolution, kGpuBudget, kTemporalUpscaler, kTemporalQuality,
+         kFrameGeneration, kRenderInterpolation, kPreset, kMsaa, kPostAA, kTemporalAA, kAniso, kFiltering,
          kDownsample, kSharpen, kCoverage, kIndependentUi, kPerPixel, kSoftParticles, kAmbientOcclusion, kShadowMaps,
          kRayShadows, kBloom, kFog, kReflections, kCinematicFocus, kContrast, kSaturation, kColorGrade, kStatistics, kBack},
         {kUsername, kDifficulty, kLives, kContinues, kCrosshairP1, kCrosshairP2, kCrosshairs, kBlood, kResetGameplay, kBack},
         {kMasterVolume, kMusicVolume, kGunVolume, kEffectsVolume, kAttractionVolume, kBack},
         {kLightguns, kWiiRemotes, kControllers, kFeedback, kBack},
-        {kCrt, kCrtMask, kCrtCurvature, kCrtGlow, kBack},
-        {kPack, kMaterialMaps, kMeshRefinement, kBack}};
+        {kCrt, kCrtMask, kCrtCurvature, kBack}};
+    static const std::vector<int> naomiRows = [] {
+        auto filtered = rows[kGraphics];
+        std::erase_if(filtered, NaomiSceneRow);
+        return filtered;
+    }();
+    static const std::vector<int> typingRows = [] {
+        auto filtered = rows[kGameplay];
+        std::erase_if(filtered, [](int row) { return row == kCrosshairP1 || row == kCrosshairP2 || row == kCrosshairs; });
+        return filtered;
+    }();
+    if (p == kGraphics && naomi) return naomiRows;
+    if (p == kGameplay && typing) return typingRows;
     return rows[p >= 0 && p < kPageCount ? p : kDisplay];
 }
 void DisplayMenu::Open() {
@@ -285,7 +315,7 @@ void DisplayMenu::Open() {
     usernameEdit_ = false;
     deviceAction_ = DeviceAction::None;
     page_ = kDisplay;
-    cursor_ = Rows(page_).front();
+    cursor_ = CurrentRows().front();
     scroll_ = 0;
     pointer_ = {};
     calibration_ = -1;
@@ -294,48 +324,65 @@ void DisplayMenu::SetPage(Page p) {
     resetConfirm_ = false;
     resetGameplayConfirm_ = false;
     page_ = static_cast<Page>(std::clamp(static_cast<int>(p), 0, kPageCount - 1));
-    cursor_ = Rows(page_).front();
+    cursor_ = CurrentRows().front();
     scroll_ = 0;
     pointer_ = {};
 }
 void DisplayMenu::FocusRow(int row) {
-    const auto& rows = Rows(page_);
+    const auto& rows = CurrentRows();
     if (std::find(rows.begin(), rows.end(), row) == rows.end()) return;
     cursor_ = row;
     KeepCursorVisible();
     pointer_ = {};
 }
+void DisplayMenu::SetGraphicsMode(bool naomi) {
+    if (naomiMode_ == naomi) return;
+    naomiMode_ = naomi;
+    RefreshRows();
+}
+void DisplayMenu::SetOptionValues(const OptionValues& values) {
+    const bool changed = optionValues_.typing != values.typing;
+    optionValues_ = values;
+    if (changed) RefreshRows();
+}
+void DisplayMenu::RefreshRows() {
+    const auto& rows = CurrentRows();
+    if (std::find(rows.begin(), rows.end(), cursor_) == rows.end()) cursor_ = rows.front();
+    scroll_ = std::clamp(scroll_, 0, MaxScroll(page_, naomiMode_, optionValues_.typing));
+    KeepCursorVisible();
+    pointer_ = {};
+}
 void DisplayMenu::KeepCursorVisible() {
     if (cursor_ == kBack) return;
-    const int top = ContentRowTop(cursor_, page_);
+    const int top = ContentRowTop(cursor_, page_, naomiMode_, optionValues_.typing);
     if (top - scroll_ < kContentTop) scroll_ = top - kContentTop;
     if (top + 24 - scroll_ > kContentBottom) scroll_ = top + 24 - kContentBottom;
-    scroll_ = std::clamp(scroll_, 0, MaxScroll(page_));
+    scroll_ = std::clamp(scroll_, 0, MaxScroll(page_, naomiMode_, optionValues_.typing));
 }
 game::MenuScrollHint DisplayMenu::ScrollHint() const {
     game::MenuScrollHint hint{26, kContentTop, 614, kContentBottom};
     if (open_ && !resetConfirm_ && !uiHidden_ && calibration_ < 0) {
         hint.above = scroll_ > 0;
-        hint.below = scroll_ < MaxScroll(page_);
+        hint.below = scroll_ < MaxScroll(page_, naomiMode_, optionValues_.typing);
     }
     return hint;
 }
 std::vector<int> DisplayMenu::VisibleRows() const {
     std::vector<int> visible;
-    for (int row : Rows(page_)) {
-        const int top = ContentRowTop(row, page_) - (row == kBack ? 0 : scroll_);
+    for (int row : CurrentRows()) {
+        const int top = ContentRowTop(row, page_, naomiMode_, optionValues_.typing) - (row == kBack ? 0 : scroll_);
         if (row == kBack || (top >= kContentTop && top + 24 <= kContentBottom)) visible.push_back(row);
     }
     return visible;
 }
-float DisplayMenu::RowY(int r, Page p, int scroll) {
-    const int top = ContentRowTop(r, p) - (r == kBack ? 0 : scroll);
+float DisplayMenu::RowY(int r, Page p, int scroll, bool naomi, bool typing) {
+    const int top = ContentRowTop(r, p, naomi, typing) - (r == kBack ? 0 : scroll);
     return (float(top) - 10.f) / 24.f;
 }
-int DisplayMenu::RowAt(float x, float y, Page p, int scroll) {
+int DisplayMenu::RowAt(float x, float y, Page p, int scroll, bool naomi, bool typing) {
     if (x < 26 || x >= 614) return -1;
-    for (int r : Rows(p)) {
-        const int top = ContentRowTop(r, p) - (r == kBack ? 0 : scroll);
+    for (int r : Rows(p, naomi, typing)) {
+        const int top = ContentRowTop(r, p, naomi, typing) - (r == kBack ? 0 : scroll);
         if ((r == kBack || (top >= kContentTop && top + 24 <= kContentBottom)) && y >= top && y < top + 24) return r;
     }
     return -1;
@@ -358,19 +405,6 @@ int DisplayMenu::ResetChoiceAt(float x, float y) {
     if (x >= kCancelLeft && x < kCancelRight) return 0;
     return -1;
 }
-void DisplayMenu::SetPacks(std::vector<PackChoice> packs, const std::string& path) {
-    packs_ = std::move(packs);
-    pack_ = 0;
-    packChanged_ = false;
-    for (size_t i = 0; i < packs_.size(); ++i)
-        if (packs_[i].path == path) pack_ = static_cast<int>(i);
-}
-bool DisplayMenu::TakePackChange(std::string* path) {
-    if (!packChanged_ || packs_.empty() || !path) return false;
-    *path = packs_[pack_].path;
-    packChanged_ = false;
-    return true;
-}
 const char* DisplayMenu::Label(int r) {
     static const char* const names[kRowCount] = {"Display Mode",
                                                  "Window Scale",
@@ -389,7 +423,7 @@ const char* DisplayMenu::Label(int r) {
                                                  "Sharpening",
                                                  "Alpha Coverage",
                                                  "Pixel Lighting",
-                                                 "Bloom",
+                                                 "Glow",
                                                  "Brightness",
                                                  "Gamma",
                                                  "Contrast",
@@ -400,13 +434,10 @@ const char* DisplayMenu::Label(int r) {
                                                  "Monitor",
                                                  "Performance Stats",
                                                  "Menu Style",
-                                                 "Next Launch",
                                                  "Allow Tearing",
                                                  "Low Latency",
-                                                 "FSR 1 Upscaling",
                                                  "Aspect Ratio",
                                                  "Smoke Blending",
-                                                 "Material Detail",
                                                  "Contact Shading",
                                                  "HDR Output",
                                                  "SDR White (HDR)",
@@ -420,13 +451,11 @@ const char* DisplayMenu::Label(int r) {
                                                  "Dynamic FPS Target",
                                                  "Phosphor Mask",
                                                  "Curvature",
-                                                 "Phosphor Glow",
                                                  "Test Patterns",
                                                  "Renderer",
                                                  "Upscaling",
                                                  "Upscale Quality",
                                                  "Frame Generation",
-                                                 "Model Smoothing",
                                                  "Pose Interpolation",
                                                  "Sharp HUD",
                                                  "Ray Shadows",
@@ -448,7 +477,8 @@ const char* DisplayMenu::Label(int r) {
                                                  "Wii Remotes",
                                                  "Username",
                                                  "Controllers",
-                                                 "Feedback"};
+                                                 "Feedback",
+                                                 "Graphics Mode"};
     return r >= 0 && r < kRowCount ? names[r] : "";
 }
 void DisplayMenu::ApplyPreset(DisplaySettings& d, int p, const port::GraphicsCapabilities* caps) {
@@ -500,7 +530,9 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
         case kRender:
             return std::to_string(d.renderScale) + "x";
         case kBlood:
-            return port::BloodColorLabel(d.bloodColor);
+            return port::BloodColorLabel(d.EffectiveBloodColor());
+        case kGraphicsMode:
+            return g.naomiGraphics ? "Naomi" : "PC";
         case kInteger:
             return OnOff(d.integerScale);
         case kPreset:
@@ -509,8 +541,6 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
             return g.msaa == 1 ? "Off" : std::to_string(g.msaa) + "x";
         case kPostAA:
             return g.postAA == 3 ? "CMAA2" : g.postAA == 2 ? "SMAA 1x" : g.postAA == 1 ? "FXAA" : "Off";
-        case kUpscaler:
-            return g.spatialUpscaler ? "FSR 1" : "Off";
         case kAniso:
             return g.anisotropy == 1 ? "Off" : std::to_string(g.anisotropy) + "x";
         case kFiltering:
@@ -527,8 +557,6 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
             const char* values[] = {"Off", "Narrow", "Medium", "Wide"};
             return values[std::clamp(g.softParticles, 0, 3)];
         }
-        case kMaterialMaps:
-            return OnOff(g.materialMaps);
         case kAmbientOcclusion:
             return Strength(g.ambientOcclusion);
         case kHdrOutput:
@@ -561,8 +589,6 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
         }
         case kCrtCurvature:
             return Strength(g.crtCurvature);
-        case kCrtGlow:
-            return Strength(g.crtGlow);
         case kCalibration:
             return "Open pattern";
         case kRenderer: {
@@ -571,7 +597,7 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
         }
         case kTemporalUpscaler: {
             const char* values[] = {"Off", "DLSS", "FSR 2", "FSR 3", "XeSS"};
-            return values[std::clamp(d.temporalUpscaler, 0, 4)];
+            return d.temporalUpscaler ? values[std::clamp(d.temporalUpscaler, 0, 4)] : g.spatialUpscaler ? "FSR 1" : "Off";
         }
         case kTemporalQuality: {
             const char* values[] = {"Quality", "Balanced", "Performance", "Native AA"};
@@ -587,8 +613,6 @@ std::string DisplayMenu::ValueText(const DisplaySettings& d, int r) {
             return OnOff(g.outputResolutionHud);
         case kCrosshairs:
             return OnOff(d.showCrosshairs);
-        case kMeshRefinement:
-            return Strength(g.meshRefinement);
         case kBloom:
             return Strength(g.bloom);
         case kBrightness:
@@ -642,7 +666,10 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
             d.viewport = Wrap(d.viewport + delta, 5);
             break;
         case kBlood:
-            d.bloodColor = static_cast<port::BloodColor>(Wrap(static_cast<int>(d.bloodColor) + delta, 4));
+            d.EffectiveBloodColor() = static_cast<port::BloodColor>(Wrap(static_cast<int>(d.EffectiveBloodColor()) + delta, 4));
+            break;
+        case kGraphicsMode:
+            if (delta % 2) d.graphics.naomiGraphics = !d.graphics.naomiGraphics;
             break;
         case kCrt:
             d.crt = Wrap(d.crt + delta, 4);
@@ -665,9 +692,6 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
         case kPostAA:
             g.postAA = Wrap(g.postAA + delta, 4);
             break;
-        case kUpscaler:
-            g.spatialUpscaler = Wrap(g.spatialUpscaler + delta, 2);
-            break;
         case kAniso:
             g.anisotropy = Cycle(g.anisotropy, af, delta);
             break;
@@ -688,9 +712,6 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
             break;
         case kSoftParticles:
             g.softParticles = Wrap(g.softParticles + delta, 4);
-            break;
-        case kMaterialMaps:
-            if (delta % 2) g.materialMaps = !g.materialMaps;
             break;
         case kAmbientOcclusion:
             g.ambientOcclusion = Wrap(g.ambientOcclusion + delta, 4);
@@ -733,9 +754,6 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
         case kCrtCurvature:
             g.crtCurvature = Wrap(g.crtCurvature + delta, 4);
             break;
-        case kCrtGlow:
-            g.crtGlow = Wrap(g.crtGlow + delta, 4);
-            break;
         case kRenderer:
             d.renderer = Wrap(d.renderer + delta, 3);
             if (d.renderer != 2) {
@@ -744,11 +762,20 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
                 d.rayShadows = false;
             }
             break;
-        case kTemporalUpscaler:
-            d.temporalUpscaler = Wrap(d.temporalUpscaler + delta, 5);
+        case kTemporalUpscaler: {
+            const int selected = d.temporalUpscaler ? d.temporalUpscaler + 1 : g.spatialUpscaler ? 1 : 0;
+            const int next = Wrap(selected + delta, 6);
+            g.spatialUpscaler = next == 1 ? 1 : 0;
+            d.temporalUpscaler = next >= 2 ? next - 1 : 0;
             if (d.temporalUpscaler) d.renderer = 2;
+            else if (g.spatialUpscaler && d.renderer == 2) {
+                d.renderer = 0;
+                d.frameGeneration = 0;
+                d.rayShadows = false;
+            }
             if (d.temporalUpscaler == 2 && d.temporalQuality == 3) d.temporalQuality = 0;
             break;
+        }
         case kTemporalQuality:
             d.temporalQuality = Wrap(d.temporalQuality + delta, d.temporalUpscaler == 2 ? 3 : 4);
             break;
@@ -771,11 +798,9 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
         case kCrosshairs:
             if (delta % 2) d.showCrosshairs = !d.showCrosshairs;
             break;
-        case kMeshRefinement:
-            g.meshRefinement = Wrap(g.meshRefinement + delta, 4);
-            break;
         case kBloom:
-            g.bloom = Wrap(g.bloom + delta, 4);
+            g.bloom = Wrap(std::max(g.bloom, g.crtGlow) + delta, 4);
+            g.crtGlow = 0;
             break;
         case kBrightness:
             g.brightness = std::clamp(g.brightness + delta * 5, 0, 100);
@@ -818,7 +843,10 @@ void DisplayMenu::Step(DisplaySettings& d, int r, int delta) {
     }
 }
 bool DisplayMenu::Disabled(int row, const DisplaySettings& d) const {
+    if (d.graphics.naomiGraphics && NaomiSceneRow(row)) return true;
     switch (row) {
+        case kGraphicsMode:
+            return !naomiAvailable_ && !d.graphics.naomiGraphics;
         case kDifficulty:
         case kLives:
         case kContinues:
@@ -854,14 +882,8 @@ bool DisplayMenu::Disabled(int row, const DisplaySettings& d) const {
             return caps_.maxAnisotropy <= 1;
         case kCoverage:
             return d.graphics.msaa <= 1;
-        case kUpscaler:
-            return !caps_.spatialFSR1;
         case kSoftParticles:
             return !caps_.softParticles;
-        case kMaterialMaps:
-            return !caps_.materialMaps || activeMaterialMaps_ == 0;
-        case kMeshRefinement:
-            return activeRefinedModels_ == 0;
         case kPerPixel:
             return caps_.shadowMaps && d.graphics.shadowMaps > 0;
         case kAmbientOcclusion:
@@ -889,6 +911,8 @@ bool DisplayMenu::Disabled(int row, const DisplaySettings& d) const {
     }
 }
 std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
+    if (d.graphics.naomiGraphics && (row == kMsaa || row == kCoverage)) return "Off (Naomi)";
+    if (d.graphics.naomiGraphics && NaomiSceneRow(row)) return "Naomi";
     if (const int volume = VolumeIndex(row); volume >= 0)
         return std::to_string(std::clamp(optionValues_.audio[volume], 0, 10)) + " / 10";
     switch (row) {
@@ -898,7 +922,7 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
             return names[std::clamp(optionValues_.difficulty, 0, 4)];
         }
         case kLives: return std::to_string(optionValues_.lives);
-        case kContinues: return optionValues_.credits == 0 ? "Free Play" : std::to_string(optionValues_.credits);
+        case kContinues: return optionValues_.credits == 0 ? "Unlimited" : std::to_string(optionValues_.credits);
         case kCrosshairP1:
         case kCrosshairP2: return "Style " + std::to_string(optionValues_.crosshair[row == kCrosshairP2] + 1);
         case kLightguns:
@@ -909,10 +933,11 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
         case kResetGraphics: return "Reset";
         default: break;
     }
-    if (row == kPack) return packs_.empty() ? "Original" : packs_[pack_].name.substr(0, 16);
     if (row == kPreset) return PresetName(d, &caps_);
     if (Disabled(row, d)) {
         switch (row) {
+            case kGraphicsMode:
+                return "Needs content";
             case kMenuOpacity:
                 return "Night Shift only";
             case kScale:
@@ -933,10 +958,6 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
                 return "Upscaling Off";
             case kGpuBudget:
                 return d.dynamicResolution ? "Inactive" : "Dynamic Res Off";
-            case kMaterialMaps:
-                return activeMaterialMaps_ == 0 ? "Needs pack" : "Unsupported";
-            case kMeshRefinement:
-                return "Needs pack";
             case kPerPixel:
                 return "Auto (shadows)";
             case kRenderInterpolation:
@@ -952,6 +973,16 @@ std::string DisplayMenu::ShownValue(const DisplaySettings& d, int row) const {
     return ValueText(d, row);
 }
 std::string DisplayMenu::RowHelp(const DisplaySettings& d, int row) const {
+    if (row == kGraphicsMode) {
+        if (!naomiAvailable_)
+            return naomiDetail_.empty() ? "Naomi visuals are unavailable. Install the Naomi graphics content to select this mode."
+                                        : "Naomi visuals are unavailable: " + naomiDetail_;
+        return "Switch original PC and Naomi arcade visuals. Naomi uses its own lighting, source assets and saved blood color.";
+    }
+    if (d.graphics.naomiGraphics && (row == kMsaa || row == kCoverage))
+        return "Naomi transparency uses MSAA Off. Use Post AA for smoothing. Your PC MSAA and alpha-coverage preferences are retained.";
+    if (d.graphics.naomiGraphics && NaomiSceneRow(row))
+        return "Naomi mode uses original scene lighting and filtering. Your PC preference is retained.";
     if (Disabled(row, d)) {
         switch (row) {
             case kDifficulty:
@@ -988,13 +1019,6 @@ std::string DisplayMenu::RowHelp(const DisplaySettings& d, int row) const {
                     return "Enable dynamic resolution to edit its FPS target. This changes render size, separate from Frame Limit.";
                 return "Dynamic resolution is inactive while GPU timing is unavailable or a temporal/ray mode requires stable input "
                        "pixels.";
-            case kMaterialMaps:
-                if (!caps_.materialMaps)
-                    return "Material Detail needs a renderer with material-map support and compatible maps in the loaded pack.";
-                return "The loaded pack has no material maps. Choose a compatible pack and restart. Saved preferences are retained.";
-            case kMeshRefinement:
-                return "The loaded pack lists no models for smoothing. Choose a compatible pack and restart. Saved preferences are "
-                       "retained.";
             case kPerPixel:
                 return "Raster Shadows uses pixel lighting automatically. Turn Raster Shadows Off to edit the independent lighting "
                        "preference.";
@@ -1021,15 +1045,11 @@ std::string DisplayMenu::RowHelp(const DisplaySettings& d, int row) const {
                std::string(caps_.smaa ? "SMAA" : "FXAA") + ", Low sharpening" + (caps_.outputResolutionHud ? " and Sharp HUD." : ".");
     if (row == kRender) return std::to_string(renderWidth_) + " x " + std::to_string(renderHeight_) + " internal pixels. " + Help(row);
     if (row == kMonitor && d.monitor > 0 && d.monitor <= static_cast<int>(monitors_.size())) return monitors_[d.monitor - 1];
-    if (row == kPack && !packs_.empty()) return packs_[pack_].detail.empty() ? Help(row) : packs_[pack_].detail;
-    if (row == kMaterialMaps) return std::to_string(activeMaterialMaps_) + " loaded material maps. " + Help(row);
-    if (row == kMeshRefinement) return std::to_string(activeRefinedModels_) + " selected models in the loaded pack. " + Help(row);
-    if (row == kContinues && !optionValues_.freePlayUnlocked)
-        return "Continue credits for your next local run. Free Play unlocks through the original game progression.";
     return Help(row);
 }
 bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<uint32_t>& sounds) {
     if (!open_) return false;
+    SetGraphicsMode(d.graphics.naomiGraphics);
     if (resetConfirm_) {
         // Keep the decision isolated from tabs, setting adjustments and Hide UI.
         // Start cancels this modal; the caller must not treat it as Resume/Back.
@@ -1053,9 +1073,11 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
                 } else {
                     const bool nightShift = d.nightShift, crosshairs = d.showCrosshairs;
                     const auto blood = d.bloodColor;
+                    const auto naomiBlood = d.naomiBloodColor;
                     d = DisplaySettings{};
                     d.nightShift = nightShift;
                     d.bloodColor = blood;
+                    d.naomiBloodColor = naomiBlood;
                     d.showCrosshairs = crosshairs;
                     graphicsReset_ = true;  // acknowledge and persist even if already at defaults
                     status_ = "Graphics defaults restored. Restart may be required.";
@@ -1128,14 +1150,14 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
                                  : 0;
     const int scroll = in.scroll || scrollButton ? in.scroll + scrollButton : 0;
     if (scroll) {
-        scroll_ = std::clamp(scroll_ - scroll * kRowHeight * 3, 0, MaxScroll(page_));
+        scroll_ = std::clamp(scroll_ - scroll * kRowHeight * 3, 0, MaxScroll(page_, naomiMode_, optionValues_.typing));
         auto visible = VisibleRows();
         if (std::find(visible.begin(), visible.end(), cursor_) == visible.end() && visible.size() > 1)
             cursor_ = scroll > 0 ? visible.front() : visible[visible.size() - 2];
         return false;
     }
-    const auto& rows = Rows(page_);
-    int under = in.pointer ? RowAt(in.px, in.py, page_, scroll_) : -1;
+    const auto& rows = CurrentRows();
+    int under = in.pointer ? RowAt(in.px, in.py, page_, scroll_, naomiMode_, optionValues_.typing) : -1;
     if (moved && under >= 0 && under != cursor_) {
         cursor_ = under;
     }
@@ -1196,10 +1218,10 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
             const auto oldValues = optionValues_;
             if (volume >= 0) optionValues_.audio[volume] = std::clamp(optionValues_.audio[volume] + delta, 0, 10);
             else if (cursor_ == kDifficulty) optionValues_.difficulty = Wrap(optionValues_.difficulty + delta, 5);
-            else if (cursor_ == kLives) optionValues_.lives = Wrap(optionValues_.lives - 1 + delta, 5) + 1;
+            else if (cursor_ == kLives) optionValues_.lives = CycleAllowed(optionValues_.lives, optionValues_.livesMask, delta);
             else if (cursor_ == kContinues)
-                optionValues_.credits = optionValues_.freePlayUnlocked ? Wrap(optionValues_.credits + delta, 10)
-                                                                      : Wrap(optionValues_.credits - 1 + delta, 9) + 1;
+                optionValues_.credits = CycleAllowed(optionValues_.credits,
+                    optionValues_.creditsMask | (optionValues_.freePlayUnlocked ? 1u : 0u), delta);
             else {
                 int& sight = optionValues_.crosshair[cursor_ == kCrosshairP2];
                 sight = Wrap(sight + delta, 4);
@@ -1217,20 +1239,7 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
         }
         if (cursor_ == kMonitor)
             d.monitor = Wrap(d.monitor + delta, static_cast<int>(monitors_.size()) + 1);
-        else if (cursor_ == kPack && !packs_.empty()) {
-            const int direction = delta > 0 ? 1 : -1;
-            int next = pack_;
-            for (size_t i = 0; i < packs_.size(); ++i) {
-                next = Wrap(next + direction, static_cast<int>(packs_.size()));
-                if (packs_[next].valid) break;
-            }
-            if (packs_[next].valid) {
-                pack_ = next;
-                packChanged_ = true;
-                status_ = "Content pack applies on next launch. Loaded pack is unchanged.";
-            } else
-                status_ = packs_[next].detail;
-        } else {
+        else {
             if (cursor_ == kPreset) {
                 const auto name = PresetName(d, &caps_);
                 const int preset = name == "Original" ? 0 : name == "Clean" ? 1 : name == "Enhanced" ? 2 : -1;
@@ -1253,7 +1262,8 @@ bool DisplayMenu::Update(const MenuInput& in, DisplaySettings& d, std::vector<ui
                 status_ = "Restart required. Vendor upscaling, frame generation and ray requests cleared.";
             if (cursor_ == kMenuStyle) status_ = "Menu style applies on next launch.";
         }
-        if (d != before || cursor_ == kPack) sounds.push_back(game::kOptionSelectSound);
+        SetGraphicsMode(d.graphics.naomiGraphics);
+        if (d != before) sounds.push_back(game::kOptionSelectSound);
     }
     if (!value && ((in.pressed & 0xC) || (in.trigger && over))) {
         sounds.push_back(game::kOptionBackSound);
@@ -1287,7 +1297,7 @@ void DisplayMenu::Sprites(const game::ExeImage& exe, const DisplaySettings& d, s
         text(112, 181, gameplay ? "Restore new-game rules and sight defaults?" : "Restore all display and graphics defaults?", .5f);
         text(112, 208, gameplay ? "Difficulty, lives, credits, sight styles," : "Renderer, upscaling, frame generation,", .5f);
         text(112, 225, gameplay ? "blood color and gameplay sight visibility." : "ray shadows and menu opacity.", .5f);
-        text(112, 250, gameplay ? "Keeps records, unlocks, audio and calibration." : "Keeps gameplay, sound, packs and menu theme.", .5f);
+        text(112, 250, gameplay ? "Keeps records, unlocks, audio and calibration." : "Keeps gameplay, sound and menu theme.", .5f);
         text(kResetLeft + 40, kResetTop + 9, "[ RESET ]", .6f, resetYes_ ? kSelected : kNormal);
         text(kCancelLeft + 36, kResetTop + 9, "[ CANCEL ]", .6f, resetYes_ ? kNormal : kSelected);
         if (!gameplay) text(112, 341, "A restart may be needed for renderer changes.", .4f);
@@ -1304,32 +1314,33 @@ void DisplayMenu::Sprites(const game::ExeImage& exe, const DisplaySettings& d, s
         return;
     }
     text(26, 20, "OPTIONS", 1.25f);
+    const auto notice = StatusLines(status_);
+    for (size_t i = 0; i < notice.size(); ++i) text(210, 25 + float(i) * 16, notice[i], .38f);
     for (int page = 0; page < kPageCount; ++page)
         text(TabLeft(page) + 4, 80, kPages[page], .55f, page == page_ ? kSelected : kNormal);
     const auto visible = VisibleRows();
-    if (scroll_ > 0 && visible.size() > 1) text(34, 111, SectionAt(page_, visible.front()), .35f, 0x40);
+    if (scroll_ > 0 && visible.size() > 1) text(34, 111, SectionAt(page_, visible.front(), naomiMode_, optionValues_.typing), .35f, 0x40);
     for (int row : visible) {
-        const float top = RowY(row, page_, scroll_) * 24 + 10;
+        const float top = RowTop(row);
         const bool disabled = Disabled(row, d);
         const uint32_t flags = (row == cursor_ ? kSelected : kNormal) | (disabled ? 8 : 0);
-        if (row != kBack && *GroupStart(page_, row) && top - kGroupHeight >= kContentTop)
-            text(34, top - kGroupHeight - 5, GroupStart(page_, row), .35f, 0x40);
+        if (row != kBack && *GroupStart(page_, row, naomiMode_, optionValues_.typing) && top - kGroupHeight >= kContentTop)
+            text(34, top - kGroupHeight - 5, GroupStart(page_, row, naomiMode_, optionValues_.typing), .35f, 0x40);
         text(34, top - 5, Label(row), .6f, flags);
         const auto value = ShownValue(d, row);
         if (!value.empty()) text(402, top - 5, value, std::min(.6f, 180.f / (float(value.size()) * 16.f)), flags);
         if (row == cursor_ && row != kBack && !IsAction(row) && !disabled)
             game::MenuAdjustArrows(360, 600, top + 12, out);
     }
-    if (MaxScroll(page_) > 0) {
+    if (MaxScroll(page_, naomiMode_, optionValues_.typing) > 0) {
         text(621, kContentTop + 3, "^", .5f, scroll_ > 0 ? kNormal : 0x40);
-        text(621, kContentBottom - 25, "v", .5f, scroll_ < MaxScroll(page_) ? kNormal : 0x40);
-        const auto& rows = Rows(page_);
+        text(621, kContentBottom - 25, "v", .5f, scroll_ < MaxScroll(page_, naomiMode_, optionValues_.typing) ? kNormal : 0x40);
+        const auto& rows = CurrentRows();
         if (visible.size() > 1) {
             const int begin = int(std::find(rows.begin(), rows.end(), visible.front()) - rows.begin()) + 1;
             text(470, kBackTop + 2, std::to_string(begin) + "-" + std::to_string(begin + visible.size() - 2) + " / " + std::to_string(rows.size() - 1), .35f, 0x40);
         }
     }
-    if (page_ == kPacks) text(34, 219, "Loaded: " + activePackName_.substr(0, 58), .45f, 0x40);
     text(28, 461, "LB/L1 / RB/R1: CATEGORY", .42f, 0x40);
     text(kPreviewTextX, kPreviewTextY, "Hide UI [H]", kPreviewTextScale);
     finish();
@@ -1348,7 +1359,7 @@ void DisplayMenu::ModernHud(const DisplaySettings& d, game::WorldHud& hud) const
         text(112, 181, gameplay ? "Restore new-game rules and sight defaults?" : "Restore all display and graphics defaults?", .5f);
         text(112, 208, gameplay ? "Difficulty, lives, credits, sight styles," : "Renderer, upscaling, frame generation,", .5f, 0xFFC1BAAC);
         text(112, 225, gameplay ? "blood color and gameplay sight visibility." : "ray shadows and menu opacity.", .5f, 0xFFC1BAAC);
-        text(112, 250, gameplay ? "Keeps records, unlocks, audio and calibration." : "Keeps gameplay, sound, packs and menu theme.", .5f, 0xFFC1BAAC);
+        text(112, 250, gameplay ? "Keeps records, unlocks, audio and calibration." : "Keeps gameplay, sound and menu theme.", .5f, 0xFFC1BAAC);
         if (!gameplay) text(112, 341, "A restart may be needed for renderer changes.", .4f, 0xFFC1BAAC);
         text(112, 365, "RELOAD / BACK / START: CANCEL", .4f, 0xFFC1BAAC);
         for (int choice = 0; choice < 2; ++choice) {
@@ -1373,17 +1384,19 @@ void DisplayMenu::ModernHud(const DisplaySettings& d, game::WorldHud& hud) const
         return;
     }
     text(26, 20, "OPTIONS", 1.25f);
+    const auto notice = StatusLines(status_);
+    for (size_t i = 0; i < notice.size(); ++i) text(210, 25 + float(i) * 16, notice[i], .38f);
     for (int page = 0; page < kPageCount; ++page) {
         if (page == page_) hud.menuPanels.push_back({TabLeft(page), 78, TabLeft(page) + TabWidth(page) - 3, 111, 0xFF8F2026});
         text(TabLeft(page) + 4, 85, kPages[page], .55f);
     }
     const auto visible = VisibleRows();
-    if (scroll_ > 0 && visible.size() > 1) text(34, 115, SectionAt(page_, visible.front()), .34f, 0xFFC1BAAC);
+    if (scroll_ > 0 && visible.size() > 1) text(34, 115, SectionAt(page_, visible.front(), naomiMode_, optionValues_.typing), .34f, 0xFFC1BAAC);
     for (int row : visible) {
-        const float top = RowY(row, page_, scroll_) * 24 + 10;
+        const float top = RowTop(row);
         const bool disabled = Disabled(row, d);
-        if (row != kBack && *GroupStart(page_, row) && top - kGroupHeight >= kContentTop)
-            text(34, top - kGroupHeight, GroupStart(page_, row), .34f, 0xFFC1BAAC);
+        if (row != kBack && *GroupStart(page_, row, naomiMode_, optionValues_.typing) && top - kGroupHeight >= kContentTop)
+            text(34, top - kGroupHeight, GroupStart(page_, row, naomiMode_, optionValues_.typing), .34f, 0xFFC1BAAC);
         if (row == cursor_) hud.menuPanels.push_back({26, top - 2, 614, top + 23, 0xCC8F2026});
         else hud.menuPanels.push_back({26, top + 23, 614, top + 24, 0x354E514E});
         const uint32_t color = disabled ? 0xFF797D79 : 0xFFECE7DC;
@@ -1395,22 +1408,21 @@ void DisplayMenu::ModernHud(const DisplaySettings& d, game::WorldHud& hud) const
             text(600, top, ">", .6f);
         }
     }
-    if (MaxScroll(page_) > 0) {
+    if (MaxScroll(page_, naomiMode_, optionValues_.typing) > 0) {
         const float thumbTop = kContentTop + kScrollButtonHeight + 2;
         const float track = kContentBottom - kScrollButtonHeight - 10 - thumbTop;
-        const float thumb = thumbTop + track * float(scroll_) / float(MaxScroll(page_));
+        const float thumb = thumbTop + track * float(scroll_) / float(MaxScroll(page_, naomiMode_, optionValues_.typing));
         hud.menuPanels.push_back({625, kContentTop, 638, kContentTop + kScrollButtonHeight, scroll_ > 0 ? 0xAB333A3C : 0x50333A3Cu});
-        hud.menuPanels.push_back({625, kContentBottom - kScrollButtonHeight, 638, kContentBottom, scroll_ < MaxScroll(page_) ? 0xAB333A3C : 0x50333A3Cu});
+        hud.menuPanels.push_back({625, kContentBottom - kScrollButtonHeight, 638, kContentBottom, scroll_ < MaxScroll(page_, naomiMode_, optionValues_.typing) ? 0xAB333A3C : 0x50333A3Cu});
         hud.menuPanels.push_back({629, thumb, 634, thumb + 8, 0xFFC1BAAC});
         text(627, kContentTop + 10, "^", .5f, scroll_ > 0 ? 0xFFECE7DC : 0xFF797D79);
-        text(627, kContentBottom - kScrollButtonHeight + 10, "v", .5f, scroll_ < MaxScroll(page_) ? 0xFFECE7DC : 0xFF797D79);
-        const auto& rows = Rows(page_);
+        text(627, kContentBottom - kScrollButtonHeight + 10, "v", .5f, scroll_ < MaxScroll(page_, naomiMode_, optionValues_.typing) ? 0xFFECE7DC : 0xFF797D79);
+        const auto& rows = CurrentRows();
         if (visible.size() > 1) {
             const int begin = int(std::find(rows.begin(), rows.end(), visible.front()) - rows.begin()) + 1;
             text(470, kBackTop + 8, std::to_string(begin) + "-" + std::to_string(begin + visible.size() - 2) + " / " + std::to_string(rows.size() - 1), .35f, 0xFFC1BAAC);
         }
     }
-    if (page_ == kPacks) text(34, 225, "Loaded: " + activePackName_.substr(0, 58), .45f, 0xFFC1BAAC);
     text(28, 461, "LB/L1 / RB/R1: CATEGORY", .42f, 0xFFC1BAAC);
     hud.menuPanels.push_back({550, 456, 630, 476, 0xE6090D10});
     text(kPreviewTextX, kPreviewTextY, "Hide UI [H]", kPreviewTextScale);

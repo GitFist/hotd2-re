@@ -62,12 +62,23 @@ static void InventoryScroll(const game::World& w, bool above, bool below) {
           "inventory scroll cue stays within the stock list");
     Check(hint.above == above && hint.below == below, "inventory scroll cue matches reachable stock rows");
 }
-static void Room(game::World& w, int choice, int stock = 3) {
+static void Room(game::World& w, const char* mode, int stock = 3) {
     auto c = Config(); c.portNetworkRoom = true; c.gameMode = 6; c.gameOver = true;
     c.savePatch[0].second.assign(33, static_cast<uint8_t>(stock));
     std::string error; Check(w.StartNetworkGame(c, &error), error.c_str());
     Wait(w, 3);
-    Step(w, 240, 142 + choice * 30, true); Wait(w, 600);
+    Check(w.NetworkLobby(), "connected room opens before selecting a mode");
+    int x = -1, y = -1;
+    for (const auto& label : w.Hud().menuText) {
+        if (label.text != mode) continue;
+        x = int(label.x) + 8;
+        y = int(label.y) + 6;
+        break;
+    }
+    Check(x >= 0, "requested room mode has a visible label");
+    // Click the displayed mode. The old 30-pixel row assumption clicked Horde
+    // instead of Boss Mode in the lobby's 24-pixel layout.
+    Step(w, x, y, true); Wait(w, 600);
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -108,7 +119,7 @@ int main(int argc, char** argv) {
     Check(w.GameMode() == 4, "item Back button returns to main menu");
     Check(w.Hud().menuScrollHints.empty(), "inventory scroll cue clears when leaving selection");
 
-    Room(w, 1);
+    Room(w, "ORIGINAL");
     Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5, "both players enter item select");
     Step(w, 80, 90, true);
     Check(Sprite(w, firstItem, 365, 114), "P1 equips own slot");
@@ -120,7 +131,7 @@ int main(int argc, char** argv) {
     Check(Sprite(w, 0x5E2), "one End waits for the other player");
     Step(w, 550, 296, true, 1); Wait(w, 180);
     Check(!Sprite(w, 0x5E2), "both End buttons start the game");
-    Room(w, 1, 1);
+    Room(w, "ORIGINAL", 1);
     game::WorldInput simultaneous;
     simultaneous.kind = 1; simultaneous.x = 80; simultaneous.y = 90;
     simultaneous.fired = true; simultaneous.pressed = simultaneous.held = 12;
@@ -188,16 +199,43 @@ int main(int argc, char** argv) {
     Step(w, 310, 458, true); Wait(w, 3);
     Check(w.GameMode() == 4, "ranking Back returns to menu");
 
-    Room(w, 3);
+    Room(w, "BOSS MODE");
+    Check(w.Hud().gameType == 3 && Sprite(w, boss0, 321, 100), "room Boss Mode opens the first boss card");
+    const int level3 = exe.S16(0x0056AED0 + '3' * 2), level4 = exe.S16(0x0056AED0 + '4' * 2);
+    for (uint32_t key : {0x40u, 0x80u, 0x10u, 0x20u, 4u, 8u, 2u}) {
+        Step(w, 639, 0, false, 1, key); Wait(w);
+        Check(Sprite(w, boss0, 321, 100) && Sprite(w, level4, 320, 434),
+              "guest keyboard cannot change boss or difficulty, start, or leave the chooser");
+    }
     Step(w, 480, 194, true, 1); Wait(w);
     Check(Sprite(w, boss0, 321, 100), "guest cannot choose the boss");
+    Step(w, 190, 459, true, 1); Wait(w);
+    Check(Sprite(w, level4, 320, 434), "guest pointer cannot change boss difficulty");
     Step(w, 540, 459, true, 1); Wait(w);
     Check(Sprite(w, 0xB30), "guest cannot start the boss");
+    Step(w, 50, 458, true, 1); Wait(w);
+    Check(!w.NetworkLobby() && Sprite(w, boss0, 321, 100), "guest pointer cannot leave the boss chooser");
     Step(w, 480, 194, true); Wait(w);
     Check(Sprite(w, boss1, 321, 100), "host can choose the boss");
+    Step(w, 639, 0, false, 0, 0x40); Wait(w);
+    Check(Sprite(w, boss0, 321, 100), "host keyboard can choose the previous boss");
+    Step(w, 190, 459, true); Wait(w);
+    Check(Sprite(w, level3, 320, 434), "host pointer changes boss difficulty");
+    Step(w, 639, 0, false, 0, 0x10); Wait(w);
+    Check(Sprite(w, level4, 320, 434), "host keyboard changes boss difficulty");
     Step(w, 50, 458, true); Wait(w, 3);
     Check(w.NetworkLobby(), "Back returns both players to shared lobby");
     Step(w, 639, 20, true); Wait(w);
     Check(w.NetworkLobby(), "blank lobby shot cannot start a game");
+
+    Room(w, "BOSS MODE");
+    Step(w, 540, 459, true); Wait(w, 300);
+    Check(w.NetworkRoom() && !w.NetworkLobby() && w.Hud().gameType == 3 && (w.Hud().flags5900 & 0x18) == 0,
+          "host Start launches the boss fight inside the same room");
+    Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5,
+          "both reserved players enter the boss fight");
+    const int beforeReturn = w.Frame();
+    w.RequestTitle(); Wait(w, 3);
+    Check(w.NetworkLobby() && w.Frame() == beforeReturn + 3, "leaving the boss fight preserves the room and timeline");
     puts("PASS: Original inventory and both players' End buttons; Boss, Challenges, Scene, rankings and host authority");
 }

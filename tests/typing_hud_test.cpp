@@ -84,6 +84,25 @@ void SharedWordPresentation(const char* path) {
     checkGlyph(7050, true, false);
 }
 
+void CampaignHudVisibility(const char* path) {
+    game::World::Impl world;std::string error;
+    Require(world.typingReference.Load(path,&error,false),error.c_str());
+    world.cfg.portTyping=world.typingReferenceActive=true;world.gameMode=6;world.canShoot=1;
+    world.player[0].state=5;world.player[0].lives=3;world.player[1].state=9;
+    const auto life=[&]{return std::any_of(world.hudSprites.begin(),world.hudSprites.end(),[](const auto& s){return s.id==0x462B;});};
+    game::TypingWordHud(world);Require(life(),"life HUD shows during active play");
+    for(uint32_t flags:{0u,8u,16u}) {
+        world.flags5900=flags;world.canShoot=flags?1:0;
+        world.draws.clear();world.hudSprites.clear();game::TypingWordHud(world);
+        Require(!life() && std::none_of(world.draws.begin(),world.draws.end(),[](const auto& draw){
+            return draw.fn==0x004AC720 || draw.fn==0x004AC150;
+        }),"closed controls and cinematic flags hide both Life and Perfect");
+    }
+    world.subState=4;world.canShoot=0;world.draws.clear();world.hudSprites.clear();game::TypingWordHud(world);
+    Require(std::any_of(world.hudSprites.begin(),world.hudSprites.end(),[](const auto& s){return s.id==0x4242;}),
+            "hiding cinematic HUD never hides the Continue prompt");
+}
+
 void SharedFallbackPresentation() {
     game::PortTypingPrompt prompt;
     prompt.serial = 7; prompt.token = 2; prompt.text = "ABC"; prompt.x = 320; prompt.y = 220;
@@ -107,7 +126,7 @@ void ContinuePresentation(const char* path) {
     std::string error;
     Require(world.typingReference.Load(path, &error), error.c_str());
     world.typingReferenceActive = world.cfg.portTyping = true;
-    world.gameMode = 6;
+    world.gameMode = 6; world.canShoot = 1;
     world.subState = 4;
     world.player[0].state = 4;
     world.player[1].state = 9;
@@ -159,7 +178,7 @@ void DrillHudPhases(const char* path) {
     Require(world.typingReference.Load(path, &error), error.c_str());
     world.typingReferenceActive = world.cfg.portTyping = true;
     world.cfg.eventMode = 7; world.cfg.gameType = 2;
-    world.gameMode = 6; world.subState = 2;
+    world.gameMode = 6; world.canShoot = 1; world.subState = 2;
     world.player[0].state = 5; world.player[0].lives = 1;
     world.typingDrillGame.active = true;
     const auto model = [&](int raw) {
@@ -193,6 +212,7 @@ int main(int argc, char** argv) {
     const char* path = argc >= 2 ? argv[1] : std::getenv("HOTD2_TYPING_REFERENCE");
     Require(path && *path, "supply the prepared PC reference bank");
     SharedWordPresentation(path);
+    CampaignHudVisibility(path);
     SharedFallbackPresentation();
     ContinuePresentation(path);
     DrillHudPhases(path);
@@ -272,7 +292,7 @@ int main(int argc, char** argv) {
 
     // Source UI is independent of readiness for a new word, including the life
     // row on continue screens. These are actual prepared model/sprite draws.
-    world.gameMode = 6;
+    world.gameMode = 6; world.canShoot = 1;
     world.typingWasReady = false;
     world.player[0].lives = 3;
     world.frame = world.frameCounter2BAC = 3;
@@ -701,7 +721,7 @@ int main(int argc, char** argv) {
         {0x5898C8,50,0xF4,0x19DA,0xD4}
     };
     game::SetCurrentWorld(&world);
-    world.gameMode = 6;
+    world.gameMode = 6; world.canShoot = 1;
     world.typing.reset();
     game::TypingTarget damageSelection;
     damageSelection.serial = 0xDEADBEEFu; damageSelection.token = 1; damageSelection.forcedWord = &word;

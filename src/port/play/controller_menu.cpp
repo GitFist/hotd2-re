@@ -57,7 +57,12 @@ bool ControllerMenu::Update(const MenuInput& in, input::GamepadGuns& pads, std::
     const auto before = profile;
     if (cursor_ == kSensitivity) profile.sensitivity = std::clamp(profile.sensitivity + 25 * delta, 25, 300);
     else if (cursor_ == kDeadzone) profile.deadzone = std::clamp(profile.deadzone + 2 * delta, 0, 40);
-    else if (cursor_ >= kFire && cursor_ <= kPause) profile.CycleBinding(cursor_ - kFire, delta);
+    else if (cursor_ >= kFire && cursor_ <= kPause) {
+        profile.CycleBinding(cursor_ - kFire, delta);
+        for (int action = 0; action < 3; ++action)
+            if (action != cursor_ - kFire && profile.bindings[action] != before.bindings[action])
+                notice_ = "Shared button swapped; alternate buttons kept.";
+    }
     if (profile.sensitivity != before.sensitivity || profile.deadzone != before.deadzone || profile.bindings != before.bindings)
         sound(game::kOptionSelectSound);
     return false;

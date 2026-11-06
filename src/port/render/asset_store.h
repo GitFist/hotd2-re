@@ -21,6 +21,7 @@
 #include "game/texture.h"
 #include "game/typing_reference.h"
 #include "render/blood_color.h"
+#include "assets/naomi_visuals.h"
 
 namespace port {
 
@@ -66,6 +67,35 @@ public:
 
     bool Open(const std::filesystem::path& gameDir, std::string* error);
     bool LoadTypingReference(const std::string& path, std::string* error);
+    // Standalone data bank. A failed load/toggle never changes the active mode.
+    bool LoadNaomiVisuals(const std::filesystem::path& path, std::string* error = nullptr);
+    bool SetNaomiGraphics(bool enabled, std::string* error = nullptr);
+    // Cheap discovery before first activation; activation performs full validation.
+    bool NaomiAvailable() const { return (naomi_ && naomi_->Available()) || naomiCandidate_; }
+    bool NaomiGraphics() const { return naomiGraphics_; }
+    const std::string& NaomiError() const { return naomiError_; }
+    uint64_t VisualRevision() const { return visualRevision_; }
+    size_t NaomiTextureMappings() const { return naomi_ ? naomi_->TextureMappingCount() : 0; }
+    size_t NaomiModelMappings() const { return naomi_ ? naomi_->ModelMappingCount() : 0; }
+    // Whole native model for rigid draws. ModelById remains the CPU record source;
+    // deforming draws transfer verified native meshes through NaomiMeshById.
+    bool NaomiModelById(uint32_t id, game::Model& out, std::string* polName) const;
+    // Original source identity; evidence14 explicitly groups split PC stage
+    // objects and permits rigid-stage de-duplication of the same source only.
+    bool NaomiModelSourceById(uint32_t id,std::string* nativeBank,uint32_t* nativePart,uint32_t* evidence) const;
+    // A PC merged stage object may submit several original rigid sources.
+    // Ordinals are offline-authored source records, never game model IDs.
+    bool NaomiAdditionalStageModelById(uint32_t id,uint32_t extraOrdinal,game::Model& out,std::string* nativeBank,uint32_t* nativePart,uint32_t* evidence) const;
+    // Original node-specific rigid source; caller must verify the owning actor
+    // role. A reused PC model ID alone is not sufficient correspondence.
+    bool NaomiNodeModelById(uint32_t id,uint32_t node,game::Model& out,std::string* nativeBank) const;
+    // Verified per-mesh source for mixed/grouped banks and appearance transfer.
+    // Evidence12 requires rigid UV/material-only transfer; callers that do not
+    // request evidence never receive this larger source as a mesh replacement.
+    // Evidence16 permits authored UV changes on its proven original skin layout.
+    bool NaomiMeshById(uint32_t id,uint32_t mesh,game::ModelMesh& out,std::string* nativePolName,uint32_t* evidence=nullptr) const;
+    // Original ordered58-frame hit-blood source sequence; render-only, no PC ID.
+    bool NaomiPolygonBloodFrame(uint32_t frame,game::Model& out,std::string* nativePolName) const;
     std::string PolFileName(uint32_t file) const;
     // Inspect the pack used by asset lookups, including HOTD2_ASSET_DIR. This is
     // independent of a menu's saved next-launch selection; call outside the frame loop.
@@ -144,6 +174,7 @@ private:
     using TexKey = std::pair<std::string, uint32_t>;  // texture file name, descriptor index
     std::unique_ptr<RgbaImage> Decode(const TexRef& r);
     const RgbaImage* ResolvedTexture(const TexRef& r);
+    const RgbaImage* NaomiTexture(const std::string& bank,uint32_t index,int logicalWidth=0,int logicalHeight=0);
     std::map<uint32_t, TexRef> redBloodTextures_;
     std::map<std::pair<BloodColor, uint32_t>, std::unique_ptr<RgbaImage>> recoloredBloodTextures_;
     BloodColor bloodColor_ = BloodColor::Green;
@@ -159,6 +190,12 @@ private:
     std::filesystem::path dir_;
     game::ExeImage exe_;
     std::unique_ptr<game::TypingReference> typing_;
+    std::unique_ptr<NaomiVisuals> naomi_;
+    std::filesystem::path naomiPath_;
+    bool naomiCandidate_ = false;
+    std::string naomiError_ = "Naomi visual assets are not installed";
+    bool naomiGraphics_ = false;
+    uint64_t visualRevision_ = 0;
     std::vector<std::array<uint16_t, 16>> banks_;
     std::map<std::string, std::vector<TexRef>> byFile_;  // texture file name -> descriptors in index order
     std::map<std::string, std::vector<uint8_t>> files_;

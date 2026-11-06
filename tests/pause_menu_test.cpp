@@ -74,6 +74,7 @@ play::DisplaySettings WithoutImageChoices(play::DisplaySettings settings) {
 // take effect at the next launch. Exact comparison below catches omitted pages.
 play::DisplaySettings CustomizedGraphics(bool nightShift) {
     play::DisplaySettings d;
+    d.graphics.naomiGraphics = false; // exercise resetting an explicit legacy PC profile
     d.fullscreen = d.exclusiveFullscreen = true;
     d.windowScale = 3;
     d.stretch = true;
@@ -133,7 +134,7 @@ void Focus(play::DisplayMenu& menu, int row) {
     Check(false, "setting has an actual category");
 }
 float PointerY(const play::DisplayMenu& menu, int row) {
-    return play::DisplayMenu::RowY(row, menu.CurrentPage(), menu.ScrollOffset()) * 24 + 22;
+    return menu.RowTop(row) + 12;
 }
 
 void CheckOptionSounds() {
@@ -213,11 +214,10 @@ void CheckGraphicsReset() {
     for (bool theme : {false, true}) {
         DisplayMenu menu;
         menu.SetNightShiftActive(theme);
-        menu.SetPacks({{"Original", "", "", true}, {"Custom", "custom_visual_pack", "", true}}, "custom_visual_pack");
         play::Settings settings;
         settings.display = CustomizedGraphics(theme);
         settings.master = 2; settings.music = 3; settings.guns = 7; settings.sfx = 0; settings.attraction = 4;
-        settings.input = "touch"; settings.assets = "custom_visual_pack"; settings.lobby = "127.0.0.1:27910";
+        settings.input = "touch"; settings.lobby = "127.0.0.1:27910";
         const auto before = settings;
         std::vector<uint32_t> sounds;
         auto input = [&](const PauseMenu::Input& in) { sounds.clear(); return menu.Update(in, settings.display, sounds); };
@@ -251,8 +251,8 @@ void CheckGraphicsReset() {
               "confirmed graphics reset restores all graphics and preserves gameplay cosmetics/menu theme");
         Check(settings.master == before.master && settings.music == before.music && settings.guns == before.guns &&
                   settings.sfx == before.sfx && settings.attraction == before.attraction && settings.input == before.input &&
-                  settings.assets == before.assets && settings.lobby == before.lobby && menu.SelectedPackPath() == before.assets,
-              "graphics reset preserves all audio, input, pack and network preferences");
+                  settings.lobby == before.lobby,
+              "graphics reset preserves all audio, input and network preferences");
         open(); input(Pad(0x40)); input(Pad(8));
         Check(settings.display == expected && menu.TakeGraphicsReset(), "reset at defaults still emits a persistence request");
         open(); menu.Close(); menu.Open();
@@ -269,6 +269,10 @@ int main() {
     Check(v.master == 5 && v.music == 5 && v.guns == 5 && v.sfx == 5 && v.attraction == 5,
           "all five audio levels default to five");
     Check(v.display.bloodColor == port::BloodColor::Red, "blood color still defaults to red");
+    Check(v.display.graphics.naomiGraphics && v.display.EffectiveBloodColor() == port::BloodColor::Red,
+          "new player settings start with Naomi graphics and red blood");
+    Check(!port::GraphicsOptions{}.naomiGraphics && v.display.graphics.naomiGraphics,
+          "raw renderer defaults remain PC while both games use the player Naomi default");
     const bool typingIntro=play::TypingGameplayKeyboard(true,false,2,false);
     Check(typingIntro && play::WorldKeyboardBits(play::kEscapeKey,false,false,typingIntro)==8 &&
           play::WorldKeyboardBits(8,false,false,typingIntro)==4,
@@ -295,6 +299,21 @@ int main() {
         Check(defaults.Save(path) && restored.Load(path) && restored.master == 5 && restored.music == 5 &&
                   restored.guns == 5 && restored.sfx == 5 && restored.attraction == 5,
               "all five audio defaults survive saving and reopening settings");
+    }
+    {  // A retired pack selection cannot return as a hidden player setting.
+        FILE* f = fopen(path.c_str(), "w");
+        fputs("assets=old_2x_pack\nmusic=3\nnaomi_graphics=1\n", f);
+        fclose(f);
+        play::Settings loaded;
+        Check(loaded.Load(path) && loaded.music == 3 && loaded.display.graphics.naomiGraphics,
+              "legacy pack key is ignored while supported settings still load");
+        Check(loaded.Save(path), "legacy settings can be rewritten without the retired pack choice");
+        f = fopen(path.c_str(), "r");
+        bool hasAssets = false;
+        char line[512];
+        while (f && fgets(line, sizeof(line), f)) hasAssets |= std::string(line).rfind("assets=", 0) == 0;
+        if (f) fclose(f);
+        Check(!hasAssets, "saving settings drops the retired assets selection");
     }
     play::Settings a;
     a.master = 8;
@@ -337,7 +356,8 @@ int main() {
     a.display.graphics.meshRefinement = 2;
     a.display.graphics.crtMask = 2;
     a.display.graphics.crtCurvature = 1;
-    a.display.graphics.crtGlow = 3;
+    a.display.graphics.bloom = 3;
+    a.display.graphics.crtGlow = 0;
     a.display.resolutionMode = 3;
     a.display.dynamicResolution = true;
     a.display.gpuBudgetFps = 144;
@@ -350,6 +370,7 @@ int main() {
     a.display.frameGeneration = 2;
     a.display.menuOpacity = 80;
     a.display.showCrosshairs = false;
+    a.display.graphics.spatialUpscaler = 0;
     Check(a.Save(path), "settings saved");
     play::Settings b;
     Check(b.Load(path) && b == a && b.input == "mouse", "settings loaded back (display included)");
@@ -434,6 +455,63 @@ int main() {
         }
     }
     {
+        play::Settings saved, loaded;
+        saved.display.graphics.naomiGraphics = true;
+        saved.display.graphics.perPixelLighting = true;
+        saved.display.graphics.textureFilter = 2;
+        saved.display.bloodColor = port::BloodColor::Purple;
+        saved.display.naomiBloodColor = port::BloodColor::Green;
+        Check(saved.Save(path) && loaded.Load(path) && loaded.display == saved.display,
+              "Naomi mode and separate blood preferences survive settings round trip");
+        saved.display.graphics.naomiGraphics = false;
+        Check(saved.Save(path) && loaded.Load(path) && !loaded.display.graphics.naomiGraphics &&
+                  loaded.display.naomiBloodColor == port::BloodColor::Green,
+              "PC mode keeps the saved Naomi blood color for a later switch");
+        FILE* f = fopen(path.c_str(), "w");
+        fputs("blood=blue\n", f);
+        fclose(f);
+        play::Settings legacy;
+        Check(legacy.Load(path) && legacy.display.graphics.naomiGraphics && legacy.display.bloodColor == port::BloodColor::Blue &&
+                  legacy.display.naomiBloodColor == port::BloodColor::Red,
+              "legacy settings migrate to Naomi with Red while retaining the saved PC blood choice");
+        legacy.display.graphics.naomiGraphics = false;
+        legacy.display.graphics.msaa = 4;
+        legacy.display.graphics.alphaToCoverage = true;
+        legacy.display.renderer = 2;
+        Check(legacy.Load(path) && legacy.display.graphics.naomiGraphics && legacy.display.graphics.msaa == 4 &&
+                  legacy.display.graphics.alphaToCoverage && legacy.display.renderer == 2,
+              "a reused PC object migrates only the missing graphics-mode key without changing rendering preferences");
+        Check(legacy.Save(path), "migrated Naomi profile can be persisted");
+        play::Settings migrated;
+        Check(migrated.Load(path) && migrated.display == legacy.display,
+              "migrated Naomi mode and retained PC preferences survive reopening");
+        f = fopen(path.c_str(), "w");
+        fputs("naomi_graphics=0\nblood=purple\nnaomi_blood=green\n", f);
+        fclose(f);
+        play::Settings explicitPc;
+        Check(explicitPc.Load(path) && !explicitPc.display.graphics.naomiGraphics &&
+                  explicitPc.display.EffectiveBloodColor() == port::BloodColor::Purple && explicitPc.Save(path),
+              "an explicit PC choice overrides the new default and persists");
+        play::Settings reopenedPc;
+        Check(reopenedPc.Load(path) && !reopenedPc.display.graphics.naomiGraphics &&
+                  reopenedPc.display.naomiBloodColor == port::BloodColor::Green,
+              "reopening explicit PC preserves both mode and independent Naomi blood");
+        for (const char* invalid : {"", "invalid", "2", "-1", "1junk"}) {
+            f = fopen(path.c_str(), "w");
+            fprintf(f, "naomi_graphics=%s\nnaomi_blood=invalid\n", invalid);
+            fclose(f);
+            for (bool choice : {false,true}) {
+                loaded.display.graphics.naomiGraphics = choice;
+                loaded.display.naomiBloodColor = port::BloodColor::Green;
+                Check(loaded.Load(path) && loaded.display.graphics.naomiGraphics == choice && loaded.display.naomiBloodColor == port::BloodColor::Green,
+                      "invalid present Naomi mode or blood entries preserve either current preference");
+            }
+        }
+        loaded.display.graphics.naomiGraphics = false;
+        Check(!loaded.Load(path + ".missing") && !loaded.display.graphics.naomiGraphics,
+              "a missing file does not overwrite a current explicit PC preference");
+    }
+    {
         FILE* f = fopen(path.c_str(), "w");
         fputs("menu_opacity=24\nmenu_opacity=101\nmenu_opacity=invalid\n", f);
         fclose(f);
@@ -477,6 +555,17 @@ int main() {
                   legacy.guns == 5 && legacy.sfx == 5 && legacy.attraction == 5,
               "legacy files preserve present values and default every missing audio level to five");
     }
+    {
+        FILE* f = fopen(path.c_str(), "w");
+        fputs("bloom=1\ncrt_glow=3\nspatial_upscaler=1\ntemporal_upscaler=4\n", f); fclose(f);
+        play::Settings migrated;
+        Check(migrated.Load(path) && migrated.display.graphics.bloom == 3 && migrated.display.graphics.crtGlow == 0 &&
+              migrated.display.graphics.spatialUpscaler == 0 && migrated.display.temporalUpscaler == 4,
+              "legacy overlapping glow and upscaling migrate to one effect without losing selected intensity or vendor");
+        Check(migrated.Save(path), "consolidated settings save");
+        play::Settings reopened;
+        Check(reopened.Load(path) && reopened == migrated, "migration is stable across a save and reload");
+    }
     remove(path.c_str());
 
     page.Open();
@@ -489,6 +578,7 @@ int main() {
     fullCaps.maxAnisotropy = 16;
     page.SetGraphicsCapabilities(fullCaps);
     v.display = a.display;
+    v.display.graphics.naomiGraphics = false; // these controls exercise retained PC image choices
     v.display.graphics.spatialUpscaler = 1;
     DisplayMenu::ApplyPreset(v.display, 0);
     const auto unrelatedBeforePresets = WithoutImageChoices(v.display);
@@ -501,7 +591,7 @@ int main() {
     page.Update(Pad(8), v.display, snd);
     Check(v.display.graphics.postAA == 2 && v.display.graphics.sharpening == 1 && v.display.graphics.outputResolutionHud,
           "Enhanced adds SMAA, gentle sharpening and a sharp HUD");
-    Check(WithoutImageChoices(v.display) == unrelatedBeforePresets, "Enhanced preserves lighting, color, CRT, packs and presentation");
+    Check(WithoutImageChoices(v.display) == unrelatedBeforePresets, "Enhanced preserves lighting, color, CRT and presentation");
     page.Update(Pad(8), v.display, snd);
     Check(v.display.graphics.msaa == 1 && v.display.graphics.postAA == 0 && !v.display.graphics.temporalAA &&
               v.display.graphics.anisotropy == 1 && v.display.graphics.sharpening == 0 && !v.display.graphics.outputResolutionHud &&
@@ -518,12 +608,6 @@ int main() {
     Check(!Contains(page.RowHelp(v.display, DisplayMenu::kPreset), "smaa"),
           "limited-renderer preset help does not promise unavailable SMAA");
     page.SetGraphicsCapabilities(fullCaps);
-    page.SetPage(DisplayMenu::kPacks);
-    page.SetPacks({{"Original", "", "", true}, {"Broken", "bad", "Invalid PNG", false}, {"2x", "pack", "", true}}, "");
-    page.Update(Pad(8), v.display, snd);
-    std::string chosen;
-    Check(page.TakePackChange(&chosen) && chosen == "pack", "invalid pack is skipped without trapping the selector");
-    Check(!page.TakePackChange(&chosen), "pack choice consumed once");
     {
         FILE* f = fopen(path.c_str(), "w");
         fputs("msaa=3\nanisotropy=7\npost_aa=99\ngamma=bad\nframe_cap=-1\nlow_latency=bad\n", f);
@@ -564,13 +648,13 @@ int main() {
     Check(onPage(DisplayMenu::kMonitor, DisplayMenu::kDisplay) && onPage(DisplayMenu::kInteger, DisplayMenu::kDisplay) &&
               onPage(DisplayMenu::kMenuStyle, DisplayMenu::kDisplay),
           "window, aspect-dependent scaling and menu style share Display");
-    Check(onPage(DisplayMenu::kRender, DisplayMenu::kResolution) && onPage(DisplayMenu::kUpscaler, DisplayMenu::kResolution) &&
+    Check(onPage(DisplayMenu::kRender, DisplayMenu::kResolution) && onPage(DisplayMenu::kTemporalUpscaler, DisplayMenu::kResolution) &&
               onPage(DisplayMenu::kCrt, DisplayMenu::kRetro) && onPage(DisplayMenu::kCalibration, DisplayMenu::kColor),
           "render size, spatial upscaling, scanlines and calibration each have "
           "one logical home");
-    Check(onPage(DisplayMenu::kRayShadows, DisplayMenu::kLighting) && onPage(DisplayMenu::kMaterialMaps, DisplayMenu::kPacks) &&
+    Check(onPage(DisplayMenu::kRayShadows, DisplayMenu::kLighting) &&
               onPage(DisplayMenu::kBlood, DisplayMenu::kGameplay) && onPage(DisplayMenu::kRenderInterpolation, DisplayMenu::kTemporal),
-          "lighting, pack, color and motion settings are grouped by their effect");
+          "lighting, color and motion settings are grouped by their effect");
     auto adjust = [&](DisplayMenu::Page, int row, bool reverse = false) {
         Focus(page, row);
         page.Update(Point(600, PointerY(page, row), !reverse, reverse), v.display, snd);
@@ -578,6 +662,7 @@ int main() {
     page.SetGraphicsCapabilities({});
     page.SetPage(DisplayMenu::kResolution);
     v = {};
+    v.display.graphics.naomiGraphics = false;
     page.FocusRow(DisplayMenu::kDynamicResolution);
     page.Update(Pad(8), v.display, snd);
     Check(!v.display.dynamicResolution, "unsupported GPU timing cannot enable dynamic resolution");
@@ -609,6 +694,7 @@ int main() {
 
     page.SetGraphicsCapabilities(fullCaps);
     v = {};
+    v.display.graphics.naomiGraphics = false;
     v.display.graphics.hdrPaperWhite = 240;
     adjust(DisplayMenu::kColor, DisplayMenu::kPaperWhite);
     Check(v.display.graphics.hdrPaperWhite == 240 && Contains(page.RowHelp(v.display, DisplayMenu::kPaperWhite), "hdr"),
@@ -626,6 +712,7 @@ int main() {
     Check(!v.display.graphics.allowTearing, "VSync Off enables tearing adjustment");
 
     v = {};
+    v.display.graphics.naomiGraphics = false;
     v.display.temporalQuality = 2;
     adjust(DisplayMenu::kTemporal, DisplayMenu::kTemporalQuality);
     Check(v.display.temporalQuality == 2 && Contains(page.RowHelp(v.display, DisplayMenu::kTemporalQuality), "upscal"),
@@ -655,6 +742,7 @@ int main() {
     }
 
     v = {};
+    v.display.graphics.naomiGraphics = false;
     v.display.frameCap = 144;
     v.display.renderInterpolation = true;
     page.SetFrameGenerationActive(true);
@@ -688,25 +776,7 @@ int main() {
           "60 FPS");
 
     v = {};
-    page.SetActivePackName("Active visual pack");
-    page.SetActivePackFeatures(0, 0);
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMaterialMaps);
-    Check(!v.display.graphics.materialMaps && Contains(page.RowHelp(v.display, DisplayMenu::kMaterialMaps), "pack"),
-          "material maps require matching content in the active pack");
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMeshRefinement);
-    Check(v.display.graphics.meshRefinement == 0 && Contains(page.RowHelp(v.display, DisplayMenu::kMeshRefinement), "pack"),
-          "mesh refinement requires selected models in the active pack");
-    v.display.graphics.materialMaps = true;
-    v.display.graphics.meshRefinement = 2;
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMaterialMaps);
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMeshRefinement);
-    Check(v.display.graphics.materialMaps && v.display.graphics.meshRefinement == 2,
-          "an inactive pack does not silently erase its saved visual preferences");
-    page.SetActivePackFeatures(4, 2);
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMaterialMaps);
-    adjust(DisplayMenu::kPacks, DisplayMenu::kMeshRefinement);
-    Check(!v.display.graphics.materialMaps && v.display.graphics.meshRefinement == 3,
-          "active pack content enables its material and mesh controls");
+    v.display.graphics.naomiGraphics = false;
     auto lightingCaps = fullCaps;
     lightingCaps.shadowMaps = true;
     page.SetGraphicsCapabilities(lightingCaps);
@@ -723,6 +793,7 @@ int main() {
           "raster shadows explain automatic pixel lighting without overwriting its independent preference");
 
     v = {};
+    v.display.graphics.naomiGraphics = false;
     page.SetPage(DisplayMenu::kLighting);
     page.FocusRow(DisplayMenu::kRayShadows);
     const float rayY = PointerY(page, DisplayMenu::kRayShadows);
