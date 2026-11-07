@@ -125,7 +125,7 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.submit(name=b"AMS",run=run,version=2),1)
         self.refill();self.assertEqual(self.submit(name=b"AMS_LONG",run=run,version=2),2)
         for score in range(1,11):
-            self.refill();self.assertEqual(self.submit(table=1,score=score,name=b"LONG_NAME-12",version=2),0)
+            self.refill();self.assertEqual(self.submit(table=1,score=score,name=f"LONG_NAME-{score:02}".encode(),version=2),0)
         self.refill();self.assertEqual(len(self.query(table=1,version=2)),10)
         self.assertEqual(len(self.query(table=1)),10)
 
@@ -180,19 +180,21 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.query(table=13,version=2),[(b"TYPING",1400000,0,5,2)])
         self.refill();self.assertEqual(self.submit(table=0,score=900,name=b"OLD_NAME",run=b"A"*16,version=2),1)
 
-    def test_typing_original_has_separate_score_board_and_two_player_records(self):
+    def test_typing_original_has_separate_board_and_one_best_name_across_player_counts(self):
         for board,score,players in ((13,1700000,2),(13,1900000,1),(0,2000000,1),(1,1800000,1)):
             self.refill();self.assertEqual(self.submit(table=board,score=score,difficulty=5,players=players,name=b"TYPING",version=2),0)
-        self.refill();self.assertEqual([row[1] for row in self.query(table=13,version=2)],[1900000,1700000])
-        self.assertEqual([row[4] for row in self.query(table=13,version=2)],[1,2])
+        self.refill();self.assertEqual([row[1] for row in self.query(table=13,version=2)],[1900000])
+        self.assertEqual([row[4] for row in self.query(table=13,version=2)],[1])
+        self.refill();self.assertEqual(self.submit(table=13,score=2000000,difficulty=5,players=2,name=b"TYPING",version=2),0)
+        self.assertEqual(self.query(table=13,version=2),[(b"TYPING",2000000,0,5,2)])
         self.assertEqual([row[1] for row in self.query(table=0,version=2)],[2000000])
         self.assertEqual([row[1] for row in self.query(table=1,version=2)],[1800000])
         for case in (dict(table=14),dict(table=13,rounds=1),dict(table=13,difficulty=7)):
             self.refill();self.assertEqual(self.submit(version=2,**case),2)
 
     def test_board_build_isolation_and_sort_direction(self):
-        for table,score,rounds in ((0,100,0),(0,200,0),(3,800,0),(3,400,0),(2,1000,2),(2,10,3)):
-            self.refill();self.assertEqual(self.submit(table=table,score=score,rounds=rounds),0)
+        for index,(table,score,rounds) in enumerate(((0,100,0),(0,200,0),(3,800,0),(3,400,0),(2,1000,2),(2,10,3))):
+            self.refill();self.assertEqual(self.submit(table=table,score=score,rounds=rounds,name=f"P{index:02}".encode()),0)
         self.refill();self.assertEqual([r[1] for r in self.query(0)],[200,100])
         self.refill();self.assertEqual([r[1] for r in self.query(3)],[400,800])
         self.refill();self.assertEqual([r[2] for r in self.query(2)],[3,2])
@@ -208,7 +210,8 @@ class RankingServiceTest(unittest.TestCase):
     def test_compatible_releases_share_existing_records_without_rewriting(self):
         # Model a database populated before the fix, including both architectures
         # and separate run IDs from the same display name. Opening/querying must
-        # neither migrate nor deduplicate those independently completed runs.
+        # neither migrate nor delete those independently completed runs, while
+        # only the best result for the name appears on the shared board.
         builds = (2026102200,2026102201,2026102300,2026102301)
         records = [(bytes([index+1])*16,build,0,b"GITFIST",100+index,0,2,1,12345+index)
                    for index,build in enumerate(builds)]
@@ -217,7 +220,7 @@ class RankingServiceTest(unittest.TestCase):
         self.service.close();self.service=rankings.Rankings(self.path)
         for build in (*builds,rankings.LEADERBOARD_COMPATIBILITY_ID):
             self.refill()
-            self.assertEqual([row[1] for row in self.query(build=build,version=2)],[103,102,101,100])
+            self.assertEqual([row[1] for row in self.query(build=build,version=2)],[103])
         self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),records)
         # Legacy retries still match their original build and consume no write
         # token. Reusing their identity for a different build remains a conflict.
@@ -226,7 +229,7 @@ class RankingServiceTest(unittest.TestCase):
         self.assertEqual(self.submit(build=rankings.LEADERBOARD_COMPATIBILITY_ID,name=b"GITFIST",score=100,run=records[0][0],version=2),2)
         self.assertEqual(self.submit(build=rankings.LEADERBOARD_COMPATIBILITY_ID,name=b"NEW",score=200,version=2),0)
         self.refill()
-        self.assertEqual([row[1] for row in self.query(build=builds[0])],[200,103,102,101,100])
+        self.assertEqual([row[1] for row in self.query(build=builds[0])],[200,103])
         # Unknown/explicitly incompatible namespaces and different game modes
         # must not accidentally join the current board.
         self.assertEqual(self.query(build=2,version=2),[])
@@ -238,7 +241,7 @@ class RankingServiceTest(unittest.TestCase):
         for index in range(12):
             build=builds[index%len(builds)]
             for board,score,rounds in ((0,100+index,0),(2,1000-index,index+1),(3,100+index,0)):
-                self.assertEqual(self.service._submit(build,board,b"RUN",score,rounds,2,1,secrets.token_bytes(16)),0)
+                self.assertEqual(self.service._submit(build,board,f"P{index:02}".encode(),score,rounds,2,1,secrets.token_bytes(16)),0)
         self.assertEqual([row[1] for row in self.query(build=builds[0])],list(range(111,101,-1)))
         self.assertEqual([row[2] for row in self.query(table=2,build=builds[1])],list(range(12,2,-1)))
         self.refill()
@@ -268,12 +271,91 @@ class RankingServiceTest(unittest.TestCase):
     def test_top_rows_and_table_capacity(self):
         with patch.object(rankings,"MAX_ROWS_PER_BOARD",3):
             for score in (100,400,300,200):
-                self.refill();self.assertEqual(self.submit(score=score),0)
+                self.refill();self.assertEqual(self.submit(score=score,name=str(score).encode()),0)
             self.refill();self.assertEqual([r[1] for r in self.query()],[400,300,200])
             self.refill();self.assertEqual(self.submit(score=10),4)
         for score in range(11):
-            self.refill();self.submit(table=1,score=score+1)
+            self.refill();self.submit(table=1,score=score+1,name=f"P{score:02}".encode())
         self.refill();self.assertEqual(len(self.query(1)),10)
+
+    def test_best_result_for_each_name_on_all_boards(self):
+        for board in range(rankings.TYPING_BOARD+1):
+            with self.subTest(board=board):
+                if board==2:
+                    attempts=[(100,2),(900,1),(10,3),(20,3),(20,3)]
+                elif 3<=board<=12:
+                    attempts=[(600,0),(900,0),(300,0),(300,0)]
+                else:
+                    attempts=[(100,0),(80,0),(200,0),(200,0)]
+                for index,(score,rounds) in enumerate(attempts):
+                    # The equal final result carries different metadata and
+                    # must not replace the earlier personal best.
+                    difficulty=3 if index==len(attempts)-1 else 2
+                    with patch.object(rankings.time,"time",return_value=100+index):
+                        self.assertEqual(self.service._submit(self.build,board,b"PLAYER",score,rounds,difficulty,1,secrets.token_bytes(16)),0)
+                    best=min(attempts[:index+1]) if 3<=board<=12 else max(attempts[:index+1],key=lambda value:(value[1],value[0]))
+                    self.refill()
+                    self.assertEqual(self.query(table=board,version=2),[(b"PLAYER",*best,2,1)])
+                self.refill()
+                self.assertEqual(self.query(table=board),[(b"PLA",*best,2,1)])
+        self.assertEqual(self.service.db.execute("SELECT COUNT(DISTINCT board) FROM rankings_v1").fetchone()[0],14)
+
+    def test_existing_names_ignore_case_and_outer_spaces_without_rewriting_runs(self):
+        records=[(b"A"*16,self.build,0,b"PLAYER",300,0,2,1,100),
+                 (b"B"*16,self.build,0,b"Player",250,0,4,2,101),
+                 (b"C"*16,self.build,0,b" PLAYER ",200,0,3,1,102),
+                 (b"D"*16,self.build,0,b"Z  ",100,0,2,1,103),
+                 (b"E"*16,self.build,0,b"Z",150,0,2,1,104),
+                 (b"F"*16,self.build,0,b"PLAY ER",90,0,2,1,105)]
+        with self.service.db:
+            self.service.db.executemany("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",records)
+        self.service.close();self.service=rankings.Rankings(self.path)
+        self.assertEqual(self.query(version=2),[(b"PLAYER",300,0,2,1),(b"Z",150,0,2,1),(b"PLAY ER",90,0,2,1)])
+        self.assertEqual(self.service.db.execute("SELECT * FROM rankings_v1 ORDER BY run").fetchall(),records)
+        self.assertEqual(self.submit(name=b" PLAYER ",score=200,difficulty=3,run=b"C"*16,version=2),1)
+
+    def test_equal_results_keep_first_submission_even_in_same_second(self):
+        for board in range(rankings.TYPING_BOARD+1):
+            rounds=1 if board==2 else 0
+            with patch.object(rankings.time,"time",return_value=100):
+                # Offline batches can arrive in one second. A lower random run
+                # ID must not let an equal result replace the existing entry.
+                for suffix,difficulty in ((b"Z",2),(b"A",3)):
+                    run=bytes([board+1])*15+suffix
+                    self.assertEqual(self.service._submit(self.build,board,b"PLAYER",100,rounds,difficulty,1,run),0)
+            self.assertEqual(self.service._query(self.build,board),[(b"PLAYER",100,rounds,2,1)])
+
+    def test_filtered_display_names_share_one_place_but_full_names_stay_distinct(self):
+        for name,score in ((b"N1GGER",100),(b"FUNNY",200),(b"LONG_NAME-1",300),(b"LONG_NAME-2",400)):
+            self.refill();self.assertEqual(self.submit(name=name,score=score,version=2),0)
+        self.assertEqual([row[:2] for row in self.query(version=2)],[(b"LONG_NAME-2",400),(b"LONG_NAME-1",300),(b"FUNNY",200)])
+        self.refill()
+        self.assertEqual([row[:2] for row in self.query()],[(b"LON",400),(b"LON",300),(b"FUN",200)])
+        self.assertEqual(self.service.db.execute("SELECT COUNT(*) FROM rankings_v1").fetchone()[0],4)
+
+    def test_duplicate_names_do_not_consume_top_ten_places_across_releases(self):
+        for board in (0,2,3,13):
+            for index in range(12):
+                build=rankings.COMPATIBLE_BUILDS[index%len(rankings.COMPATIBLE_BUILDS)]
+                name=f"PLAYER{index:02}".encode()
+                self.assertEqual(self.service._submit(build,board,name,100+index,index+1 if board==2 else 0,2,1,secrets.token_bytes(16)),0)
+            for index in range(12):
+                build=rankings.COMPATIBLE_BUILDS[index%len(rankings.COMPATIBLE_BUILDS)]
+                name=b"PLAYER00" if board==3 else b"PLAYER11"
+                self.assertEqual(self.service._submit(build,board,name,1 if board==3 else 999,99 if board==2 else 0,2,1,secrets.token_bytes(16)),0)
+            self.refill()
+            expected=range(10) if board==3 else range(11,1,-1)
+            self.assertEqual([row[0] for row in self.query(table=board,build=1,version=2)],[f"PLAYER{index:02}".encode() for index in expected])
+
+    def test_repeated_runs_cannot_evict_other_names_at_capacity(self):
+        with patch.object(rankings,"MAX_ROWS_PER_BOARD",3):
+            for name,score in ((b"AAA",900),(b"AAA",800),(b"AAA",700),(b"BBB",100),(b"CCC",50)):
+                self.refill();self.assertEqual(self.submit(name=name,score=score),0)
+            self.refill();self.assertEqual(self.query(),[(b"AAA",900,0,2,1),(b"BBB",100,0,2,1),(b"CCC",50,0,2,1)])
+            self.refill();self.assertEqual(self.submit(name=b"AAA",score=850),4)
+            self.refill();self.assertEqual(self.submit(name=b"AAA",score=950),0)
+            self.refill();self.assertEqual([row[:2] for row in self.query()],[(b"AAA",950),(b"BBB",100),(b"CCC",50)])
+            self.assertEqual(self.service.db.execute("SELECT COUNT(*) FROM rankings_v1").fetchone()[0],3)
 
     def test_opt_in_and_rate_caps(self):
         disabled = rankings.Rankings()

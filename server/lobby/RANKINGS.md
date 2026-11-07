@@ -4,13 +4,20 @@ Shared results are **client-reported and unverified**. Online display names cont
 characters and are not unique accounts. Original local records still use three-character
 initials. The server does not verify gameplay, ownership of names,
 cheat-free runs or accuracy of client metadata. Do not label these trusted or competitive
-anti-cheat rankings. The client never uploads save history automatically; publishing a
-qualifying new result is an explicit player action.
+anti-cheat rankings. Eligible new runs submit automatically under the chosen username,
+with offline submissions queued for retry; historical save records are not uploaded.
 
 The feature is independent of deterministic lockstep and uses a separate client socket.
 It shares the existing UDP port with the lobby under the distinct `H2RK` magic. Reading
 rankings neither creates a room nor uploads a result. No room/rejoin token, save file,
-device identifier, username or source IP is stored in the ranking database.
+device identifier or source IP is stored in the ranking database.
+
+Each online board shows only the best result per full displayed username, ignoring
+capitalization and surrounding spaces. Higher scores win, boss boards use the fastest
+time, and Horde uses completed rounds followed by score. Equal results keep the earlier
+entry. Existing duplicate names collapse automatically when queried, before the top-ten
+limit; stored runs remain available for exact retries within the normal storage limit.
+Two people using the same username share one entry. No account or player ID is required.
 
 ## Enable locally
 
@@ -21,7 +28,8 @@ python lobby_server.py --bind 127.0.0.1 --port 27020 --rankings-db records.sqlit
 Without `--rankings-db` or `RANKINGS_DB`, the ranking service reports disabled. Room/relay
 behavior is unchanged. A configured database is SQLite with transactional writes, WAL and
 FULL synchronous durability. Board storage is bounded to 1000 results per board/build and
-32 build values; operators can archive/reset a season by choosing a new database. On startup,
+32 build values. At capacity, each name's best result takes priority over its repeated
+runs; operators can archive/reset a season by choosing a new database. On startup,
 the server transactionally widens an existing three-byte `name` constraint to 1–12 bytes,
 preserving the `rankings_v1` table name, run IDs, scores, metadata and timestamps. The table
 rename, copy and index restoration commit together; failure leaves the old table intact.
@@ -33,8 +41,9 @@ Change it only when scoring or run eligibility becomes incompatible. The server 
 that ID together with the compatible October 22 E and October 23 A legacy IDs
 (`2026102200`, `2026102201`, `2026102300`, `2026102301`). Existing scores become visible
 to both those released clients and new clients without changing stored rows, run IDs or
-retry behavior. Results are sorted together before taking the top ten. Other IDs remain
-isolated, including future multiplayer IDs that have not been explicitly admitted.
+retry behavior. Results are sorted and grouped by username together before taking the
+top ten. Other IDs remain isolated, including future multiplayer IDs that have not been
+explicitly admitted.
 Per-source-build retention limits stay unchanged so joining the boards does not delete
 older scores. Deploy the updated service against its existing database before shipping
 clients using the stable ID; a client-only update cannot restore the old boards.
@@ -60,7 +69,7 @@ remote service. The standard room-list health check remains valid.
 | 2 | Horde | Completed rounds descending, then score descending | Difficulty (0..4) |
 | 3..12 | Judgment, Hierophant A/B, Tower A/B, Strength A/B, Magician, Emperor, Boss Rush | Time ascending, in fixed 60-Hz frames | Difficulty (0..4) |
 
-Ties use submission time then run ID for a stable order. Arcade/Horde support one or two
+Ties use submission time then insertion order for a stable order. Arcade/Horde support one or two
 players as metadata; original boss records are one-player only. These are mixed metadata
 tables, following the original presentation; a later explicit design can add separate
 difficulty/player filters. Score must be positive and fit within 2,000,000,000. Boss times

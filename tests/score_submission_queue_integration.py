@@ -18,7 +18,7 @@ if len(sys.argv) != 2:
 with tempfile.TemporaryDirectory(prefix="hotd2-score-sync-") as tmp:
     ready, stop, drop_ack = threading.Event(), threading.Event(), threading.Event()
     drop_ack.set()
-    ports, errors, observed, rows = [], [], {}, []
+    ports, errors, observed, rows, best_rows = [], [], {}, [], []
 
     def serve():
         service = None
@@ -58,6 +58,7 @@ with tempfile.TemporaryDirectory(prefix="hotd2-score-sync-") as tmp:
                     if response is not None:
                         sock.sendto(response, address)
                 rows.extend(service.db.execute("SELECT name,score,run FROM rankings_v1").fetchall())
+                best_rows.extend(service._query(rankings.LEADERBOARD_COMPATIBILITY_ID,0))
         except BaseException as error:
             errors.append(error)
             ready.set()
@@ -84,9 +85,10 @@ with tempfile.TemporaryDirectory(prefix="hotd2-score-sync-") as tmp:
         thread.join(3)
     if errors:
         raise errors[0]
-    assert sorted((name, score) for name, score, run in rows) == [(b"BUSY", 333), (b"LOST_ACK", 111), (b"RENAMED", 222)], rows
+    assert sorted((name, score) for name, score, run in rows) == [(b"BUSY", 333), (b"LOST_ACK", 111), (b"RENAMED", 123), (b"RENAMED", 222), (b"RENAMED", 444)], rows
+    assert [(row[0],row[1]) for row in best_rows] == [(b"RENAMED",444),(b"BUSY",333),(b"LOST_ACK",111)], best_rows
     assert len(observed[b"LOST_ACK"]) >= 2 and len(set(observed[b"LOST_ACK"])) == 1, observed
     assert len(observed[b"BUSY"]) >= 2 and len(set(observed[b"BUSY"])) == 1, observed
     assert len(observed[b"REJECTED"]) == len(observed[b"CUTOFF"]) == 1, observed
-    assert len({run for name, score, run in rows}) == 3, rows
-    print("PASS queue integration: lost acknowledgement + process restart dedup, immutable rename, transient retry, durable terminal records")
+    assert len({run for name, score, run in rows}) == 5, rows
+    print("PASS queue integration: lost acknowledgement + process restart dedup, one best result per name, immutable rename, transient retry, durable terminal records")

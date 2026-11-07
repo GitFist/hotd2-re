@@ -50,6 +50,12 @@ def leaderboard_display_name(name):
     return _DISPLAY_NAME_WORDS.sub(b"FUNNY", name)
 
 
+def leaderboard_name_key(name):
+    # Use the full displayed name, before legacy three-character abbreviation.
+    # Ignore case and surrounding spaces (including old space-padded initials).
+    return leaderboard_display_name(name).strip().upper()
+
+
 class Rankings:
     def __init__(self, database=None):
         self.secret = secrets.token_bytes(32)
@@ -111,14 +117,41 @@ class Rankings:
 
     @staticmethod
     def _order(board):
-        return "rounds DESC,score DESC,created,run" if board==2 else "score ASC,created,run" if 3<=board<=12 else "score DESC,created,run"
+        # Offline batches may share a timestamp. Insertion order keeps an equal
+        # new result from replacing the old one because of its random run ID.
+        rank = "rounds DESC,score DESC" if board==2 else "score ASC" if 3<=board<=12 else "score DESC"
+        return rank+",created,rowid"
 
     def _query(self, build, board):
         if not self.db:
             return []
         builds = COMPATIBLE_BUILDS if build in COMPATIBLE_BUILDS else (build,)
         placeholders = ",".join("?" for _ in builds)
-        return self.db.execute("SELECT name,score,rounds,difficulty,players FROM rankings_v1 WHERE build IN (" + placeholders + ") AND board=? ORDER BY " + self._order(board) + " LIMIT 10",(*builds,board)).fetchall()
+        rows = self.db.execute("SELECT name,score,rounds,difficulty,players FROM rankings_v1 WHERE build IN (" + placeholders + ") AND board=? ORDER BY " + self._order(board),(*builds,board))
+        # Select each name's best result across compatible releases before the
+        # top-ten limit. Keep stored runs intact for lost-ack/offline retries.
+        best, seen = [], set()
+        for row in rows:
+            key = leaderboard_name_key(row[0])
+            if key not in seen:
+                seen.add(key)
+                best.append(row)
+                if len(best)==10:
+                    break
+        return best
+
+    def _prune(self, build, board):
+        rows = self.db.execute("SELECT run,name FROM rankings_v1 WHERE build=? AND board=? ORDER BY " + self._order(board),(build,board)).fetchall()
+        if len(rows)<=MAX_ROWS_PER_BOARD:
+            return
+        # Repeated runs must not evict another name's best result just because
+        # one player fills the storage limit. Spare capacity retains retry IDs.
+        best, repeated, seen = [], [], set()
+        for run, name in rows:
+            key = leaderboard_name_key(name)
+            (repeated if key in seen else best).append(run)
+            seen.add(key)
+        self.db.executemany("DELETE FROM rankings_v1 WHERE run=?",((run,) for run in (best+repeated)[MAX_ROWS_PER_BOARD:]))
 
     def _submit(self, build, board, name, score, rounds, difficulty, players, run):
         if not self.db:
@@ -139,7 +172,7 @@ class Rankings:
                 if builds>=MAX_BUILDS and not self.db.execute("SELECT 1 FROM rankings_v1 WHERE build=? LIMIT 1",(build,)).fetchone():
                     return 5
                 self.db.execute("INSERT INTO rankings_v1 VALUES (?,?,?,?,?,?,?,?,?)",(run,*values,int(time.time())))
-                self.db.execute("DELETE FROM rankings_v1 WHERE build=? AND board=? AND run NOT IN (SELECT run FROM rankings_v1 WHERE build=? AND board=? ORDER BY " + self._order(board) + " LIMIT ?)",(build,board,build,board,MAX_ROWS_PER_BOARD))
+                self._prune(build,board)
                 retained = self.db.execute("SELECT 1 FROM rankings_v1 WHERE run=?",(run,)).fetchone()
                 return 0 if retained else 4
         except sqlite3.Error:

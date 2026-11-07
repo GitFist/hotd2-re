@@ -88,6 +88,7 @@ void NetworkTests(int port,const std::filesystem::path& dir,const std::string& p
         else if(phase=="resume") {
             Require(queue.PendingCount()==1,"lost-ack run did not persist across process restart");
             Require(queue.Enqueue(Entry("RENAMED",222)),"renamed new run not queued");
+            Require(queue.Enqueue(Entry("RENAMED",444))&&queue.Enqueue(Entry("RENAMED",123)),"repeated-name completions not queued");
         } else {
             Require(queue.Enqueue(Entry("REJECTED"))&&queue.Enqueue(Entry("CUTOFF"))&&queue.Enqueue(Entry("BUSY",333)),"terminal/busy fixtures not queued");
         }
@@ -101,7 +102,7 @@ void NetworkTests(int port,const std::filesystem::path& dir,const std::string& p
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         if(phase=="lost")Require(queue.PendingCount()==1&&queue.Status().find("WILL SYNC")!=std::string::npos,"lost acknowledgement discarded the queued run");
-        else if(phase=="resume")Require(queue.PendingCount()==0&&queue.Status()=="SCORE SUBMITTED","restart retry did not complete both runs");
+        else if(phase=="resume")Require(queue.PendingCount()==0&&queue.RejectedCount()==0&&queue.Status()=="SCORE SUBMITTED","restart retry did not acknowledge all runs, including lower scores for the same name");
         else Require(queue.PendingCount()==0&&queue.RejectedCount()==2,"terminal responses retried forever or transient response was discarded");
     }
     if(phase=="terminal") {

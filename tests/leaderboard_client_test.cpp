@@ -58,26 +58,26 @@ int main(int argc,char** argv) {
     Require(client.Submit(entry,&error),"same completion retry rejected");Complete(client);Require(client.LastSubmitAccepted(),"same completion did not retain run identity");
     client.Query(7);Complete(client);Require(client.Entries().size()==1,"retry after acceptance uploaded a second copy");
     entry.completionToken=2;Require(client.Submit(entry,&error),"different equal-valued run rejected");Complete(client);Require(client.LastSubmitAccepted(),"new equal-valued completion was not accepted");
-    client.Query(7);Complete(client);Require(client.Entries().size()==2,"independent equal-valued run was deduplicated as an old run");
+    client.Query(7);Complete(client);Require(client.Entries().size()==1,"equal-valued run occupied a second place for the same name");
     entry.name="NEW";Require(!client.Submit(entry,&error)&&error.find("TST")!=std::string::npos,"sent candidate name was changed without explaining the frozen payload");entry.name="TST";
     entry.completionToken=1;Require(!client.Submit(entry,&error),"older completed run was uploaded again");entry.completionToken=2;
     Require(client.Submit(entry,&error),"latest completion retry rejected");Complete(client);Require(client.LastSubmitAccepted(),"latest completion retry failed");
-    client.Query(7);Complete(client);Require(client.Entries().size()==2,"repeated new run retry created a duplicate");
+    client.Query(7);Complete(client);Require(client.Entries().size()==1,"repeated new run retry created a duplicate");
     entry.completionToken=3;entry.name="LONG_NAME-12";entry.score=12346;
     Require(entry.name.size()==port::net::kLeaderboardMaxNameLength,"test must exercise all twelve name bytes");
     Require(client.Submit(entry,&error),"twelve-character name was rejected");Complete(client);Require(client.LastSubmitAccepted(),"long name submission failed");
     client.Query(7);Complete(client);
     auto longResult=std::find_if(client.Entries().begin(),client.Entries().end(),[&](const auto& row){return row.name==entry.name;});
-    Require(client.Error().empty()&&client.Entries().size()==3&&longResult!=client.Entries().end()&&longResult->score==entry.score,
+    Require(client.Error().empty()&&client.Entries().size()==2&&longResult!=client.Entries().end()&&longResult->score==entry.score,
             "exact twelve-character name did not round-trip beside legacy three-character names");
     Require(client.Submit(entry,&error),"long-name completion retry rejected");Complete(client);Require(client.LastSubmitAccepted(),"long-name retry failed");
-    client.Query(7);Complete(client);Require(client.Entries().size()==3,"long-name retry created a duplicate");
+    client.Query(7);Complete(client);Require(client.Entries().size()==2,"long-name retry created a duplicate");
     const std::string frozen=entry.name;entry.name="OTHER_NAME";
     Require(!client.Submit(entry,&error)&&error.find(frozen)!=std::string::npos,"retry did not preserve the full original name");
     entry.name="Z";entry.completionToken=4;entry.score=12347;
     Require(client.Submit(entry,&error),"one-character name was rejected");Complete(client);Require(client.LastSubmitAccepted(),"short-name submission failed");
     client.Query(7);Complete(client);
-    Require(client.Entries().size()==4&&std::any_of(client.Entries().begin(),client.Entries().end(),[](const auto& row){return row.name=="Z";}),
+    Require(client.Entries().size()==3&&std::any_of(client.Entries().begin(),client.Entries().end(),[](const auto& row){return row.name=="Z";}),
             "null-padded short name did not round-trip without padding");
     entry.completionToken=5;
     for(const auto& invalid:std::vector<std::string>{"",std::string(13,'A')," ",std::string(12,' '),"lowercase","BAD/NAME",std::string("A\0B",3),std::string(1,char(0xFF))}) {
@@ -98,6 +98,15 @@ int main(int argc,char** argv) {
     Require(client.Error().empty()&&client.Entries().size()==1&&client.Entries()[0].score==1500000&&
             client.Entries()[0].players==2&&client.Entries()[0].difficulty==5,"typing score/stage/player metadata did not round-trip");
     client.Query(1);Complete(client);Require(client.Error().empty()&&client.Entries().empty(),"typing score leaked onto shooting Original board");
+    entry.table=7;entry.players=1;entry.difficulty=2;entry.score=12000;entry.completionToken=7;
+    Require(client.Submit(entry,&error),"improved boss time was rejected");Complete(client);Require(client.LastSubmitAccepted(),"improved time was not stored");
+    client.Query(7);Complete(client);
+    Require(client.Error().empty()&&client.Entries().size()==3&&client.Entries()[0].name=="TST"&&client.Entries()[0].score==12000,
+            "improved time did not replace the name's existing place");
+    entry.score=14000;entry.completionToken=8;
+    Require(client.Submit(entry,&error),"slower completion was rejected");Complete(client);Require(client.LastSubmitAccepted(),"slower run did not receive a terminal acknowledgement");
+    client.Query(7);Complete(client);
+    Require(client.Error().empty()&&client.Entries().size()==3&&client.Entries()[0].score==12000,"slower time replaced the best result or added a second place");
     client.Query(99);Require(client.Ready() && !client.Error().empty(),"invalid table was not rejected immediately");
-    std::puts("PASS local UDP v2: 1/3/12-character names, frozen retry payloads, no duplicate runs, invalid-name rejection, maximum response and malformed packet validation");
+    std::puts("PASS local UDP v2: 1/3/12-character names, frozen retry payloads, one best result per name, invalid-name rejection, maximum response and malformed packet validation");
 }
