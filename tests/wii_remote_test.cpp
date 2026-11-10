@@ -61,7 +61,7 @@ static void MenuAudio() {
     play::MenuInput down; down.pressed = 0x20;
     menu.Update({}, source, &sounds);
     menu.Update(down, source, &sounds);
-    play::MenuInput hover; hover.pointer = true; hover.px = 60; hover.py = play::WiiMenu::RowY(3) + 20;
+    play::MenuInput hover; hover.pointer = true; hover.px = 60; hover.py = play::WiiMenu::RowY(2) + 20;
     menu.Update(hover, source, &sounds);
     quiet("Wii idle, keyboard movement and pointer hover are silent");
     play::MenuInput left; left.pressed = 0x40;
@@ -69,7 +69,7 @@ static void MenuAudio() {
     quiet("left on a Wii action row does not select it");
     click(0); cue(game::kOptionSelectSound, "toggling Wii support emits exactly sound preview 74");
     click(0); cue(game::kOptionSelectSound, "restoring Wii support emits select once");
-    click(3); cue(game::kOptionSelectSound, "opening Wii player setup emits select once");
+    click(4); cue(game::kOptionSelectSound, "opening Wii player setup emits select once");
     click(1); cue(game::kOptionSelectSound, "changing a Wii binding emits select once");
     menu.Update(left, source, &sounds); cue(game::kOptionSelectSound, "left changes a Wii binding with select once");
     click(5); cue(game::kOptionSelectSound, "changing Wii aim smoothing emits select once");
@@ -87,7 +87,7 @@ static void MenuAudio() {
     remote.connected = false; source.Update(); menu.Update({}, source, &sounds);
     quiet("automatic Wii disconnect during calibration emits no menu sound");
     click(8); cue(game::kOptionBackSound, "Wii player Back row emits back once");
-    click(6); cue(game::kOptionBackSound, "Wii overview Back row emits back once");
+    click(7); cue(game::kOptionBackSound, "Wii overview Back row emits back once");
     menu.Update(esc, source, &sounds); quiet("closed Wii page is silent");
     menu.Open();
     play::MenuInput reload; reload.reload = true;
@@ -115,7 +115,7 @@ static void ModernMenuPresentation() {
     menu.ModernHud(source, hud);
     Check(hud.nightShiftPage == 10 && hud.nightShiftRow == 0 && HudText(hud, "WII REMOTES") && !HudText(hud, "sentinel"),
           "modern overview replaces prior HUD content");
-    Check(HudText(hud, "Wii Remote support") && HudText(hud, "ON") && HudText(hud, "Automatic reconnect") && HudText(hud, "OFF"),
+    Check(HudText(hud, "Wii Remote support") && HudText(hud, "ON") && HudText(hud, "USB Bluetooth passthrough") && HudText(hud, "OFF") && HudText(hud, "Automatic reconnect"),
           "overview shows actual support and reconnect values");
     Check(HudText(hud, "72 percent") && HudText(hud, "Aim detected") && HudText(hud, "Disconnected - waiting"),
           "overview includes per-player battery, tracking and reserved-slot status");
@@ -123,7 +123,7 @@ static void ModernMenuPresentation() {
           "scan and pairing guidance remain visible");
     Check(HudText(hud, "ESC") && HudText(hud, "Back"), "overview retains keyboard and pointer Back controls");
     Check(HudTarget(hud, 192, 192), "overview draws the connected remote's calibrated aim preview");
-    for (int row = 0; row < 7; ++row) {
+    for (int row = 0; row < 8; ++row) {
         play::MenuInput point;
         point.pointer = true;
         point.px = 40;
@@ -139,7 +139,7 @@ static void ModernMenuPresentation() {
               "modern selection band matches the unchanged pointer hit rectangle");
     }
     menu.Open();
-    for (int i = 0; i < 3; ++i) MenuKey(menu, source, 0x20);
+    for (int i = 0; i < 4; ++i) MenuKey(menu, source, 0x20);
     MenuKey(menu, source, 8);
     menu.ModernHud(source, hud);
     Check(menu.SelectedPlayer() == 0 && HudText(hud, "PLAYER 1") && HudText(hud, "Calibrate aim") && HudText(hud, "DEFAULT"),
@@ -223,7 +223,7 @@ static void ModernMenuPresentation() {
     Check(HudText(hud, "No Bluetooth adapter was found") && HudText(hud, "P1 / Disconnected - waiting"),
           "connection errors remain readable on the overview");
     menu.Open();
-    for (int i = 0; i < 4; ++i) MenuKey(menu, source, 0x20);
+    for (int i = 0; i < 5; ++i) MenuKey(menu, source, 0x20);
     MenuKey(menu, source, 8);
     MenuKey(menu, source, 8);
     menu.ModernHud(source, hud);
@@ -279,12 +279,12 @@ int main(){
     source.settings.player[0].calibration=c;source.SwapPlayers();source.Update();Check(source.Status().player[1].connected && source.settings.player[1].calibration.h==c.h,"player swap moves calibration with remote");
     source.SwapPlayers();source.Update();
     play::WiiMenu menu;
-    for(int row=0;row<7;++row)for(int ink:{10,18,25}) {
+    for(int row=0;row<8;++row)for(int ink:{10,18,25}) {
         menu.Open();play::MenuInput pointer;pointer.pointer=true;pointer.px=40;pointer.py=play::WiiMenu::RowY(row)+float(ink);
         menu.Update(pointer,source);Check(menu.Cursor()==row,"pointer tracks visible setup text");
     }
     menu.Open();
-    for(int i=0;i<3;++i)MenuKey(menu,source,0x20);MenuKey(menu,source,8);
+    for(int i=0;i<4;++i)MenuKey(menu,source,0x20);MenuKey(menu,source,8);
     Check(menu.SelectedPlayer()==0,"player setup can be opened with keyboard or D-pad");
     MenuKey(menu,source,8);Check(menu.CalibrationStep()==0,"calibration starts");
     for(int i=0;i<4;++i){
@@ -300,10 +300,10 @@ int main(){
     menu.Update(escape,source);Check(!menu.IsOpen(),"Escape closes setup");
     // Only user preferences are persisted, never Bluetooth addresses, HID paths or button history.
     auto file=std::filesystem::temp_directory_path()/"hotd2-wii-settings-test.ini";
-    source.settings.continuous=true;Check(source.settings.Save(file.string()),"settings save");
-    Settings restored;Check(restored.Load(file.string()) && restored.enabled && restored.continuous && restored.player[0].calibration.calibrated,"settings round trip");
-    {std::ofstream f(file);f<<"p1.buttons=4 4 4 4\np1.calibration=nan 0 0 0 1 0 0 0 1\np2.smoothing=100\n";}
-    Check(restored.Load(file.string()) && restored.player[0].buttons==Profile{}.buttons && !restored.player[0].calibration.calibrated && restored.player[1].smoothing==2,"invalid settings fail to safe defaults");
+    source.settings.continuous=true;source.settings.usbPassthrough=true;source.settings.usbVid=0x0A12;source.settings.usbPid=0x0001;Check(source.settings.Save(file.string()),"settings save");
+    Settings restored;Check(restored.Load(file.string()) && restored.enabled && restored.continuous && restored.usbPassthrough && restored.usbVid==0x0A12 && restored.usbPid==0x0001 && restored.player[0].calibration.calibrated,"settings round trip including selected Bluetooth adapter");
+    {std::ofstream f(file);f<<"usb_vid=0x1234\np1.buttons=4 4 4 4\np1.calibration=nan 0 0 0 1 0 0 0 1\np2.smoothing=100\n";}
+    Check(restored.Load(file.string()) && restored.player[0].buttons==Profile{}.buttons && !restored.player[0].calibration.calibrated && restored.player[1].smoothing==2 && restored.usbVid==-1 && restored.usbPid==-1,"invalid settings fail safe, including incomplete USB adapter selection");
     std::filesystem::remove(file);
     puts("PASS native Wii Remote reports, calibration, controls, reconnect slots, menus and settings");
 }
