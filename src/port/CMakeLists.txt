@@ -33,7 +33,7 @@ if(WIN32)
     set(WII_BT_BUILD_DIAGNOSTIC OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(wii_bt_host
       GIT_REPOSITORY https://github.com/zedhqx4/WIimoteDLL_Libusbk.git
-      GIT_TAG 2a8b12f145e4e5111e2df05046f97f8b275a6fa6
+      GIT_TAG ff695ddb8caddce7f4069b4d1f488a033a5f0ad6
       GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(wii_bt_host)
     if(NOT TARGET wii_bt_passthrough)
