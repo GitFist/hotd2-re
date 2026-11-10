@@ -1591,6 +1591,12 @@ int main(int argc, char** argv) {
     if (!headless) {
         wii.settings.Load(wiiSettingsPath);
         wii.Configure();
+        // If Wii Remote support was enabled in the saved profile, begin the
+        // initial inquiry on startup instead of waiting for the user to open
+        // the menu and select Connect remotes. The physical remote still
+        // enters discoverable mode only when its SYNC / 1+2 buttons are pressed.
+        if (wii.settings.enabled)
+            wii.Connect();
     }
     input::FocusedGuns focusedGuns(wii);
     input::GunSource* guns = headless ? nullptr : &focusedGuns;

@@ -28,6 +28,9 @@ bool Settings::Load(const std::string& file) {
         int number=0;
         if(key=="enabled" && v>>number)loaded.enabled=number==1;
         else if(key=="continuous" && v>>number)loaded.continuous=number==1;
+        else if(key=="usb_passthrough" && v>>number)loaded.usbPassthrough=number==1;
+        else if(key=="usb_vid" && (v>>std::setbase(0)>>number) && (number==-1 || (number>0 && number<=0xffff)))loaded.usbVid=number;
+        else if(key=="usb_pid" && (v>>std::setbase(0)>>number) && (number==-1 || (number>0 && number<=0xffff)))loaded.usbPid=number;
         for(int p=0;p<2;++p) {
             auto prefix="p"+std::to_string(p+1)+".";auto& profile=loaded.player[p];
             if(key==prefix+"smoothing" && v>>number)profile.smoothing=std::clamp(number,0,2);
@@ -45,11 +48,14 @@ bool Settings::Load(const std::string& file) {
             }
         }
     }
+    // VID and PID are a pair. A partial/invalid selection safely returns to Automatic.
+    if ((loaded.usbVid == -1) != (loaded.usbPid == -1)) loaded.usbVid=loaded.usbPid=-1;
     *this=loaded;return true;
 }
 bool Settings::Save(const std::string& file) const {
     std::ofstream f(file,std::ios::trunc);if(!f)return false;
-    f<<"enabled="<<enabled<<"\ncontinuous="<<continuous<<'\n'<<std::setprecision(12);
+    f<<"enabled="<<enabled<<"\ncontinuous="<<continuous<<"\nusb_passthrough="<<usbPassthrough
+     <<"\nusb_vid="<<usbVid<<"\nusb_pid="<<usbPid<<'\n'<<std::setprecision(12);
     for(int p=0;p<2;++p) {
         auto prefix="p"+std::to_string(p+1)+".";auto& profile=player[p];
         f<<prefix<<"smoothing="<<profile.smoothing<<'\n'<<prefix<<"buttons=";
@@ -98,13 +104,26 @@ std::unique_ptr<Backend> CreateBackend(){return std::make_unique<Unavailable>();
 #endif
 } // namespace input::wii
 
+#ifndef HOTD2_WII_USB_DLL_BUILD
 namespace input {
 WiiRemotes::WiiRemotes(GunSource* f,std::unique_ptr<wii::Backend> b):fallback_(f),backend_(std::move(b)){}
-void WiiRemotes::Configure(){backend_->Enable(settings.enabled,settings.continuous);}
+void WiiRemotes::Configure(){
+    if(backendPassthrough_!=settings.usbPassthrough ||
+       (settings.usbPassthrough && (backendUsbVid_!=settings.usbVid || backendUsbPid_!=settings.usbPid))){
+        if(backend_)backend_->Enable(false,false);
+        backend_=settings.usbPassthrough?wii::CreatePassthroughBackend(settings.usbVid,settings.usbPid):wii::CreateBackend();
+        backendPassthrough_=settings.usbPassthrough;
+        backendUsbVid_=settings.usbVid;backendUsbPid_=settings.usbPid;
+        snapshot_={};players_={};hadTracking_={};
+    }
+    backend_->Enable(settings.enabled,settings.continuous);
+}
 void WiiRemotes::Connect(){settings.enabled=true;Configure();backend_->Scan();}
 void WiiRemotes::Disconnect(int p){backend_->Disconnect(p);}
 void WiiRemotes::SwapPlayers(){std::swap(settings.player[0],settings.player[1]);backend_->SwapPlayers();players_={};hadTracking_={};}
 void WiiRemotes::Update(){
+    if(backendPassthrough_!=settings.usbPassthrough ||
+       (settings.usbPassthrough && (backendUsbVid_!=settings.usbVid || backendUsbPid_!=settings.usbPid)))Configure();
     auto fresh=backend_->Poll();
     for(int p=0;p<2;++p){
         fresh.player[p].pressed|=snapshot_.player[p].pressed;snapshot_.player[p]=fresh.player[p];
@@ -137,3 +156,10 @@ void WiiRemotes::BeginFrame(){
     if(fallback_)fallback_->BeginFrame();
 }
 } // namespace input
+#endif // !HOTD2_WII_USB_DLL_BUILD
+
+#ifndef _WIN32
+namespace input::wii {
+std::unique_ptr<Backend> CreatePassthroughBackend(int,int){return CreateBackend();}
+}
+#endif

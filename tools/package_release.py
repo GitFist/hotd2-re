@@ -43,7 +43,8 @@ PUBLIC_MANAGED_PATH = re.compile(
     r"hotd2\.exe|scenes/st1_play\.scene|README\.txt|BUILD\.txt|CREDITS\.txt|LICENSE-SDL\.txt|"
     r"LICENSE-native-code\.txt|THIRD_PARTY_NOTICES\.txt|nvngx_dlss\.dll|nvngx_dlssg\.dll|"
     r"amd_fidelityfx_upscaler_dx12\.dll|amd_fidelityfx_framegeneration_dx12\.dll|libxess\.dll|"
-    r"dxcompiler\.dll|dxil\.dll|(?:vendor-licenses/(?:nvidia|amd|intel)|dxc-licenses)/[A-Za-z0-9_./ -]+\.(?:txt|md)", re.I)
+    r"dxcompiler\.dll|dxil\.dll|wii_bt_passthrough\.dll|libusb-1\.0\.dll|libusb-licenses/COPYING|wii-bt-licenses/LICENSE-HOTD2RE|"
+    r"(?:vendor-licenses/(?:nvidia|amd|intel)|dxc-licenses)/[A-Za-z0-9_./ -]+\.(?:txt|md)", re.I)
 
 
 def sha256(path):
@@ -146,9 +147,51 @@ def license_tree(directory):
     return files
 
 
-def runtime_files(exe, architecture):
+def libusb_license(exe, source_dir=None):
+    """Locate the exact LGPL-2.1 COPYING file for the libusb runtime used by this build."""
+    build_root = exe.parent.parent.parent.parent
+    candidates = [build_root / "_deps/libusb_cmake-src/libusb/COPYING"]
+    if source_dir is not None:
+        candidates += [
+            source_dir / "build/_deps/libusb_cmake-src/libusb/COPYING",
+            source_dir / "build-x64/_deps/libusb_cmake-src/libusb/COPYING",
+        ]
+    for candidate in candidates:
+        if candidate.is_file() and not linked(candidate):
+            return require_file(candidate)
+    raise ValueError("libusb COPYING license missing for the optional Wii passthrough runtime")
+
+
+def wii_bt_license(exe, source_dir=None):
+    """Locate the MIT license for the extracted HOTD2RE host backend."""
+    build_root = exe.parent.parent.parent.parent
+    candidates = [build_root / "_deps/wii_bt_host-src/LICENSE-HOTD2RE"]
+    if source_dir is not None:
+        candidates += [
+            source_dir / "build/_deps/wii_bt_host-src/LICENSE-HOTD2RE",
+            source_dir / "build-x64/_deps/wii_bt_host-src/LICENSE-HOTD2RE",
+        ]
+    for candidate in candidates:
+        if candidate.is_file() and not linked(candidate):
+            return require_file(candidate)
+    raise ValueError("HOTD2RE MIT license missing for the optional Wii passthrough runtime")
+
+
+def runtime_files(exe, architecture, source_dir=None):
     directory = exe.parent
     result = []
+    passthrough = directory / "wii_bt_passthrough.dll"
+    libusb = directory / "libusb-1.0.dll"
+    if passthrough.exists() or libusb.exists():
+        if not passthrough.exists() or not libusb.exists():
+            raise ValueError("Wii passthrough packaging requires both wii_bt_passthrough.dll and libusb-1.0.dll")
+        for binary in (passthrough, libusb):
+            if pe_info(binary, dll=True)["architecture"] != architecture:
+                raise ValueError(f"Runtime architecture does not match executable: {binary.name}")
+            result.append((binary, binary.name))
+        result.append((libusb_license(exe, source_dir), "libusb-licenses/COPYING"))
+        result.append((wii_bt_license(exe, source_dir), "wii-bt-licenses/LICENSE-HOTD2RE"))
+
     for names, license_dir, required, x64_only in RUNTIME_GROUPS:
         present = [directory / name for name in names if (directory / name).exists()]
         if not present:
@@ -482,7 +525,7 @@ def stage_package(*, kind, architecture, exe, source_dir, out, game_dir=None, ga
     info = executable_info(exe, source_dir, architecture)
     notices = require_file(source_dir / "THIRD_PARTY_NOTICES.txt")
     scene = require_file(source_dir / "scenes/st1_play.scene")
-    runtime = runtime_files(exe, architecture)
+    runtime = runtime_files(exe, architecture, source_dir)
     licenses = [(sdl_license(source_dir, exe), "LICENSE-SDL.txt"), (notices, "THIRD_PARTY_NOTICES.txt")]
     if (source_dir / "LICENSE").is_file():
         licenses.append((require_file(source_dir / "LICENSE"), "LICENSE-native-code.txt"))

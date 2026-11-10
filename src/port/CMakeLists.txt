@@ -10,9 +10,53 @@ target_include_directories(port_input_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_sources(port_input_core PRIVATE input/native_gun_feedback.cpp input/sinden_feedback.cpp input/feedback_settings.cpp)
 
 if(WIN32)
-  target_sources(port_input_core PRIVATE input/wii_remote_win.cpp)
+  target_sources(port_input_core PRIVATE input/wii_remote_win.cpp input/wii_remote_passthrough_win.cpp)
   target_compile_definitions(port_input_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(port_input_core PUBLIC hid setupapi bthprops ws2_32)
+
+  option(HOTD2_WII_USB_PASSTHROUGH "Build the optional USB Bluetooth passthrough DLL and diagnostics" ON)
+  if(HOTD2_WII_USB_PASSTHROUGH)
+    include(FetchContent)
+    set(LIBUSB_BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+    set(LIBUSB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_INSTALL_PKGCONFIG OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(libusb_cmake
+      GIT_REPOSITORY https://github.com/libusb/libusb-cmake.git
+      GIT_TAG v1.0.30-0
+      GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(libusb_cmake)
+
+    # Reuse the standalone, versioned host DLL. The game-specific input layer
+    # never compiles or links a private copy of the USB HCI/L2CAP/HIDP backend.
+    set(WII_BT_BUILD_DIAGNOSTIC OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(wii_bt_host
+      GIT_REPOSITORY https://github.com/zedhqx4/WIimoteDLL_Libusbk.git
+      GIT_TAG afe5faca0a25c6af0bd7224907d8667f6726de5f
+      GIT_SHALLOW FALSE)
+    FetchContent_MakeAvailable(wii_bt_host)
+    if(NOT TARGET wii_bt_passthrough)
+      message(FATAL_ERROR "The standalone Wii Bluetooth host did not define wii_bt_passthrough")
+    endif()
+
+    # Keep the DLL alongside hotd2.exe/play.exe so LoadLibrary and the
+    # Windows dependency loader resolve it only for the optional backend.
+    set_target_properties(wii_bt_passthrough PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+    add_executable(wii_bt_passthrough_api_test ${PROJECT_SOURCE_DIR}/tests/wii_bt_passthrough_api_test.cpp)
+    target_include_directories(wii_bt_passthrough_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/input)
+    add_dependencies(wii_bt_passthrough_api_test wii_bt_passthrough)
+
+    add_executable(wii_bluetooth_probe ${PROJECT_SOURCE_DIR}/tools/wii_bluetooth_probe.cpp)
+    target_link_libraries(wii_bluetooth_probe PRIVATE usb-1.0)
+    target_compile_definitions(wii_bluetooth_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+    add_executable(wii_hci_probe ${PROJECT_SOURCE_DIR}/tools/wii_hci_probe.cpp)
+    target_link_libraries(wii_hci_probe PRIVATE usb-1.0)
+    target_compile_definitions(wii_hci_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  endif()
   add_library(port_input STATIC input/raw_input.cpp input/raw_input_guns.cpp)
   target_include_directories(port_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(port_input PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)

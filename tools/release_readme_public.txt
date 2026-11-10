@@ -151,10 +151,15 @@ Options > Devices > Light Guns or Wii Remotes opens native setup; both are also 
 Pause. Classic retains Options > Light Guns / Wii Remotes. Light Guns assigns each gun,
 captures bindings, calibrates aim and tests both players. Online players configure their
 local gun as Player 1. Keep any required light-gun border enabled.
-Wii Remotes supports a powered sensor bar with compatible Bluetooth, or DolphinBar Mode 4.
-Connect and sync, then use Player 1/2 setup for calibration and controls. B fires, A reloads,
-+ confirms and HOME pauses by default. Calibration always uses four fresh B presses.
-Physical light-gun/Wii pairing and aiming remain unverified; automated device tests pass.
+Wii Remotes uses Windows Bluetooth or DolphinBar Mode 4 by default. Enabling Wii Remote
+support starts a discovery scan; press red SYNC (or 1 + 2) on the remote. Use Connect
+remotes to scan again. Player 1/2 setup contains calibration and controls. B fires, A
+reloads, + confirms and HOME pauses by default. Calibration uses four fresh B presses.
+USB Bluetooth passthrough is optional under Options > Wii Remotes and requires a
+compatible USB HCI adapter plus the accompanying passthrough runtime DLLs.
+Wii Remote Bluetooth pairing and core-button reports were physically verified with a
+CSR8510/libusbK adapter. IR aiming still needs a powered sensor bar and hardware testing.
+Light-gun feedback hardware remains unverified.
 
 RANDOMIZER
 Choose Play > Randomizer or use the shared online lobby. Ordinary zombies and group
