@@ -464,14 +464,53 @@ function Open-HotdLock([string]$State) {
     return [IO.File]::Open((Get-HotdChild $State 'transaction.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 }
 
+function Wait-HotdFileRetry([int]$Milliseconds) {
+    for ($waited = 0; $waited -lt $Milliseconds; $waited += 50) {
+        if ('Windows.Forms.Application' -as [type]) { [Windows.Forms.Application]::DoEvents() }
+        Start-Sleep -Milliseconds ([Math]::Min(50, $Milliseconds - $waited))
+    }
+}
+
+function Invoke-HotdFileOperation([string]$Operation, [string]$Path, [scriptblock]$Action) {
+    # These failures leave ReplaceFile's source and destination names intact.
+    # Do not retry partial-move errors 1176/1177 or non-lock failures such as a
+    # full disk. Persistent locks/permissions still fail with backups intact.
+    $delays = @(100, 200, 400, 800, 1000, 1000, 1000)
+    $attempt = 0
+    while ($true) {
+        try { return (& $Action) }
+        catch {
+            $failure = $_.Exception.GetBaseException()
+            $code = $failure.HResult -band 0xffff
+            $retry = $code -in @(5, 32, 33, 1175)
+            if ($code -eq 5 -and [IO.File]::Exists($Path)) {
+                try { if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::ReadOnly) { $retry = $false } } catch { }
+            }
+            if (!$retry -or $attempt -ge $delays.Count) {
+                throw ("Could not {0} '{1}'. Windows error {2} (0x{3:X8}): {4}" -f $Operation, $Path, $code, $failure.HResult, $failure.Message)
+            }
+            Wait-HotdFileRetry $delays[$attempt]
+            ++$attempt
+        }
+    }
+}
+
 function Save-HotdJournal([string]$State, $Journal) {
     $path = Get-HotdChild $State 'transaction.json'
     $temporary = Get-HotdChild $State ('journal-' + [guid]::NewGuid().ToString('N') + '.tmp')
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Journal | ConvertTo-Json -Depth 8 -Compress))
-    $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
-    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-    if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
-    else { [IO.File]::Move($temporary, $path) }
+    try {
+        $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        Invoke-HotdFileOperation 'save recovery journal' $path {
+            if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $path) }
+        }
+    } catch { throw "Saving recovery journal '$path' failed. $($_.Exception.Message)" }
+    finally {
+        # Cleanup must not hide the install/commit failure being reported.
+        try { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } } catch { }
+    }
 }
 
 function Get-HotdJournal([string]$Root, [string]$State) {
@@ -492,7 +531,7 @@ function Get-HotdJournal([string]$Root, [string]$State) {
         $null = Get-HotdChild $Root $entry.path
         if ($entry.existed) {
             $backup = Get-HotdChild $backupRoot ($i.ToString() + '.bak')
-            if ((Get-HotdHash $backup) -cne $entry.beforeHash) { throw 'Recovery backup is missing or corrupt; it has been kept for manual recovery.' }
+            if ((Get-HotdHash $backup) -cne $entry.beforeHash) { throw "Recovery backup for '$($entry.path)' is missing or corrupt; it has been kept for manual recovery." }
         }
     }
     if (!$seen.ContainsKey('hotd2.exe') -or $entries[-1].path -ine 'hotd2.exe' -or $entries[-1].remove) { throw 'Recovery journal is missing its executable.' }
@@ -502,7 +541,8 @@ function Get-HotdJournal([string]$Root, [string]$State) {
 function Remove-HotdTransaction([string]$State, $Journal) {
     # Invalidate the journal before deleting any backups. A crash may leave an
     # unused backup directory, but never a live journal without its backups.
-    [IO.File]::Delete((Get-HotdChild $State 'transaction.json'))
+    $path = Get-HotdChild $State 'transaction.json'
+    Invoke-HotdFileOperation 'remove recovery journal' $path { [IO.File]::Delete($path) }
     # Commit is already durable. A locked leftover backup must not turn that
     # success into an install failure after recovery has been invalidated.
     try { Remove-HotdBackups $State $Journal.id } catch { }
@@ -528,9 +568,13 @@ function Set-HotdFile([string]$State, [string]$Source, [string]$Destination, [st
     try {
         Copy-HotdDurable $Source $temporary
         if ((Get-HotdHash $temporary) -cne $ExpectedHash) { throw 'Update file changed while being copied.' }
-        if ([IO.File]::Exists($Destination)) { [IO.File]::Replace($temporary, $Destination, [NullString]::Value) }
-        else { [IO.File]::Move($temporary, $Destination) }
-    } finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
+        Invoke-HotdFileOperation 'replace program file' $Destination {
+            if ([IO.File]::Exists($Destination)) { [IO.File]::Replace($temporary, $Destination, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $Destination) }
+        }
+    } finally {
+        try { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } } catch { }
+    }
 }
 
 function Restore-HotdLocked([string]$Root, [string]$State) {
@@ -541,25 +585,29 @@ function Restore-HotdLocked([string]$Root, [string]$State) {
     # transaction, and keep all backups if a path/hash cannot be accounted for.
     foreach ($entry in @($journal.files)) {
         $destination = Get-HotdChild $Root $entry.path
-        if ([IO.Directory]::Exists($destination)) { throw 'A recovery target is now a directory.' }
+        if ([IO.Directory]::Exists($destination)) { throw "Recovery target '$($entry.path)' is now a directory." }
         if ([IO.File]::Exists($destination)) {
             $current = Get-HotdHash $destination
             if ($current -cne $entry.beforeHash -and $current -cne $entry.afterHash) { throw "Recovery target was modified: $($entry.path). Backups have been preserved." }
         }
         if ($journal.phase -ceq 'committed') {
             if (($entry.remove -and [IO.File]::Exists($destination)) -or (!$entry.remove -and (![IO.File]::Exists($destination) -or (Get-HotdHash $destination) -cne $entry.afterHash))) {
-                throw 'Committed update files changed; recovery backups have been preserved.'
+                throw "Committed update file '$($entry.path)' changed; recovery backups have been preserved."
             }
         }
     }
     if ($journal.phase -ceq 'installing') {
         foreach ($entry in @($journal.files)) {
             $destination = Get-HotdChild $Root $entry.path
-            if ($entry.existed) {
-                if (![IO.File]::Exists($destination) -or (Get-HotdHash $destination) -cne $entry.beforeHash) {
-                    Set-HotdFile $State (Get-HotdChild $backupRoot ($entry.index.ToString() + '.bak')) $destination $entry.beforeHash
+            try {
+                if ($entry.existed) {
+                    if (![IO.File]::Exists($destination) -or (Get-HotdHash $destination) -cne $entry.beforeHash) {
+                        Set-HotdFile $State (Get-HotdChild $backupRoot ($entry.index.ToString() + '.bak')) $destination $entry.beforeHash
+                    }
+                } elseif ([IO.File]::Exists($destination)) {
+                    Invoke-HotdFileOperation 'remove newly installed file during recovery' $destination { [IO.File]::Delete($destination) }
                 }
-            } elseif ([IO.File]::Exists($destination)) { [IO.File]::Delete($destination) }
+            } catch { throw "Restoring '$($entry.path)' failed. $($_.Exception.Message)" }
         }
     }
     Remove-HotdTransaction $State $journal
@@ -656,10 +704,12 @@ function Install-Update([string]$Root, [string]$Payload, [scriptblock]$FaultInje
             $existed = [IO.File]::Exists($destination)
             $beforeHash = $null
             if ($existed) {
-                $beforeHash = Get-HotdHash $destination
-                $backup = Get-HotdChild $backupRoot ($entries.Count.ToString() + '.bak')
-                Copy-HotdDurable $destination $backup
-                if ((Get-HotdHash $backup) -cne $beforeHash) { throw 'Installed file changed while backing it up.' }
+                try {
+                    $beforeHash = Get-HotdHash $destination
+                    $backup = Get-HotdChild $backupRoot ($entries.Count.ToString() + '.bak')
+                    Copy-HotdDurable $destination $backup
+                    if ((Get-HotdHash $backup) -cne $beforeHash) { throw 'Installed file changed while backing it up.' }
+                } catch { throw "Backing up '$name' failed. $($_.Exception.Message)" }
             }
             $afterHash = if ($remove.ContainsKey($name)) { $null } else { $records[$name].sha256.ToLowerInvariant() }
             $entries += [pscustomobject]@{ path = $name; index = $entries.Count; existed = $existed; remove = $remove.ContainsKey($name); beforeHash = $beforeHash; afterHash = $afterHash }
@@ -670,15 +720,22 @@ function Install-Update([string]$Root, [string]$Payload, [scriptblock]$FaultInje
         try {
             foreach ($entry in $entries) {
                 $destination = Get-HotdChild $rootPath $entry.path
-                if ($entry.existed -and (Get-HotdHash $destination) -cne $entry.beforeHash) { throw 'Installed file changed during the update.' }
-                if (!$entry.existed -and [IO.File]::Exists($destination)) { throw 'A new file appeared during the update.' }
-                if ($entry.remove) { [IO.File]::Delete($destination) }
-                else { Set-HotdFile $state (Get-HotdChild $payloadPath $entry.path) $destination $entry.afterHash }
-                if ($FaultInjector) { $null = & $FaultInjector $entry.index $entry.path }
+                try {
+                    if ($entry.existed -and (Get-HotdHash $destination) -cne $entry.beforeHash) { throw 'Installed file changed during the update.' }
+                    if (!$entry.existed -and [IO.File]::Exists($destination)) { throw 'A new file appeared during the update.' }
+                    if ($entry.remove) {
+                        Invoke-HotdFileOperation 'remove obsolete program file' $destination { [IO.File]::Delete($destination) }
+                    } elseif (!$entry.existed -or $entry.beforeHash -cne $entry.afterHash) {
+                        # Retain unchanged entries/backups in the v1 journal so
+                        # older clients can recover an interrupted transaction.
+                        Set-HotdFile $state (Get-HotdChild $payloadPath $entry.path) $destination $entry.afterHash
+                    }
+                    if ($FaultInjector) { $null = & $FaultInjector $entry.index $entry.path }
+                } catch { throw "Installing '$($entry.path)' failed. $($_.Exception.Message)" }
             }
             foreach ($entry in $entries) {
                 $destination = Get-HotdChild $rootPath $entry.path
-                if (($entry.remove -and [IO.File]::Exists($destination)) -or (!$entry.remove -and (Get-HotdHash $destination) -cne $entry.afterHash)) { throw 'Installed update verification failed.' }
+                if (($entry.remove -and [IO.File]::Exists($destination)) -or (!$entry.remove -and (Get-HotdHash $destination) -cne $entry.afterHash)) { throw "Installed update verification failed for '$($entry.path)'." }
             }
             if ($BeforeCommit) { $null = & $BeforeCommit }
             $journal.phase = 'committed'
@@ -686,7 +743,7 @@ function Install-Update([string]$Root, [string]$Payload, [scriptblock]$FaultInje
         } catch {
             $failure = $_
             try { Restore-HotdLocked $rootPath $state }
-            catch { throw "Update failed and recovery needs another attempt. Keep .hotd2-update; it contains your original files. $($_.Exception.Message)" }
+            catch { throw "Update failed and recovery needs another attempt. Keep .hotd2-update; it contains your original files.`nInstall error: $($failure.Exception.Message)`nRecovery error: $($_.Exception.Message)" }
             throw "Update failed; the previous version was restored. $($failure.Exception.Message)"
         }
         Remove-HotdTransaction $state $journal

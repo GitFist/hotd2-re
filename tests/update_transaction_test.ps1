@@ -1,10 +1,19 @@
-param([string]$CrashRoot = '', [switch]$CommittedCrash)
+param([string]$CrashRoot = '', [switch]$CommittedCrash, [switch]$RecoveryCrash)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot '../src/port/update/update_transaction.ps1')
 Add-Type -AssemblyName System.IO.Compression
 
 if ($CrashRoot) {
+    if ($RecoveryCrash) {
+        $originalSetFile = (Get-Item Function:Set-HotdFile).ScriptBlock
+        function Set-HotdFile([string]$State, [string]$Source, [string]$Destination, [string]$ExpectedHash) {
+            & $originalSetFile $State $Source $Destination $ExpectedHash
+            [Environment]::Exit(79)
+        }
+        Restore-Update $CrashRoot
+        throw 'Recovery crash fixture did not restore a file.'
+    }
     $archive = Join-Path $CrashRoot '.hotd2-update/download.zip'
     $payload = Expand-VerifiedUpdate $archive (Get-HotdHash $archive) (Join-Path $CrashRoot '.hotd2-update/stage') x64 'v2026.10.24-a'
     if ($CommittedCrash) {
@@ -112,11 +121,12 @@ function Assert-OldInstallation([string]$Root) {
     Assert-PlayerFiles $Root
 }
 
-function Invoke-Crash([string]$Root, [switch]$Committed) {
+function Invoke-Crash([string]$Root, [switch]$Committed, [switch]$Recovery) {
     $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), '-CrashRoot', ('"' + $Root + '"'))
     if ($Committed) { $arguments += '-CommittedCrash' }
+    if ($Recovery) { $arguments += '-RecoveryCrash' }
     $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
-    $expected = if ($Committed) { 78 } else { 77 }
+    $expected = if ($Recovery) { 79 } elseif ($Committed) { 78 } else { 77 }
     Assert ($process.ExitCode -eq $expected) "Crash child failed unexpectedly: $($process.ExitCode)"
     Assert (Test-UpdatePending $Root) 'Interrupted update lost its recovery journal.'
 }
@@ -136,6 +146,109 @@ try {
     Restore-Update $root
     Clear-UpdateStage $root
     Assert (![IO.Directory]::Exists((Join-Path $root '.hotd2-update/stage'))) 'Staging files were not cleared.'
+
+    # A file already matching the update must remain untouched even when it
+    # cannot be replaced. Keep the v1 recovery journal compatible with old clients.
+    $root = New-TestInstallation unchanged
+    $payload = Expand-TestPackage $root
+    $unchanged = Join-Path $root 'scenes/st1_play.scene'
+    [IO.File]::WriteAllText($unchanged, 'new scene')
+    [IO.File]::SetAttributes($unchanged, [IO.FileAttributes]::ReadOnly)
+    $stamp = [IO.File]::GetLastWriteTimeUtc($unchanged)
+    $held = [IO.File]::Open($unchanged, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { Install-Update $root $payload } finally { $held.Dispose() }
+    Assert ([IO.File]::GetLastWriteTimeUtc($unchanged) -eq $stamp) 'Unchanged file was rewritten.'
+    Assert (([IO.File]::GetAttributes($unchanged) -band [IO.FileAttributes]::ReadOnly) -ne 0) 'Unchanged file attributes were altered.'
+    Assert (!(Test-UpdatePending $root)) 'Unchanged locked file prevented a successful update.'
+    Assert-PlayerFiles $root
+    [IO.File]::SetAttributes($unchanged, [IO.FileAttributes]::Normal)
+
+    # Release actual Windows sharing locks at a deterministic retry boundary;
+    # do not rely on timing races with a background process.
+    $normalRetryWait = (Get-Item Function:Wait-HotdFileRetry).ScriptBlock
+    $script:retryWaits = [Collections.Generic.List[int]]::new()
+    $script:retryHandle = $null
+    $script:releaseAt = 2
+    function Wait-HotdFileRetry([int]$Milliseconds) {
+        $script:retryWaits.Add($Milliseconds)
+        if ($script:retryHandle -and $script:retryWaits.Count -eq $script:releaseAt) {
+            $script:retryHandle.Dispose(); $script:retryHandle = $null
+        }
+    }
+    try {
+        foreach ($target in @('program', 'journal', 'obsolete', 'rollback')) {
+            $root = New-TestInstallation ('transient-' + $target)
+            if ($target -eq 'obsolete') {
+                $obsolete = Join-Path $root 'dxcompiler.dll'
+                [IO.File]::WriteAllText($obsolete, 'old runtime')
+                [IO.File]::WriteAllText((Join-Path $root 'PACKAGE-MANIFEST.json'), (@{ format = 1; files = @(@{ path = 'dxcompiler.dll'; sha256 = Get-HotdHash $obsolete }) } | ConvertTo-Json -Depth 8))
+            }
+            $payload = Expand-TestPackage $root
+            $script:retryWaits.Clear()
+            if ($target -in @('program', 'obsolete')) {
+                $path = if ($target -eq 'program') { Join-Path $root 'scenes/st1_play.scene' } else { $obsolete }
+                $script:retryHandle = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                Install-Update $root $payload
+            } else {
+                $message = ''
+                try {
+                    Install-Update $root $payload -FaultInjector {
+                        param($index, $name)
+                        if ($index -eq 0) {
+                            $path = if ($target -eq 'journal') { Join-Path $root '.hotd2-update/transaction.json' } else { Join-Path $root $name }
+                            $script:retryHandle = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                            if ($target -eq 'rollback') { throw 'original rollback test failure' }
+                        }
+                    }
+                } catch { $message = $_.Exception.Message }
+                if ($target -eq 'rollback') {
+                    Assert ($message.Contains('original rollback test failure') -and $message.Contains('previous version was restored')) 'Transient rollback lock lost the original error or failed recovery.'
+                    Assert-OldInstallation $root
+                } else { Assert ($message -eq '') "Transient journal lock failed: $message" }
+            }
+            Assert ($script:retryWaits.Count -eq 2) "$target did not retry the actual sharing failure until release."
+            Assert (!(Test-UpdatePending $root)) "$target left a pending recovery journal."
+            if ($target -ne 'rollback') { Assert ((Get-HotdHash (Join-Path $root 'hotd2.exe')) -ceq (Get-HotdHash (Join-Path $payload 'hotd2.exe'))) "$target update did not finish." }
+            if ($target -eq 'obsolete') { Assert (![IO.File]::Exists($obsolete)) 'Retried obsolete-file removal failed.' }
+            Assert-PlayerFiles $root
+        }
+        $root = New-TestInstallation persistent
+        $payload = Expand-TestPackage $root
+        $script:retryWaits.Clear(); $script:releaseAt = -1
+        $path = Join-Path $root 'scenes/st1_play.scene'
+        $script:retryHandle = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $message = ''
+        try { Install-Update $root $payload } catch { $message = $_.Exception.Message }
+        Assert ($script:retryWaits.Count -eq 7 -and ($script:retryWaits | Measure-Object -Sum).Sum -le 5000) 'Persistent lock retry budget was not bounded.'
+        Assert ($message.Contains('scenes/st1_play.scene') -and $message.Contains('Windows error 32')) 'Persistent lock omitted the filename or Windows error.'
+        $script:retryHandle.Dispose(); $script:retryHandle = $null
+        Assert-OldInstallation $root
+        Assert (!(Test-UpdatePending $root)) 'Persistent install lock left a recovery journal after rollback.'
+
+        [IO.File]::SetAttributes($path, [IO.FileAttributes]::ReadOnly)
+        $script:retryWaits.Clear(); $message = ''
+        try { Install-Update $root $payload } catch { $message = $_.Exception.Message }
+        Assert ($script:retryWaits.Count -eq 0 -and $message.Contains('Windows error 5') -and $message.Contains('st1_play.scene')) 'Read-only failure was retried or lost its diagnostic.'
+        Assert-OldInstallation $root
+        [IO.File]::SetAttributes($path, [IO.FileAttributes]::Normal)
+
+        # Windows 1175 is reported by #42; its documented unchanged-name
+        # contract permits retry. Partial-move and disk errors do not.
+        foreach ($code in @(1175, 1176, 1177, 112)) {
+            $script:retryWaits.Clear(); $script:operationAttempts = 0; $message = ''
+            try {
+                Invoke-HotdFileOperation 'replace program file' 'fixture.dll' {
+                    ++$script:operationAttempts
+                    throw [IO.IOException]::new('synthetic Windows failure', (-2147024896 + $code))
+                }
+            } catch { $message = $_.Exception.Message }
+            $expectedAttempts = if ($code -eq 1175) { 8 } else { 1 }
+            Assert ($script:operationAttempts -eq $expectedAttempts -and $message.Contains("Windows error $code") -and $message.Contains('fixture.dll')) "Wrong retry/diagnostic policy for Windows error $code."
+        }
+    } finally {
+        if ($script:retryHandle) { $script:retryHandle.Dispose(); $script:retryHandle = $null }
+        Set-Item Function:Wait-HotdFileRetry $normalRetryWait
+    }
 
     $root = New-TestInstallation obsolete
     [IO.File]::WriteAllText((Join-Path $root 'dxcompiler.dll'), 'old runtime')
@@ -224,7 +337,8 @@ try {
     $payload = Expand-TestPackage $root
     $script:RollbackLock = $null
     try {
-        Assert-Throws {
+        $message = ''
+        try {
             Install-Update $root $payload -FaultInjector {
                 param($index, $name)
                 if ($index -eq 0) {
@@ -232,7 +346,9 @@ try {
                     throw 'simulated failure while rollback target is locked'
                 }
             }
-        } 'Failed rollback was not reported.'
+        } catch { $message = $_.Exception.Message }
+        Assert ($message.Contains('Install error:') -and $message.Contains('simulated failure while rollback target is locked') -and
+            $message.Contains('Recovery error:') -and $message.Contains('BUILD.txt') -and $message.Contains('Windows error 32')) 'Failed rollback lost the original error, recovery error, filename or Windows error.'
         Assert (Test-UpdatePending $root) 'Failed rollback discarded recovery state.'
         Assert-Throws { Clear-UpdateStage $root } 'Pending recovery allowed staging cleanup.'
     } finally { if ($script:RollbackLock) { $script:RollbackLock.Dispose() } }
@@ -250,6 +366,7 @@ try {
     Assert (Test-UpdatePending $root) 'Invalid recovery erased its journal.'
     Assert-PlayerFiles $root
     [IO.File]::WriteAllText($journalPath, $journalText)
+    Invoke-Crash $root -Recovery
     Restore-Update $root
     Restore-Update $root
     Assert-OldInstallation $root
@@ -262,7 +379,7 @@ try {
     Assert (!(Test-UpdatePending $root)) 'Committed transaction did not finalize.'
     Assert-PlayerFiles $root
 
-    Write-Output 'PASS: update package validation, complete-install inventories, player file preservation, stale runtime removal, rollback, launch failure, locked files, interruption recovery, and committed recovery.'
+    Write-Output 'PASS: package validation, unchanged locked files, bounded retries, install/recovery diagnostics, player data, obsolete runtimes, rollback, interrupted install/recovery, and committed recovery.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($script:Scratch)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

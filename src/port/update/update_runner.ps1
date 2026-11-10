@@ -475,7 +475,7 @@ function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScrip
         $launchState.child = $null
         return 0
     } catch {
-        $failureReason = $_.Exception.GetBaseException().Message
+        $failureReason = $_.Exception.Message
         if ($null -ne $launchState.child) {
             try { $launchState.child.Terminate() } catch { $preserveState = $true }
             $launchState.child.Dispose()
@@ -493,7 +493,11 @@ function Invoke-UpdateRunner([string]$Path, [string]$SessionDirectory = $PSScrip
                     Set-UpdateStatus 'Restoring your previous version...'
                     Restore-Update -Root $request.root
                 }
-            } catch { $rollbackFailed = $true; $preserveState = $true }
+            } catch {
+                $rollbackFailed = $true; $preserveState = $true
+                $recoveryReason = $_.Exception.Message
+                if (-not $failureReason.Contains($recoveryReason)) { $failureReason += "`nRecovery error: $recoveryReason" }
+            }
         }
         if ($rollbackFailed) {
             $message = 'The update could not finish, and some files could not be restored. Your backup has been kept. Close any other copies of the game, then launch the game again to retry recovery.'

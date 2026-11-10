@@ -195,7 +195,7 @@ function Install-Update {
     if (Test-Path -LiteralPath (Join-Path $Root 'restarted.txt')) { throw 'Game ran before commit.' }
     if (Test-Path -LiteralPath (Join-Path $Root 'fail-install')) {
         [IO.File]::WriteAllText((Join-Path $Root 'pending'), 'pending')
-        throw 'Simulated commit failure after child creation.'
+        throw [IO.IOException]::new('Simulated commit failure after child creation.', [IO.IOException]::new('Inner Windows failure.'))
     }
     [IO.File]::WriteAllText((Join-Path $Root 'committed'), 'committed')
 }
@@ -231,7 +231,7 @@ function Install-Update {
     Check (-not [IO.Directory]::Exists($session)) 'completed session cleans its own downloads and scripts'
     Check ($script:messages.Count -eq 0) 'successful update shows no failure message'
 
-    foreach ($scenario in @('download-failure', 'commit-failure', 'recovery', 'recovery-failure')) {
+    foreach ($scenario in @('download-failure', 'commit-failure', 'commit-recovery-failure', 'recovery', 'recovery-failure')) {
         $root = Join-Path $temporary $scenario
         $session = Join-Path $root ('.hotd2-update/session-' + [guid]::NewGuid())
         $null = New-Item -ItemType Directory -Path $session -Force
@@ -244,29 +244,35 @@ function Install-Update {
         $request.workingDirectory = $root
         $request.recover = $scenario.StartsWith('recovery')
         $request.tag = if ($request.recover) { '' } else { 'v2026.10.23-a' }
-        $script:failDownload = $scenario -ne 'commit-failure'
+        $commitFailure = $scenario -in @('commit-failure', 'commit-recovery-failure')
+        $script:failDownload = -not $commitFailure
         $script:downloads = 0
         $script:messages = @()
-        if ($scenario -eq 'commit-failure') {
+        if ($commitFailure) {
             [IO.File]::WriteAllText((Join-Path $root 'fail-install'), 'fail')
             Copy-Item -LiteralPath $probe -Destination (Join-Path $root 'original.bin')
         }
         if ($request.recover) { [IO.File]::WriteAllText((Join-Path $root 'pending'), 'pending') }
-        if ($scenario -eq 'recovery-failure') { [IO.File]::WriteAllText((Join-Path $root 'fail-recovery'), 'fail') }
+        if ($scenario -in @('recovery-failure', 'commit-recovery-failure')) { [IO.File]::WriteAllText((Join-Path $root 'fail-recovery'), 'fail') }
         [IO.File]::WriteAllText((Join-Path $session 'update_transaction.ps1'), $coreFixture)
         Save-Request
         $result = Invoke-UpdateRunner $requestPath $session
-        if ($scenario -eq 'recovery-failure') {
+        if ($scenario -in @('recovery-failure', 'commit-recovery-failure')) {
             Check ($result -eq 1 -and -not [IO.File]::Exists($gameOutput)) 'failed recovery does not launch an incomplete game'
             Check ([IO.File]::Exists((Join-Path $root 'pending'))) 'failed recovery retains pending backup'
             Check ($script:messages.Count -eq 1 -and $script:messages[0].Contains('backup has been kept')) 'failed recovery explains retry'
             Check (-not [IO.Directory]::Exists($session)) 'failed recovery removes session files without touching backup'
+            if ($commitFailure) {
+                Check ($script:messages[0].Contains('Simulated commit failure after child creation.') -and
+                    $script:messages[0].Contains('Simulated recovery failure.')) 'failure dialog preserves both the original context and the recovery failure'
+            }
         } else {
             $lines = @(Wait-File $gameOutput)
             Check ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($lines[1])) -ceq $scenario) "$scenario reopens the game"
             Check ($result -eq $(if ($scenario -eq 'recovery') { 0 } else { 1 })) "$scenario reports correct outcome"
             if ($scenario -eq 'commit-failure') {
                 Check ([IO.File]::Exists((Join-Path $root 'restored'))) 'commit failure terminates suspended child so executable can be restored'
+                Check ($script:messages[0].Contains('Simulated commit failure after child creation.')) 'failure dialog keeps contextual error instead of only its inner exception'
             }
         }
         if ($request.recover) { Check ($script:downloads -eq 0) "$scenario performs no network request" }
