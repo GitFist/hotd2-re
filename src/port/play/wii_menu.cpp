@@ -7,7 +7,7 @@
 
 namespace play {
 namespace {
-const char* mainLabels[]{"Wii Remote support","Connect remotes","Automatic reconnect","Player 1 setup","Player 2 setup","Swap players","Back"};
+const char* mainLabels[]{"Wii Remote support","USB Bluetooth passthrough","Connect remotes","Automatic reconnect","Player 1 setup","Player 2 setup","Swap players","Back"};
 const char* playerLabels[]{"Calibrate aim","Fire","Reload","Confirm","Pause","Aim smoothing","Disconnect remote","Reset Player Setup","Back"};
 const input::wii::Point targets[4]{{.15,.15},{.85,.15},{.85,.85},{.15,.85}};
 void Text(const game::ExeImage& exe,float x,float y,const std::string& s,std::vector<game::SpriteDef>& out,bool selected=false,float scale=.8f){
@@ -64,7 +64,7 @@ bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes,std::vector<
         return false;
     }
     if(back){if(player_>=0){player_=-1;cursor_=0;pointer_={};}else Close();sound(game::kOptionBackSound);return false;}
-    int rows=player_<0?7:9,under=-1;
+    int rows=player_<0?8:9,under=-1;
     if(in.pointer && in.px>=24 && in.px<616)for(int i=0;i<rows;++i)if(in.py>=RowY(i)+8 && in.py<RowY(i)+35)under=i;
     if(pointer_.Update(in.pointer,in.px,in.py,in.trigger) && under>=0)cursor_=under;
     if(in.pressed&0x10)cursor_=(cursor_+rows-1)%rows;
@@ -72,17 +72,18 @@ bool WiiMenu::Update(const MenuInput& in,input::WiiRemotes& remotes,std::vector<
     bool choose=(in.pressed&0xc) || (in.trigger && under==cursor_);
     int delta=(in.pressed&0x40)?-1:((in.pressed&0x80)||choose)?1:0;
     if(!delta)return false;
-    const bool valueRow=player_<0?(cursor_==0||cursor_==2):(cursor_>=1&&cursor_<=5);
-    if(valueRow||choose)sound((player_<0&&cursor_==6)||(player_>=0&&cursor_==8)?game::kOptionBackSound:game::kOptionSelectSound);
+    const bool valueRow=player_<0?(cursor_==0||cursor_==1||cursor_==3):(cursor_>=1&&cursor_<=5);
+    if(valueRow||choose)sound((player_<0&&cursor_==7)||(player_>=0&&cursor_==8)?game::kOptionBackSound:game::kOptionSelectSound);
     notice_.clear();
     if(player_<0){
         switch(cursor_){
-        case 0: remotes.settings.enabled=!remotes.settings.enabled;remotes.Configure();return true;
-        case 1: if(choose){remotes.Connect();return true;}break;
-        case 2: remotes.settings.continuous=!remotes.settings.continuous;remotes.Configure();return true;
-        case 3:case 4: if(choose){player_=cursor_-3;cursor_=0;pointer_={};}break;
-        case 5: if(choose){remotes.SwapPlayers();return true;}break;
-        case 6: if(choose)Close();break;
+        case 0: remotes.settings.enabled=!remotes.settings.enabled;if(remotes.settings.enabled)remotes.Connect();else remotes.Configure();return true;
+        case 1: remotes.settings.usbPassthrough=!remotes.settings.usbPassthrough;if(remotes.settings.enabled)remotes.Connect();else remotes.Configure();return true;
+        case 2: if(choose){remotes.Connect();return true;}break;
+        case 3: remotes.settings.continuous=!remotes.settings.continuous;remotes.Configure();return true;
+        case 4:case 5: if(choose){player_=cursor_-4;cursor_=0;pointer_={};}break;
+        case 6: if(choose){remotes.SwapPlayers();return true;}break;
+        case 7: if(choose)Close();break;
         }
     }else{
         auto& profile=remotes.settings.player[player_];
@@ -114,15 +115,15 @@ void WiiMenu::Sprites(const game::ExeImage& exe,const input::WiiRemotes& remotes
         return;
     }
     if(player_<0){
-        for(int i=0;i<7;++i){
+        for(int i=0;i<8;++i){
             Text(exe,32,RowY(i),mainLabels[i],out,cursor_==i);
-            if(i==0 || i==2)Text(exe,452,RowY(i),(i==0?remotes.settings.enabled:remotes.settings.continuous)?"ON":"OFF",out,cursor_==i);
+            if(i==0 || i==1 || i==3)Text(exe,452,RowY(i),(i==0?remotes.settings.enabled:(i==1?remotes.settings.usbPassthrough:remotes.settings.continuous))?"ON":"OFF",out,cursor_==i);
         }
         Text(exe,32,290,"P1  "+Status(status.player[0]),out,false,.65f);
         Text(exe,32,312,"P2  "+Status(status.player[1]),out,false,.65f);
         Text(exe,32,350,status.message,out,false,.62f);
-        Text(exe,32,376,"Bluetooth: red SYNC or 1 and 2",out,false,.7f);
-        Text(exe,32,400,"DolphinBar: Mode 4, then SYNC on bar and remote",out,false,.65f);
+        Text(exe,32,376,"OFF: Windows Bluetooth / DolphinBar Mode 4",out,false,.62f);
+        Text(exe,32,400,"ON: USB HCI passthrough; enable support to scan, then press red SYNC",out,false,.48f);
     }else{
         Text(exe,32,57,Status(status.player[player_]),out,false,.65f);
         for(int i=0;i<9;++i){
@@ -168,14 +169,14 @@ void WiiMenu::ModernHud(const input::WiiRemotes& remotes, game::WorldHud& hud) c
     device_ui::Begin(hud, 10, player_ < 0 ? "WII REMOTES" : "WII REMOTE / PLAYER " + std::to_string(player_ + 1),
                      player_ < 0 ? "NATIVE BLUETOOTH / DOLPHINBAR" : "CALIBRATION / BUTTONS / AIM");
     hud.nightShiftRow = cursor_;
-    const int rows = player_ < 0 ? 7 : 9;
+    const int rows = player_ < 0 ? 8 : 9;
     for (int row = 0; row < rows; ++row) {
         const float y = RowY(row) + 10;
         std::string value;
         bool adjustable = false;
         if (player_ < 0) {
-            if (row == 0 || row == 2) {
-                value = (row == 0 ? remotes.settings.enabled : remotes.settings.continuous) ? "ON" : "OFF";
+            if (row == 0 || row == 1 || row == 3) {
+                value = (row == 0 ? remotes.settings.enabled : (row == 1 ? remotes.settings.usbPassthrough : remotes.settings.continuous)) ? "ON" : "OFF";
                 adjustable = true;
             }
         } else {
@@ -201,8 +202,8 @@ void WiiMenu::ModernHud(const input::WiiRemotes& remotes, game::WorldHud& hud) c
         ModernText(hud, 34, 323, "P2 / " + Status(status.player[1]), .48f, 0xFFC1BAAC);
         const std::string message = status.scanning ? "SCANNING / " + status.message : status.message;
         ModernLines(hud, 34, 348, message);
-        ModernText(hud, 34, 388, "Bluetooth: red SYNC or 1 and 2", .46f, 0xFFC1BAAC);
-        ModernText(hud, 34, 408, "DolphinBar: Mode 4, then SYNC on bar and remote", .42f, 0xFFC1BAAC);
+        ModernText(hud, 34, 388, "OFF: Windows Bluetooth / DolphinBar Mode 4", .42f, 0xFFC1BAAC);
+        ModernText(hud, 34, 408, "ON: USB HCI passthrough; enable support to scan, then press red SYNC", .36f, 0xFFC1BAAC);
     } else {
         const auto& remote = status.player[player_];
         ModernText(hud, 34, 347, Status(remote), .48f, 0xFFC1BAAC);
