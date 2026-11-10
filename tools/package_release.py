@@ -162,6 +162,21 @@ def libusb_license(exe, source_dir=None):
     raise ValueError("libusb COPYING license missing for the optional Wii passthrough runtime")
 
 
+def wii_bt_license(exe, source_dir=None):
+    """Locate the MIT license for the extracted HOTD2RE host backend."""
+    build_root = exe.parent.parent.parent.parent
+    candidates = [build_root / "_deps/wii_bt_host-src/LICENSE-HOTD2RE"]
+    if source_dir is not None:
+        candidates += [
+            source_dir / "build/_deps/wii_bt_host-src/LICENSE-HOTD2RE",
+            source_dir / "build-x64/_deps/wii_bt_host-src/LICENSE-HOTD2RE",
+        ]
+    for candidate in candidates:
+        if candidate.is_file() and not linked(candidate):
+            return require_file(candidate)
+    raise ValueError("HOTD2RE MIT license missing for the optional Wii passthrough runtime")
+
+
 def runtime_files(exe, architecture, source_dir=None):
     directory = exe.parent
     result = []
@@ -175,6 +190,7 @@ def runtime_files(exe, architecture, source_dir=None):
                 raise ValueError(f"Runtime architecture does not match executable: {binary.name}")
             result.append((binary, binary.name))
         result.append((libusb_license(exe, source_dir), "libusb-licenses/COPYING"))
+        result.append((wii_bt_license(exe, source_dir), "wii-bt-licenses/LICENSE-HOTD2RE"))
 
     for names, license_dir, required, x64_only in RUNTIME_GROUPS:
         present = [directory / name for name in names if (directory / name).exists()]
