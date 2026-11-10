@@ -26,7 +26,9 @@ struct Profile {
     void CycleBinding(int action, int direction);
 };
 struct Settings {
-    bool enabled=false, continuous=false;
+    bool enabled=false, continuous=false, usbPassthrough=false;
+    // -1/-1 selects the first claimable USB Bluetooth HCI adapter; otherwise use this VID/PID.
+    int usbVid=-1, usbPid=-1;
     std::array<Profile,2> player;
     bool Load(const std::string& file);
     bool Save(const std::string& file) const;
@@ -55,6 +57,8 @@ public:
     virtual Snapshot Poll()=0; // transfers pending button edges to the game thread
 };
 std::unique_ptr<Backend> CreateBackend();
+std::unique_ptr<Backend> CreateWindowsBackend();
+std::unique_ptr<Backend> CreatePassthroughBackend(int usbVid, int usbPid);
 } // namespace wii
 
 class WiiRemotes final : public GunSource {
@@ -76,5 +80,7 @@ private:
     wii::Snapshot snapshot_;
     std::array<PlayerState,2> players_{};
     std::array<bool,2> hadTracking_{};
+    bool backendPassthrough_=false;
+    int backendUsbVid_=-1, backendUsbPid_=-1;
 };
 } // namespace input
