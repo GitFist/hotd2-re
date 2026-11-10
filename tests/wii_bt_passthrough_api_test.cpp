@@ -45,7 +45,7 @@ int main() {
         FreeLibrary(dll);
         return 1;
     }
-    if (hasAdapter(-1, 1) != 0 || create(-1, 1) != nullptr) {
+    if (hasAdapter(-1, 1) != 0 || create(-1, 1, nullptr) != nullptr) {
         std::fprintf(stderr, "FAIL: incomplete VID/PID pair was not rejected\n");
         FreeLibrary(dll);
         return 1;
