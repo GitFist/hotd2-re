@@ -249,6 +249,9 @@ private:
     }
 };
 } // namespace
-std::unique_ptr<Backend> CreateBackend(){return std::make_unique<NativeBackend>();}
+std::unique_ptr<Backend> CreateWindowsBackend(){return std::make_unique<NativeBackend>();}
+#ifndef HOTD2_WII_USB_PASSTHROUGH
+std::unique_ptr<Backend> CreateBackend(){return CreateWindowsBackend();}
+#endif
 } // namespace input::wii
 #endif
