@@ -1,0 +1,140 @@
+name: Wii USB runtime game build
+
+on:
+  push:
+    branches:
+      - feature/wii-usb-host-runtime
+      - feature/wii-passthrough-dll
+  pull_request:
+    branches:
+      - main
+      - feature/wii-usb-host-runtime
+      - feature/wii-passthrough-dll
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    name: Build HOTD2RE x64 with USB Wii Remote backend
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -A x64
+          -DHOTD2_ALLOW_64BIT=ON
+          -DHOTD2_WII_USB_PASSTHROUGH=ON
+
+      - name: Build game and Wii Remote test
+        run: >-
+          cmake --build build --config Release
+          --target hotd2 play wii_remote_test wii_bt_passthrough wii_bt_passthrough_api_test --parallel
+
+      - name: Test package whitelist and optional Wii passthrough runtime
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p test_package_release.py -v
+          if ($LASTEXITCODE -ne 0) { throw "package release tests failed" }
+          python -m unittest discover -s tests -p release_privacy_test.py -v
+          if ($LASTEXITCODE -ne 0) { throw "release privacy tests failed" }
+
+      - name: Run Wii Remote protocol and input tests
+        shell: pwsh
+        run: |
+          $test = Get-ChildItem -Path build -Filter wii_remote_test.exe -Recurse |
+            Select-Object -First 1
+          if (-not $test) {
+            throw "wii_remote_test.exe was not produced"
+          }
+          & $test.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "wii_remote_test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Run optional DLL ABI smoke test
+        shell: pwsh
+        run: |
+          $test = Get-ChildItem -Path build -Filter wii_bt_passthrough_api_test.exe -Recurse | Select-Object -First 1
+          if (-not $test) { throw "wii_bt_passthrough_api_test.exe was not produced" }
+          & $test.FullName
+          if ($LASTEXITCODE -ne 0) { throw "DLL ABI test failed with exit code $LASTEXITCODE" }
+
+      - name: Verify game executables
+        shell: pwsh
+        run: |
+          foreach ($name in @("hotd2.exe", "play.exe")) {
+            $exe = Get-ChildItem -Path build -Filter $name -Recurse |
+              Select-Object -First 1
+            if (-not $exe) {
+              throw "$name was not produced"
+            }
+            Write-Host "Built: $($exe.FullName)"
+            Write-Host "Size: $($exe.Length) bytes"
+          }
+
+      - name: Build public x64 package with optional passthrough runtime
+        shell: pwsh
+        run: |
+          ./tools/make_dist.ps1 -Architecture x64 -Exe build/src/port/Release/hotd2.exe -Out build/dist-wii-passthrough
+
+      - name: Upload x64 runtime build
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotd2re-wii-usb-runtime-windows-x64
+          path: |
+            build/**/hotd2.exe
+            build/**/play.exe
+            build/**/wii_remote_test.exe
+            build/**/wii_bt_passthrough.dll
+            build/**/libusb-1.0.dll
+            build/**/wii_bt_passthrough_api_test.exe
+            build/**/wii_*probe.exe
+            build/dist-wii-passthrough/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  build-windows-x86-passthrough-dll:
+    name: Build x86 optional Wii Bluetooth DLL
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure Win32
+        run: >-
+          cmake -S . -B build-x86 -A Win32
+          -DHOTD2_WII_USB_PASSTHROUGH=ON
+
+      - name: Build x86 DLL and tests
+        run: >-
+          cmake --build build-x86 --config Release
+          --target wii_bt_passthrough wii_bt_passthrough_api_test wii_remote_test --parallel
+
+      - name: Run x86 ABI and logic tests
+        shell: pwsh
+        run: |
+          foreach ($name in @("wii_bt_passthrough_api_test.exe", "wii_remote_test.exe")) {
+            $test = Get-ChildItem -Path build-x86 -Filter $name -Recurse | Select-Object -First 1
+            if (-not $test) { throw "$name was not produced" }
+            & $test.FullName
+            if ($LASTEXITCODE -ne 0) { throw "$name failed with exit code $LASTEXITCODE" }
+          }
+
+      - name: Upload x86 passthrough DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotd2re-wii-passthrough-windows-x86
+          path: |
+            build-x86/**/wii_bt_passthrough.dll
+            build-x86/**/libusb-1.0.dll
+            build-x86/**/wii_bt_passthrough_api_test.exe
+          if-no-files-found: error
+          retention-days: 14
