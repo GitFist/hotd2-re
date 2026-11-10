@@ -5,6 +5,7 @@ on:
     branches:
       - feature/wii-usb-host-runtime
       - feature/wii-passthrough-dll
+      - contrib/usb-bluetooth-wii-remote
   pull_request:
     branches:
       - main
@@ -34,7 +35,7 @@ jobs:
       - name: Build game and Wii Remote test
         run: >-
           cmake --build build --config Release
-          --target hotd2 play wii_remote_test wii_bt_passthrough wii_bt_passthrough_api_test --parallel
+          --target hotd2 play wii_remote_test wii_bt_passthrough wii_bt_passthrough_api_test wii_bt_reports_test --parallel
 
       - name: Test package whitelist and optional Wii passthrough runtime
         shell: pwsh
@@ -64,6 +65,14 @@ jobs:
           if (-not $test) { throw "wii_bt_passthrough_api_test.exe was not produced" }
           & $test.FullName
           if ($LASTEXITCODE -ne 0) { throw "DLL ABI test failed with exit code $LASTEXITCODE" }
+
+      - name: Run shared Wii report decoder test
+        shell: pwsh
+        run: |
+          $test = Get-ChildItem -Path build -Filter wii_bt_reports_test.exe -Recurse | Select-Object -First 1
+          if (-not $test) { throw "wii_bt_reports_test.exe was not produced" }
+          & $test.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Wii report decoder test failed with exit code $LASTEXITCODE" }
 
       - name: Verify game executables
         shell: pwsh
@@ -116,12 +125,12 @@ jobs:
       - name: Build x86 DLL and tests
         run: >-
           cmake --build build-x86 --config Release
-          --target wii_bt_passthrough wii_bt_passthrough_api_test wii_remote_test --parallel
+          --target wii_bt_passthrough wii_bt_passthrough_api_test wii_bt_reports_test wii_remote_test --parallel
 
       - name: Run x86 ABI and logic tests
         shell: pwsh
         run: |
-          foreach ($name in @("wii_bt_passthrough_api_test.exe", "wii_remote_test.exe")) {
+          foreach ($name in @("wii_bt_passthrough_api_test.exe", "wii_bt_reports_test.exe", "wii_remote_test.exe")) {
             $test = Get-ChildItem -Path build-x86 -Filter $name -Recurse | Select-Object -First 1
             if (-not $test) { throw "$name was not produced" }
             & $test.FullName
