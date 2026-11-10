@@ -6,6 +6,7 @@
 #include "game/exe_image.h"
 #include "game/menu_text.h"
 #include "game/save_data.h"
+#include "game/world_modes.h"
 
 static void Check(bool ok, const char* why) { if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); } }
 static void Step(game::World& w, int x = 639, int y = 0, bool shot = false, int player = 0, uint32_t keys = 0) {
@@ -82,6 +83,27 @@ static void Room(game::World& w, const char* mode, int stock = 3) {
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
+    {
+        auto credits = std::make_unique<game::World::Impl>();
+        credits->modes = std::make_unique<game::ModesState>();
+        credits->cfg.portFeatures = true;
+        credits->cfg.freePlay = false;
+        credits->gameMode = 4;
+        credits->front.menuConfirmed = true;
+        credits->front.gameType = 3;
+        credits->cfg.credits = game::ModesCredits(*credits, 3);
+        Check(credits->cfg.credits == 0, "Boss entries do not create shared continue credits");
+        Check(credits->UseCredit(1, false) && credits->UseCredit(0, false), "either player can take the first Boss entry");
+        credits->gameMode = 6; credits->cfg.gameType = 3;
+        Check(!credits->UseCredit(0, true) && !credits->UseCredit(1, true), "Boss entries cannot be spent on continues");
+        Check(!credits->UseCredit(0, false) && !credits->UseCredit(1, false), "eliminated players cannot rejoin the same Boss attempt");
+        Check(!credits->CanContinue(), "a solo death still enters the normal Boss retry flow");
+        credits->cfg.freePlay = true;
+        Check(!credits->CanContinue(), "saved unlimited Arcade continues cannot stall a Boss retry");
+        credits->modes->bossJoinedPlayers = 0;
+        credits->subState = 9;
+        Check(!credits->UseCredit(1, false), "new Boss joins cannot interrupt result/name entry");
+    }
     game::World w; std::string error;
     Check(w.Load(argv[1], 0, &error), error.c_str());
     game::ExeImage exe;
@@ -156,6 +178,28 @@ int main(int argc, char** argv) {
     Check(Sprite(w, boss0, 321, 100), "blank shot does not start boss");
     Step(w, 320, 200, true); Wait(w, 180);
     Check(!Sprite(w, 0xB30), "shoot centre card starts boss");
+
+    Open(w, 3);
+    Step(w, 639, 0, false, 1, 8); Wait(w);
+    Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5 && Sprite(w, 0xB30),
+          "local P2 joins the Boss chooser without spending P1's credit or starting the fight");
+    Step(w, 540, 459, true); Wait(w, 300);
+    Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5 && (w.Hud().flags5900 & 0x18) == 0,
+          "local co-op starts the chosen Boss with both players");
+    bool retry = false;
+    for (int frame = 0; frame < 16000; ++frame) {
+        Step(w);
+        if (w.GameMode() == 6 && (w.Hud().flags5900 & 0x18) == 0x18 && Sprite(w, 0xB30)) { retry = true; break; }
+    }
+    Check(retry && w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5,
+          "both eliminated local players return to the Boss chooser for a fresh attempt");
+    Wait(w); Step(w, 540, 459, true); Wait(w, 300);
+    Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5 && (w.Hud().flags5900 & 0x18) == 0,
+          "local Boss retry starts both players again");
+    Open(w, 3); Step(w, 540, 459, true); Wait(w, 300);
+    Step(w, 639, 0, false, 1, 8); Wait(w, 600);
+    Check(w.Hud().player[0].state == 5 && w.Hud().player[1].state == 5,
+          "local P2 can also join after the Boss fight starts");
 
     Open(w, 2);
     Check(CenteredText(w, exe, "CHALLENGE MODE", 30, 1.25f), "Challenges uses Challenge Mode heading");

@@ -11,6 +11,9 @@ class NaomiAudio {
 public:
     bool Load(const std::string& path);
     bool Read(const std::string& path, std::vector<uint8_t>& wav) const;
+    // Match the existing client's music level at playback; keep the bank and
+    // raw reads lossless for source verification. Effects retain native gain.
+    bool ReadPlayback(const std::string& path, std::vector<uint8_t>& wav) const;
     const std::vector<game::NaomiSound>& Sounds() const { return sounds_; }
 private:
     struct Entry { uint32_t index, offset, packed, bytes, start, end; };

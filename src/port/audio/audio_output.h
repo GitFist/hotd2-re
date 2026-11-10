@@ -24,7 +24,7 @@ public:
 
 protected:
     bool ReadSoundBytes(const std::string& gameDir, const std::string& path, std::vector<uint8_t>& out) const {
-        if (path.rfind("NaomiSound/", 0) == 0) return naomi_ && naomi_->Read(path, out);
+        if (path.rfind("NaomiSound/", 0) == 0) return naomi_ && naomi_->ReadPlayback(path, out);
         if (path.rfind("TypingSound/",0) == 0) {
             const auto* data = typing_ ? typing_->SoundData(path) : nullptr;
             if (!data) return false;

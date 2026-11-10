@@ -97,6 +97,21 @@ int main() {
     occluded.draws.insert(occluded.draws.begin(),wall);occluded.opaqueDrawCount=1;
     auto occlusionReference=occluded;for(auto& d:occlusionReference.draws)d.naomiSortable=false;
     Require(render(occluded,flat)==render(occlusionReference,flat),"Native gather ignored opaque depth or wrote transparent depth");
+    // Exercise the short-list fast paths and packed colors across mixed blends.
+    for (uint32_t layers : {1u, 3u, 8u, 17u}) {
+        std::vector<game::ModelVertex> vertices;
+        port::GpuDrawList mixed; mixed.width = mixed.height = 64;
+        for (uint32_t i = 0; i < layers; ++i) {
+            Triangle(vertices, 0);
+            mixed.model.push_back(Constants({float(i % 3) * .4f, .21f, .53f, .37f}, true));
+            mixed.draws.push_back(Draw(i * 3, i, i % 2 ? 9 : 5, i % 2 ? 2 : 6));
+        }
+        auto reference = mixed;
+        for (auto& draw : reference.draws) draw.naomiSortable = false;
+        const auto actual = render(mixed, vertices), expected = render(reference, vertices);
+        for (size_t i = 0; i < actual.size(); ++i)
+            Require(std::abs(int(actual[i])-int(expected[i])) <= 1, "packed fragment color changed mixed blend/depth-tie results");
+    }
     // More than128 layers, with source energy making any dropped half visible.
     std::vector<game::ModelVertex> manyVertices;port::GpuDrawList many;many.width=many.height=64;
     for(uint32_t i=0;i<260;++i){Triangle(manyVertices,0,1+float(i)*.003f);many.model.push_back(Constants({1.f/255,0,0,1}));many.draws.push_back(Draw(i*3,i,2,2));}
@@ -129,5 +144,5 @@ int main() {
     Require(!gpu->SupportsNaomiGpuSort(),"Native GPU path leaked into PC graphics");
     Require(render(expectedTies,flat)==equalReference,"Native GPU path changed subsequent ordinary GPU draws");
     _putenv_s("HOTD2_TEST_NAOMI_GPU_NODES","");
-    std::printf("PASS %zu crossing Native GPU cases/%zu pixels, per-blend RGBA8/alpha/fog, stable ties, opaque depth,260layers, forced tiny allocator replay, atomic initialization retry, tiled resize/downsize and PC isolation\n",cases,pixels);
+    std::printf("PASS %zu crossing Native GPU cases/%zu pixels, mixed/260-layer blends, forced allocator replay, initialization retry, tiled resize and PC isolation\n",cases,pixels);
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 
 namespace port {
@@ -66,5 +67,41 @@ bool NaomiAudio::Read(const std::string& path, std::vector<uint8_t>& wav) const 
         return true;
     }
     return false;
+}
+
+bool NaomiAudio::ReadPlayback(const std::string& path, std::vector<uint8_t>& wav) const {
+    if (!Read(path, wav)) return false;
+    const auto music = std::find_if(sounds_.begin(), sounds_.end(), [&](const auto& sound) {
+        return sound.index < 20 && sound.path == path;
+    });
+    if (music == sounds_.end()) return true;
+    // The driver renders are about 6 dB below the previous music recordings.
+    // Apply makeup before the ordinary volume/mute controls. Link the stereo
+    // peak curve so the occasional boosted transient cannot clip or change
+    // the stereo balance. Its stateless curve preserves intro/loop boundaries
+    // and adds no lookahead delay or transport-dependent envelope.
+    constexpr float gain = 2.f, knee = .90f, ceiling = .98f;
+    for (size_t at = 44; at + 4 <= wav.size(); at += 4) {
+        int16_t input[2];
+        std::memcpy(input, wav.data() + at, sizeof(input));
+        // Almost every frame is below the knee. Doubling PCM directly keeps
+        // the common path cheap when a new music cue opens during gameplay.
+        if (std::max(std::abs(int(input[0])), std::abs(int(input[1]))) <= 14745) {
+            const int16_t output[2] = {static_cast<int16_t>(input[0] * 2), static_cast<int16_t>(input[1] * 2)};
+            std::memcpy(wav.data() + at, output, sizeof(output));
+            continue;
+        }
+        const float left = input[0] * (gain / 32768.f), right = input[1] * (gain / 32768.f);
+        const float peak = std::max(std::abs(left), std::abs(right));
+        float scale = 1.f;
+        if (peak > knee) {
+            const float excess = peak - knee;
+            scale = (knee + (ceiling - knee) * excess / (excess + ceiling - knee)) / peak;
+        }
+        const int16_t output[2] = {static_cast<int16_t>(std::lround(left * scale * 32768.f)),
+                                   static_cast<int16_t>(std::lround(right * scale * 32768.f))};
+        std::memcpy(wav.data() + at, output, sizeof(output));
+    }
+    return true;
 }
 }  // namespace port

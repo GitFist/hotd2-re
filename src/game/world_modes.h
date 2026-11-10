@@ -65,6 +65,7 @@ struct ModesState {
     int bossDiff = 0;               // 0x009C8FB0 difficulty chosen
     int bossRecord = 0;             // 0x009A34C0 (a grade / record improved: saved at the stage end)
     int bossTime = 0;               // 0x009C7060 fight time (frames)
+    uint8_t bossJoinedPlayers = 0;  // local port Boss Mode: one entry per player in this attempt
     int timerStart = 0, timerBase = 0;  // 0x007DD174 / 0x007DD178 (the original: GetTickCount; here game frames)
     int clockOverride = -0x7FFFFFFF;    // World::SetWallClock: 0x0049DF20's value for this frame (tests)
     int Clock(int frame) const {        // 0x0049DF20

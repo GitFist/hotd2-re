@@ -230,14 +230,25 @@ int World::Impl::CreditOf(int) const { return cfg.credits; }  // 0x00406780 (sha
 
 // 0x00406ED0 (0x00406F00): free play, or enough credits to start or continue
 bool World::Impl::CanContinue() const {
+    if (cfg.portFeatures && !cfg.portNetworkRoom && cfg.gameType == 3) return false;
     if (cfg.freePlay) return true;
     return !(cfg.credits < cfg.coinsStart && cfg.credits < cfg.coinsContinue);
 }
 
 // 0x00406DC0 -> 0x00406E10: take the credits of a start / continue
-bool World::Impl::UseCredit(int, bool cont) {
+bool World::Impl::UseCredit(int p, bool cont) {
     // mode 4: only in the frame the mode select confirmed a game (0x009A21C0, world_front.cpp)
     if (gameMode != 6 && !(gameMode == 4 && front.menuConfirmed)) return false;
+    if (cfg.portFeatures && !cfg.portNetworkRoom && modes &&
+        (gameMode == 4 ? front.gameType : cfg.gameType) == 3) {
+        // The original's single shared credit lets the first player consume
+        // the second player's entry. Reserve one start each, without granting
+        // continues or letting an eliminated player rejoin the same attempt.
+        if (p < 0 || p > 1 || cont || (gameMode == 6 && subState != 2) ||
+            (modes->bossJoinedPlayers & (1u << p))) return false;
+        modes->bossJoinedPlayers |= static_cast<uint8_t>(1u << p);
+        return true;
+    }
     if (cfg.freePlay) return true;
     const int cost = cont ? cfg.coinsContinue : cfg.coinsStart;
     if (cfg.credits < cost) return false;
@@ -483,6 +494,8 @@ void World::Impl::PlayerInit(Task& t, int row) {
     const uint32_t r = kRowTable + 0x18 * static_cast<uint32_t>(row);
     const uint32_t flags = exe.U32(r);
     const int gt = runner ? runner->cfg.gameType : 0;
+    if (gt == 3 && modes && cfg.portFeatures && !cfg.portNetworkRoom)
+        modes->bossJoinedPlayers |= static_cast<uint8_t>(1u << p);
     if ((flags & 1) || (1 < gt && gt < 4)) {  // game types 0 / 1 by the row (types 2 / 3 always)
         P.lives = static_cast<int16_t>(cfg.livesSetting);
         P.livesShown = P.lives;

@@ -2,8 +2,8 @@ The House of the Dead 2 - native port (hotd2-re)
 =================================================
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.06-a
-Complete download: HOTD2RE-2.1-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.09-a
+Complete download: HOTD2RE-2.2-Windows-x64.zip
 This folder contains the port and any accompanying redistributable runtime components. It needs your own copy of the game.
 
 1. Install The House of the Dead 2 (PC, 2001) from your disc, or locate an existing installation

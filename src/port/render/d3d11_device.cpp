@@ -1084,7 +1084,7 @@ bool D3D11Device::NaomiFailure(const char* operation,HRESULT status,std::string*
 }
 
 bool D3D11Device::GrowNaomiNodes(uint64_t count,std::string* error) {
-    constexpr uint64_t stride=36;
+    constexpr uint64_t stride=24;
     if(count<=naomiNodeCapacity_&&naomiNodes_)return true;
     uint64_t capacity=std::max<uint64_t>(count,naomiNodeCapacity_?uint64_t(naomiNodeCapacity_)*2:count);
     if(!capacity||capacity>UINT_MAX/stride){if(error)*error="Native transparency fragment count exceeds the D3D11 buffer address range";return false;}
@@ -1227,6 +1227,8 @@ bool D3D11Device::DrawNaomiSorted(const GpuDrawList& list,size_t first,size_t en
     if(!EnsureNaomiSort(&naomiError_))return false;
     ctx_->OMSetRenderTargets(0,nullptr,nullptr);ctx_->CopyResource(naomiOpaque_.Get(),color_.Get());
     uint32_t count=0;unsigned replays=0;
+    const bool traceSort=std::getenv("HOTD2_DEBUG_NAOMI_SORT")!=nullptr;
+    double readbackMs=0;
     for(;;) {
         const UINT empty[4]={0xffffffffu,0xffffffffu,0xffffffffu,0xffffffffu},zero[4]{};
         ctx_->ClearUnorderedAccessViewUint(naomiHeadsUav_.Get(),empty);ctx_->ClearUnorderedAccessViewUint(naomiCounterUav_.Get(),zero);
@@ -1235,7 +1237,9 @@ bool D3D11Device::DrawNaomiSorted(const GpuDrawList& list,size_t first,size_t en
         for(size_t i=first;i<end;++i)DrawNaomiGather(list,list.draws[i],static_cast<uint32_t>(i));
         ID3D11UnorderedAccessView* noViews[3]{};ctx_->OMSetRenderTargetsAndUnorderedAccessViews(0,nullptr,nullptr,1,3,noViews,nullptr);
         ctx_->CopyResource(naomiCounterRead_.Get(),naomiCounter_.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
+        const auto readStart=traceSort?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         const HRESULT readStatus=ctx_->Map(naomiCounterRead_.Get(),0,D3D11_MAP_READ,0,&mapped);
+        if(traceSort)readbackMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-readStart).count();
         if(FAILED(readStatus))return NaomiFailure("Native transparency counter readback failed",readStatus,&naomiError_);
         const auto* counters=static_cast<const uint32_t*>(mapped.pData);count=counters[0];const bool overflow=counters[1]!=0;ctx_->Unmap(naomiCounterRead_.Get(),0);
         if(!overflow)break;
@@ -1261,7 +1265,7 @@ bool D3D11Device::DrawNaomiSorted(const GpuDrawList& list,size_t first,size_t en
     ctx_->RSSetState(rasterCull_[0].Get());
     snapshot=nullptr;ctx_->PSSetShaderResources(4,1,&snapshot);ID3D11UnorderedAccessView* noViews[3]{};
     ctx_->OMSetRenderTargetsAndUnorderedAccessViews(1,&target,dsv_.Get(),1,3,noViews,nullptr);
-    if(std::getenv("HOTD2_DEBUG_NAOMI_SORT"))std::fprintf(stderr,"Naomi GPU sort: draws=%zu fragments=%u capacity=%u replays=%u tiles=%u target=%dx%d\n",end-first,count,naomiNodeCapacity_,replays,tiles,width_,height_);
+    if(traceSort)std::fprintf(stderr,"Naomi GPU sort: draws=%zu fragments=%u capacity=%u replays=%u tiles=%u target=%dx%d readback=%.3fms\n",end-first,count,naomiNodeCapacity_,replays,tiles,width_,height_,readbackMs);
     return true;
 }
 

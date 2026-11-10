@@ -5,8 +5,8 @@ START PLAYING
 2. Open the hotd2re folder and double-click hotd2.exe.
 
 Release {{RELEASE_VERSION}} (Windows {{ARCHITECTURE}}).
-Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.06-a
-Complete download: HOTD2RE-2.1-Windows-x64.zip
+Release notes: https://github.com/GitFist/hotd2-re/releases/tag/v2026.11.09-a
+Complete download: HOTD2RE-2.2-Windows-x64.zip
 This complete package includes the required game data. No separate installation or disc is needed.
 Keep the game and scenes folders next to hotd2.exe. Launch the top-level hotd2.exe.
 Requires Windows 10/11 with Direct3D 11 support. Optional graphics features have additional

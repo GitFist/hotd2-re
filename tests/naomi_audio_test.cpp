@@ -9,6 +9,7 @@
 #include <fstream>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #ifdef HOTD2_TEST_SDL
 #include <SDL3/SDL.h>
@@ -83,6 +84,34 @@ int main(int argc,char** argv) {
         CHECK(wav.sampleRate==44100 && wav.channels==2 && wav.bitsPerSample==16 && wav.dataOffset==44);
         CHECK(wav.dataSize+44==bytes.size());
         CHECK(!sound.region.endFrame || sound.region.endFrame<=wav.dataSize/4);
+        std::vector<uint8_t> playback;
+        CHECK(bank.ReadPlayback(sound.path, playback));
+        CHECK(playback.size() == bytes.size() && std::memcmp(playback.data(), bytes.data(), 44) == 0);
+        if (sound.index >= 20) {
+            CHECK(playback == bytes); // native effect gains and pans remain exact
+        } else {
+            double rawEnergy = 0, playbackEnergy = 0;
+            int peak = 0;
+            bool stereo = true, silence = true;
+            for (size_t at = 44; at + 4 <= bytes.size(); at += 4) {
+                int16_t raw[2], balanced[2];
+                std::memcpy(raw, bytes.data() + at, 4);
+                std::memcpy(balanced, playback.data() + at, 4);
+                for (int ch = 0; ch < 2; ++ch) {
+                    rawEnergy += double(raw[ch]) * raw[ch];
+                    playbackEnergy += double(balanced[ch]) * balanced[ch];
+                    peak = std::max(peak, std::abs(int(balanced[ch])));
+                    silence &= raw[ch] != 0 || balanced[ch] == 0;
+                }
+                // Shared gain for L/R, allowing half a PCM unit's rounding.
+                stereo &= std::abs(double(raw[0])*balanced[1]-double(raw[1])*balanced[0]) <=
+                          .51*(std::abs(int(raw[0]))+std::abs(int(raw[1])))+1;
+            }
+            const double boost = 10*std::log10(playbackEnergy/rawEnergy);
+            CHECK(boost > 4.5 && boost < 6.1);
+            CHECK(peak <= 32113 && stereo && silence);
+            std::printf("Music %u: +%.2f dB, peak %.4f; identical length and loop positions\n", sound.index, boost, peak/32768.);
+        }
         if (sound.index<20) {
             ++music;
             const uint32_t id=0x10000000|sound.index;

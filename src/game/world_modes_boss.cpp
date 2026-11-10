@@ -205,6 +205,13 @@ void TaskBossSelect(Task& tk) {
     ModesState& m = *w.modes;
     const ExeImage& exe = w.exe;
     if (b.step == 0) {
+        // Returning to the chooser begins a fresh attempt. Players retained
+        // by the retry/result flow already own their slots; the other player
+        // can join here or after the fight starts.
+        m.bossJoinedPlayers = 0;
+        for (int p = 0; p < 2; ++p)
+            if (w.player[p].state != 9 && w.player[p].state != 6)
+                m.bossJoinedPlayers |= static_cast<uint8_t>(1u << p);
         // textures 0x14E / 0x16F / 0x173, pol 0xBF, model 0x1A4C, motion file 0x30, flush, 0x00413DA0, BGM BOSS_MOD
         for (const World::Impl::Request& r : { World::Impl::Request{ 0x54, 0x14E }, World::Impl::Request{ 0x54, 0x16F },
                                                World::Impl::Request{ 0x54, 0x173 }, World::Impl::Request{ 0x52, 0xBF },

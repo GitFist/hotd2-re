@@ -1,10 +1,10 @@
 #pragma once
 
 namespace port {
-// Own SM5 implementation. Both stages use the same 36-byte structured node.
+// Own SM5 implementation. Both stages use the same 24-byte structured node.
 inline const char kNaomiGpuSortSharedHlsl[] = R"(
 struct NativeNode {
-    float4 color;
+    uint color;
     float depth;
     uint next;
     uint draw;
@@ -35,7 +35,11 @@ void psgather(VSOut i, uint primitive : SV_PrimitiveID) {
         return;
     }
     NativeNode node;
-    node.color=color;
+    // The blend target is RGBA8. Quantize once here instead of retaining four
+    // floats through every sorting pass; this is the same conversion the
+    // resolve used before evaluating the fixed-function blend factors.
+    uint4 rgba=(uint4)round(saturate(color)*255.0);
+    node.color=rgba.x|(rgba.y<<8)|(rgba.z<<16)|(rgba.w<<24);
     // The original TA sorts reciprocal eye depth, not the scaled D3D adapter.
     node.depth=1.0/i.depth;
     node.draw=nativeSize.w;node.primitive=primitive;
@@ -53,13 +57,13 @@ float4 vsresolve(uint id : SV_VertexID) : SV_Position {
     float2 p=float2((id<<1)&2,id&2);
     return float4(p*float2(2,-2)+float2(-1,1),0,1);
 }
-bool NativeBefore(uint a,uint b) {
-    NativeNode x=nativeNodes[a],y=nativeNodes[b];
+bool NativeBeforeNodes(NativeNode x,NativeNode y,uint a,uint b) {
     if(x.depth != y.depth)return x.depth<y.depth;
     if(x.draw != y.draw)return x.draw<y.draw;
     if(x.primitive != y.primitive)return x.primitive<y.primitive;
     return a<b;
 }
+bool NativeBefore(uint a,uint b) { return NativeBeforeNodes(nativeNodes[a],nativeNodes[b],a,b); }
 float4 NativeFactor(uint kind,float4 source,float4 destination) {
     if(kind==1)return 0;
     if(kind==3)return source;
@@ -72,9 +76,30 @@ float4 NativeFactor(uint kind,float4 source,float4 destination) {
     if(kind==10)return 1-destination;
     return 1;
 }
+float4 NativeBlend(NativeNode fragment,float4 result) {
+    float4 source=float4(fragment.color&255,(fragment.color>>8)&255,
+                         (fragment.color>>16)&255,fragment.color>>24)/255.0;
+    float4 a=NativeFactor(fragment.blend&255,source,result);
+    float4 b=NativeFactor((fragment.blend>>8)&255,source,result);
+    return round(saturate(source*a+result*b)*255.0)/255.0;
+}
 float4 psresolve(float4 position : SV_Position) : SV_Target {
     uint2 pixel=(uint2)position.xy;
     uint head=nativeHeads[pixel];
+    float4 result=nativeOpaque.Load(int3(pixel,0));
+    // Most covered pixels have only one or two fragments. Resolve those
+    // without rewriting a UAV linked list or running the merge-sort loop.
+    [branch] if(head==NativeEnd)return result;
+    NativeNode firstNode=nativeNodes[head];
+    uint second=firstNode.next;
+    [branch] if(second==NativeEnd)return NativeBlend(firstNode,result);
+    NativeNode secondNode=nativeNodes[second];
+    [branch] if(secondNode.next==NativeEnd) {
+        if(!NativeBeforeNodes(firstNode,secondNode,head,second)) {
+            NativeNode swap=firstNode;firstNode=secondNode;secondNode=swap;
+        }
+        return NativeBlend(secondNode,NativeBlend(firstNode,result));
+    }
     // Bottom-up mergesort rewires this pixel's private list. No fixed local
     // array or per-pixel layer cap truncates the original fragments.
     uint run=1;
@@ -101,18 +126,10 @@ float4 psresolve(float4 position : SV_Position) : SV_Target {
         if(merges<=1)break;
         run*=2;
     }
-    float4 result=nativeOpaque.Load(int3(pixel,0));
     [loop] for(uint node=head;node!=NativeEnd;node=nativeNodes[node].next) {
-        NativeNode fragment=nativeNodes[node];
-        // The RGBA8 fixed-function unit converts the incoming shader color to
-        // the target precision before evaluating its color/alpha factors.
-        // Retaining FP32 here adds fractional energy at every source term.
-        float4 source=round(saturate(fragment.color)*255.0)/255.0;
-        float4 a=NativeFactor(fragment.blend&255,source,result);
-        float4 b=NativeFactor((fragment.blend>>8)&255,source,result);
         // Match the RGBA8 target between every fixed-function blend, including
         // alpha's source/destination-color to alpha-factor mapping.
-        result=round(saturate(source*a+result*b)*255.0)/255.0;
+        result=NativeBlend(nativeNodes[node],result);
     }
     return result;
 }

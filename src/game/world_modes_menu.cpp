@@ -72,6 +72,7 @@ void ModesBoot(World::Impl& w) {
 // 0x00496B70: credits a game type gets (original mode 6, training / boss 1, arcade the setting + 1 or free play -1)
 int ModesCredits(World::Impl& w, int entry) {
     if (entry == 1) return 6;
+    if (entry == 3 && w.cfg.portFeatures && !w.cfg.portNetworkRoom) return 0; // per-player entries, not shared continues
     if (entry > 1 && entry < 4) return 1;
     return w.cfg.creditSetting == -1 ? -1 : w.cfg.creditSetting + 1;
 }
@@ -96,6 +97,7 @@ bool ModesMenuConfirm(World::Impl& w, int e) {
         // 0x009A21C0 = 1, credits 0x00406F60(0x00496B70(e)), 0x009CA08C = e, 0x009A2BBC = 0, sound 0x121A9; the player's
         // task (later in the list) sees the same trigger / start: Player_TryJoin -> Game_SetState(6)
         w.front.menuConfirmed = true;
+        if (e == 3) m.bossJoinedPlayers = 0;
         const int credits = ModesCredits(w, e);
         if (credits == -1) {
             w.cfg.freePlay = true;
