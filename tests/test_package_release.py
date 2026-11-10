@@ -271,6 +271,46 @@ const char* const kReleaseVersion = "1.0";
             self.assertEqual(marker.read_bytes(), b"keep this output")
             self.assertEqual(list(output.iterdir()), [marker])
 
+    def test_optional_wii_passthrough_runtime_is_packaged_as_arch_matched_pair_with_license(self):
+        fake_pe(self.exe.parent / "wii_bt_passthrough.dll", "x86", dll=True)
+        fake_pe(self.exe.parent / "libusb-1.0.dll", "x86", dll=True)
+        license = self.source / "build/_deps/libusb_cmake-src/libusb/COPYING"
+        license.parent.mkdir(parents=True)
+        license.write_text("GNU LESSER GENERAL PUBLIC LICENSE Version 2.1 fixture\n")
+
+        archive = self.package()
+        package = archive.parent / "hotd2re"
+        with zipfile.ZipFile(archive) as contents:
+            names = contents.namelist()
+            self.assertIn("hotd2re/wii_bt_passthrough.dll", names)
+            self.assertIn("hotd2re/libusb-1.0.dll", names)
+            self.assertIn("hotd2re/libusb-licenses/COPYING", names)
+        manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_text())
+        managed = {entry["path"] for entry in manifest["files"]}
+        self.assertTrue({
+            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING"
+        }.issubset(managed))
+        index = json.loads((archive.parent / "hotd2re-win-x86.files.json").read_bytes())
+        self.assertTrue({
+            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING"
+        }.issubset({entry["path"] for entry in index["files"]}))
+
+    def test_optional_wii_passthrough_runtime_rejects_incomplete_or_wrong_architecture_pair(self):
+        fake_pe(self.exe.parent / "wii_bt_passthrough.dll", "x86", dll=True)
+        with self.assertRaisesRegex(ValueError, "requires both"):
+            self.package()
+        self.assertFalse((self.root / "new-output").exists())
+
+        (self.exe.parent / "wii_bt_passthrough.dll").unlink()
+        fake_pe(self.exe.parent / "wii_bt_passthrough.dll", "x86", dll=True)
+        fake_pe(self.exe.parent / "libusb-1.0.dll", "x64", dll=True)
+        license = self.source / "build/_deps/libusb_cmake-src/libusb/COPYING"
+        license.parent.mkdir(parents=True)
+        license.write_text("LGPL fixture\n")
+        with self.assertRaisesRegex(ValueError, "Runtime architecture"):
+            self.package(out=self.root / "wrong-arch-output")
+        self.assertFalse((self.root / "wrong-arch-output").exists())
+
     def test_public_package_has_no_game_data_or_private_siblings(self):
         (self.exe.parent / "hotd2re_save.bin").write_bytes(b"private")
         (self.exe.parent / "typing_reference.bank").write_bytes(b"original mode data is never copied implicitly")
