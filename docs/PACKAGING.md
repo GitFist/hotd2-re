@@ -39,11 +39,14 @@ used for another build. Metadata calls its revision the source *at packaging*,
 and records dirty source explicitly; a matching label alone is not proof of a
 reproducible build.
 
-Only known app-local NVIDIA, AMD, Intel and DXC DLL names are copied when present
-beside the selected executable. Each DLL's PE architecture is checked. Required
-license and third-party notice files must be present in the matching
-`vendor-licenses` or `dxc-licenses` tree. Both DXC DLLs are required together.
-No vendor SDK binary is stored in the source repository by these tools.
+Only explicitly managed app-local runtime names are copied when present beside the
+selected executable. Each DLL's PE architecture is checked. NVIDIA, AMD, Intel and
+DXC runtimes retain their matching license-tree requirements. The optional Wii
+passthrough is admitted only as the complete pair `wii_bt_passthrough.dll` and
+`libusb-1.0.dll`, both matching the executable architecture; the exact libusb
+`COPYING` file is included at `libusb-licenses/COPYING`. An incomplete pair,
+mismatched architecture, or missing license fails packaging. Arbitrary sibling DLLs
+remain excluded.
 
 Privacy checks cover inputs, staged files and uncompressed ZIP contents. One
 byte-exact NVIDIA DLSS 310.9.16.0 redistributable contains an NVIDIA training
