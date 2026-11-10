@@ -43,7 +43,7 @@ PUBLIC_MANAGED_PATH = re.compile(
     r"hotd2\.exe|scenes/st1_play\.scene|README\.txt|BUILD\.txt|CREDITS\.txt|LICENSE-SDL\.txt|"
     r"LICENSE-native-code\.txt|THIRD_PARTY_NOTICES\.txt|nvngx_dlss\.dll|nvngx_dlssg\.dll|"
     r"amd_fidelityfx_upscaler_dx12\.dll|amd_fidelityfx_framegeneration_dx12\.dll|libxess\.dll|"
-    r"dxcompiler\.dll|dxil\.dll|wii_bt_passthrough\.dll|libusb-1\.0\.dll|libusb-licenses/COPYING|"
+    r"dxcompiler\.dll|dxil\.dll|wii_bt_passthrough\.dll|libusb-1\.0\.dll|libusb-licenses/COPYING|wii-bt-licenses/LICENSE-HOTD2RE|"
     r"(?:vendor-licenses/(?:nvidia|amd|intel)|dxc-licenses)/[A-Za-z0-9_./ -]+\.(?:txt|md)", re.I)
 
 
