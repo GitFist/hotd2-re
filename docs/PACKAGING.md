@@ -44,7 +44,7 @@ selected executable. Each DLL's PE architecture is checked. NVIDIA, AMD, Intel a
 DXC runtimes retain their matching license-tree requirements. The optional Wii
 passthrough is admitted only as the complete pair `wii_bt_passthrough.dll` and
 `libusb-1.0.dll`, both matching the executable architecture; the exact libusb
-`COPYING` file is included at `libusb-licenses/COPYING`. An incomplete pair,
+`COPYING` file is included at `libusb-licenses/COPYING`, and the extracted host's MIT license is included at `wii-bt-licenses/LICENSE-HOTD2RE`. An incomplete pair,
 mismatched architecture, or missing license fails packaging. Arbitrary sibling DLLs
 remain excluded.
 
