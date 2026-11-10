@@ -40,11 +40,10 @@ if(WIN32)
       message(FATAL_ERROR "The standalone Wii Bluetooth host did not define wii_bt_passthrough")
     endif()
 
-    # libusb is loaded with the optional DLL, never linked into port_input_core.
-    add_custom_command(TARGET wii_bt_passthrough POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:usb-1.0>" "$<TARGET_FILE_DIR:wii_bt_passthrough>"
-      VERBATIM)
+    # Keep the DLL alongside hotd2.exe/play.exe so LoadLibrary and the
+    # Windows dependency loader resolve it only for the optional backend.
+    set_target_properties(wii_bt_passthrough PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
     add_executable(wii_bt_passthrough_api_test ${PROJECT_SOURCE_DIR}/tests/wii_bt_passthrough_api_test.cpp)
     target_include_directories(wii_bt_passthrough_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/input)
