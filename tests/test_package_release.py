@@ -277,6 +277,9 @@ const char* const kReleaseVersion = "1.0";
         license = self.source / "build/_deps/libusb_cmake-src/libusb/COPYING"
         license.parent.mkdir(parents=True)
         license.write_text("GNU LESSER GENERAL PUBLIC LICENSE Version 2.1 fixture\n")
+        host_license = self.source / "build/_deps/wii_bt_host-src/LICENSE-HOTD2RE"
+        host_license.parent.mkdir(parents=True)
+        host_license.write_text("MIT License fixture\n")
 
         archive = self.package()
         package = archive.parent / "hotd2re"
@@ -285,14 +288,17 @@ const char* const kReleaseVersion = "1.0";
             self.assertIn("hotd2re/wii_bt_passthrough.dll", names)
             self.assertIn("hotd2re/libusb-1.0.dll", names)
             self.assertIn("hotd2re/libusb-licenses/COPYING", names)
+            self.assertIn("hotd2re/wii-bt-licenses/LICENSE-HOTD2RE", names)
         manifest = json.loads((package / "PACKAGE-MANIFEST.json").read_text())
         managed = {entry["path"] for entry in manifest["files"]}
         self.assertTrue({
-            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING"
+            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING",
+            "wii-bt-licenses/LICENSE-HOTD2RE"
         }.issubset(managed))
         index = json.loads((archive.parent / "hotd2re-win-x86.files.json").read_bytes())
         self.assertTrue({
-            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING"
+            "wii_bt_passthrough.dll", "libusb-1.0.dll", "libusb-licenses/COPYING",
+            "wii-bt-licenses/LICENSE-HOTD2RE"
         }.issubset({entry["path"] for entry in index["files"]}))
 
     def test_optional_wii_passthrough_runtime_rejects_incomplete_or_wrong_architecture_pair(self):
